@@ -1,0 +1,6 @@
+.vscode/sftp.json
+.DS_Store
+output/
+.playwright-cli/
+*.zip
+**/vk-trends/local-config.php

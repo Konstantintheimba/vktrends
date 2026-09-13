@@ -1,0 +1,36 @@
+[11-Sep-2026 00:01:26 UTC] Automatic updates starting...
+[11-Sep-2026 00:01:26 UTC]   Automatic plugin updates starting...
+[11-Sep-2026 00:01:26 UTC]   Automatic plugin updates complete.
+[11-Sep-2026 00:01:26 UTC] Automatic updates complete.
+[11-Sep-2026 00:01:27 UTC] PHP Fatal error:  Uncaught Error: Class "VKT_Commerce" not found in /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-posts.php:162
+Stack trace:
+#0 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-posts.php(390): VKT_Posts::reextract()
+#1 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-plugin.php(128): VKT_Posts::query(Array)
+#2 [internal function]: VKT_Plugin::{closure:VKT_Plugin::routes():126}(Object(WP_REST_Request))
+#3 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/rest-api/class-wp-rest-server.php(1293): call_user_func(Object(Closure), Object(WP_REST_Request))
+#4 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/rest-api/class-wp-rest-server.php(1126): WP_REST_Server->respond_to_request(Object(WP_REST_Request), '/vk-trends/v1/p...', Array, NULL)
+#5 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/rest-api/class-wp-rest-server.php(441): WP_REST_Server->dispatch(Object(WP_REST_Request))
+#6 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/rest-api.php(488): WP_REST_Server->serve_request('/vk-trends/v1/p...')
+#7 [internal function]: rest_api_loaded(Object(WP))
+#8 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp-hook.php(353): call_user_func_array('rest_api_loaded', Array)
+#9 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp-hook.php(377): WP_Hook->apply_filters('', Array)
+#10 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/plugin.php(571): WP_Hook->do_action(Array)
+#11 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp.php(418): do_action_ref_array('parse_request', Array)
+#12 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp.php(821): WP->parse_request('')
+#13 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/functions.php(1352): WP->main('')
+#14 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-blog-header.php(16): wp()
+#15 /home/k/kostyan13/vk.fastfixsite.ru/public_html/index.php(17): require('/home/k/kostyan...')
+#16 {main}
+  thrown in /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-posts.php on line 162
+[11-Sep-2026 00:01:28 UTC] PHP Fatal error:  Uncaught Error: Class "VKT_Commerce" not found in /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-posts.php:304
+Stack trace:
+#0 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-collector.php(154): VKT_Posts::save(Array, 2, 31985)
+#1 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-collector.php(262): VKT_Collector::save_posts(Array, 2, 31985)
+#2 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-collector.php(65): VKT_Collector::process(Array)
+#3 [internal function]: VKT_Collector::run()
+#4 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp-hook.php(353): call_user_func_array(Array, Array)
+#5 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/class-wp-hook.php(377): WP_Hook->apply_filters('', Array)
+#6 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-includes/plugin.php(571): WP_Hook->do_action(Array)
+#7 /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-cron.php(191): do_action_ref_array('vkt_collect', Array)
+#8 {main}
+  thrown in /home/k/kostyan13/vk.fastfixsite.ru/public_html/wp-content/plugins/vk-trends/includes/class-posts.php on line 304

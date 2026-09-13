@@ -1,0 +1,939 @@
+{
+  "video.get": {
+    "description": "Returns detailed information about videos.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "ID of the user or community that owns the video(s).",
+        "type": "integer",
+        "format": "int64",
+        "default": 0,
+        "entity": "owner"
+      },
+      {
+        "name": "videos",
+        "description": "Video IDs, in the following format: \"<owner_id>_<media_id>,<owner_id>_<media_id>\", Use a negative value to designate a community ID. Example: \"-4363_136089719,13245770_137352259\"",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "album_id",
+        "description": "ID of the album containing the video(s).",
+        "type": "integer",
+        "format": "int32"
+      },
+      {
+        "name": "count",
+        "description": "Number of videos to return.",
+        "type": "integer",
+        "default": 100,
+        "minimum": 0,
+        "maximum": 200
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of videos.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return an extended response with additional fields",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "sort_album",
+        "description": "Sort order: '0' - newest video first, '1' - oldest video first",
+        "type": "integer",
+        "default": 0,
+        "enum": [
+          0,
+          1
+        ]
+      }
+    ]
+  },
+  "video.getAlbums": {
+    "description": "Returns a list of video albums owned by a user or community.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "ID of the user or community that owns the video album(s).",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of video albums.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of video albums to return.",
+        "type": "integer",
+        "default": 50,
+        "minimum": 0,
+        "maximum": 100
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return additional information about album privacy settings for the current user",
+        "type": "boolean"
+      },
+      {
+        "name": "need_system",
+        "type": "boolean",
+        "default": 0
+      }
+    ]
+  },
+  "video.getComments": {
+    "description": "Returns a list of comments on a video.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "ID of the user or community that owns the video.",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "video_id",
+        "description": "Video ID.",
+        "type": "integer",
+        "required": true,
+        "format": "int32",
+        "minimum": 0
+      },
+      {
+        "name": "need_likes",
+        "description": "'1' - to return an additional 'likes' field",
+        "type": "boolean"
+      },
+      {
+        "name": "start_comment_id",
+        "type": "integer"
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of comments.",
+        "type": "integer"
+      },
+      {
+        "name": "count",
+        "description": "Number of comments to return.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 100
+      },
+      {
+        "name": "sort",
+        "description": "Sort order: 'asc' - oldest comment first, 'desc' - newest comment first",
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc",
+          "interest"
+        ],
+        "enumNames": [
+          "oldest comment first",
+          "newest comment first",
+          "most interesting comments first"
+        ]
+      },
+      {
+        "name": "extended",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "comment_id",
+        "type": "integer"
+      },
+      {
+        "name": "thread_items_count",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 10
+      }
+    ]
+  },
+  "video.search": {
+    "description": "Returns a list of videos under the set search criterion.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "q",
+        "description": "Search query string (e.g., 'The Beatles').",
+        "type": "string"
+      },
+      {
+        "name": "sort",
+        "description": "Sort order: '1' - by duration, '2' - by relevance, '0' - by date added",
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          0
+        ],
+        "enumNames": [
+          "duration",
+          "relevance",
+          "date added"
+        ]
+      },
+      {
+        "name": "hd",
+        "description": "If not null, only searches for high-definition videos.",
+        "type": "integer"
+      },
+      {
+        "name": "adult",
+        "description": "'1' - to disable the Safe Search filter, '0' - to enable the Safe Search filter",
+        "type": "boolean"
+      },
+      {
+        "name": "live",
+        "type": "boolean"
+      },
+      {
+        "name": "filters",
+        "description": "Filters to apply: 'youtube' - return YouTube videos only, 'vimeo' - return Vimeo videos only, 'vk' - return VK videos only, 'short' - return short videos only, 'long' - return long videos only",
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "long",
+            "short",
+            "vimeo",
+            "vk",
+            "youtube"
+          ]
+        }
+      },
+      {
+        "name": "search_own",
+        "type": "boolean"
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of videos.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "longer",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "shorter",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of videos to return.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 200
+      },
+      {
+        "name": "extended",
+        "type": "boolean",
+        "default": 0
+      },
+      {
+        "name": "owner_id",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    ]
+  },
+  "market.get": {
+    "description": "Returns items list for a community.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "ID of an item owner community, \"Note that community id in the 'owner_id' parameter should be negative number. For example 'owner_id'=-1 matches the [vk.com/apiclub|VK API] community \"",
+        "type": "integer",
+        "required": true,
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "album_id",
+        "type": "integer",
+        "format": "int32",
+        "default": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of items to return.",
+        "type": "integer",
+        "default": 100,
+        "minimum": 0,
+        "maximum": 200
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of results.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "extended",
+        "description": "'1' - method will return additional fields: 'likes, can_comment, car_repost, photos'. These parameters are not returned by default.",
+        "type": "boolean"
+      },
+      {
+        "name": "date_from",
+        "description": "Items update date from (format: yyyy-mm-dd)",
+        "type": "string"
+      },
+      {
+        "name": "date_to",
+        "description": "Items update date to (format: yyyy-mm-dd)",
+        "type": "string"
+      },
+      {
+        "name": "need_variants",
+        "description": "Add variants to response if exist",
+        "type": "boolean"
+      },
+      {
+        "name": "with_disabled",
+        "description": "Add disabled items to response",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    ]
+  },
+  "market.getById": {
+    "description": "Returns information about market items by their ids.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "item_ids",
+        "description": "Comma-separated ids list: {user id}_{item id}. If an item belongs to a community -{community id} is used. \" 'Videos' value example: , '-4363_136089719,13245770_137352259'\"",
+        "type": "array",
+        "required": true,
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 100
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return additional fields: 'likes, can_comment, car_repost, photos'. By default: '0'.",
+        "type": "boolean"
+      }
+    ]
+  },
+  "market.getCategories": {
+    "description": "Returns a list of market categories.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "group_id",
+        "description": "Group Id.",
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1,
+        "entity": "owner"
+      },
+      {
+        "name": "album_id",
+        "type": "integer",
+        "minimum": 1
+      }
+    ]
+  },
+  "market.search": {
+    "description": "Searches market items in a community's catalog",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "ID of an items owner community.",
+        "type": "integer",
+        "required": true,
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "album_id",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "q",
+        "description": "Search query, for example \"pink slippers\".",
+        "type": "string"
+      },
+      {
+        "name": "price_from",
+        "description": "Minimum item price value.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "price_to",
+        "description": "Maximum item price value.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "sort",
+        "type": "integer",
+        "default": 0,
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "enumNames": [
+          "default",
+          "date",
+          "price",
+          "relevance"
+        ]
+      },
+      {
+        "name": "rev",
+        "description": "'0' - do not use reverse order, '1' - use reverse order",
+        "type": "integer",
+        "default": 1,
+        "minimum": 0,
+        "enum": [
+          0,
+          1
+        ],
+        "enumNames": [
+          "normal",
+          "reverse"
+        ]
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of results.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of items to return.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 200
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return additional fields: 'likes, can_comment, car_repost, photos'. By default: '0'.",
+        "type": "boolean",
+        "default": "0"
+      },
+      {
+        "name": "status",
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 2
+      },
+      {
+        "name": "need_variants",
+        "description": "Add variants to response if exist",
+        "type": "boolean"
+      }
+    ]
+  },
+  "users.get": {
+    "description": "Returns detailed information on users.",
+    "tokens": [
+      "user",
+      "group",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "user_ids",
+        "description": "User IDs or screen names ('screen_name'). By default, current user ID.",
+        "type": "array",
+        "items": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "format": "int64",
+          "entity": "profiles"
+        },
+        "maxItems": 1000
+      },
+      {
+        "name": "fields",
+        "description": "Profile fields to return. Sample values: 'nickname', 'screen_name', 'sex', 'bdate' (birthdate), 'city', 'country', 'timezone', 'photo', 'photo_medium', 'photo_big', 'has_mobile', 'contacts', 'education', 'online', 'counters', 'relation', 'last_seen', 'activity', 'can_write_private_message', 'can_see_all_posts', 'can_post', 'universities', 'can_invite_to_chats'",
+        "type": "array",
+        "items": {
+          "$ref": "../users/objects.json#/definitions/users_fields"
+        }
+      },
+      {
+        "name": "name_case",
+        "description": "Case for declension of user name and surname: 'nom' - nominative (default), 'gen' - genitive , 'dat' - dative, 'acc' - accusative , 'ins' - instrumental , 'abl' - prepositional",
+        "type": "string",
+        "$ref": "../base/objects.json#/definitions/base_name_case"
+      },
+      {
+        "name": "from_group_id",
+        "type": "integer",
+        "format": "int64",
+        "default": 0,
+        "entity": "owner"
+      }
+    ]
+  },
+  "groups.getById": {
+    "description": "Returns information about communities by their IDs.",
+    "tokens": [
+      "user",
+      "group",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "group_ids",
+        "description": "IDs or screen names of communities.",
+        "type": "array",
+        "items": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "format": "int64",
+          "entity": "groups"
+        }
+      },
+      {
+        "name": "group_id",
+        "description": "ID or screen name of the community.",
+        "type": [
+          "integer",
+          "string"
+        ],
+        "format": "int64",
+        "entity": "groups"
+      },
+      {
+        "name": "fields",
+        "description": "Group fields to return.",
+        "type": "array",
+        "items": {
+          "$ref": "../groups/objects.json#/definitions/groups_fields"
+        }
+      }
+    ]
+  },
+  "groups.search": {
+    "description": "Returns a list of communities matching the search criteria.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "q",
+        "description": "Search query string.",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "type",
+        "description": "Community type. Possible values: 'group, page, event.'",
+        "type": "string",
+        "enum": [
+          "event",
+          "group",
+          "page"
+        ]
+      },
+      {
+        "name": "country_id",
+        "description": "Country ID.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "city_id",
+        "description": "City ID. If this parameter is transmitted, country_id is ignored.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "future",
+        "description": "'1' - to return only upcoming events. Works with the 'type' = 'event' only.",
+        "type": "boolean"
+      },
+      {
+        "name": "market",
+        "description": "'1' - to return communities with enabled market only.",
+        "type": "boolean"
+      },
+      {
+        "name": "sort",
+        "description": "Sort order. Possible values: *'0' - default sorting (similar the full version of the site),, *'1' - by growth speed,, *'2'- by the \"day attendance/members number\" ratio,, *'3' - by the \"Likes number/members number\" ratio,, *'4' - by the \"comments number/members number\" ratio,, *'5' - by the \"boards entries number/members number\" ratio.",
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "enumNames": [
+          "default",
+          "growth",
+          "attendance",
+          "likes",
+          "comments",
+          "entries",
+          "members"
+        ]
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of results.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of communities to return. \"Note that you can not receive more than first thousand of results, regardless of 'count' and 'offset' values.\"",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 1000
+      }
+    ]
+  },
+  "wall.get": {
+    "description": "Returns a list of posts on a user wall or community wall.",
+    "tokens": [
+      "user",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "Identifier of the wall owner: positive for a user, negative for a community.",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "domain",
+        "description": "User or community short address.",
+        "type": [
+          "integer",
+          "string"
+        ],
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of posts.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of posts to return (maximum 100).",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "filter",
+        "type": "string",
+        "$ref": "../wall/objects.json#/definitions/wall_get_filter"
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return 'wall', 'profiles', and 'groups' fields, '0' - to return no additional fields (default)",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "$ref": "../base/objects.json#/definitions/base_user_group_fields"
+        }
+      }
+    ]
+  },
+  "wall.getById": {
+    "description": "Returns a list of posts from user or community walls by their IDs.",
+    "tokens": [
+      "user",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "posts",
+        "description": "User or community IDs and post IDs, separated by underscores. Use a negative value to designate a community ID. Example: \"93388_21539,93388_20904,2943_4276,-1_1\"",
+        "type": "array",
+        "required": true,
+        "items": {
+          "type": "string",
+          "format": "value_object",
+          "properties": {
+            "owner_id": {
+              "type": "integer",
+              "format": "int64",
+              "entity": "owner",
+              "required": true
+            },
+            "post_id": {
+              "type": "integer",
+              "required": true
+            },
+            "hash": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "extended",
+        "description": "'1' - to return user and community objects needed to display posts, '0' - no additional fields are returned (default)",
+        "type": "boolean"
+      },
+      {
+        "name": "copy_history_depth",
+        "description": "Sets the number of parent elements to include in the array 'copy_history' that is returned if the post is a repost from another wall.",
+        "type": "integer",
+        "default": 2
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "$ref": "../base/objects.json#/definitions/base_user_group_fields"
+        }
+      }
+    ]
+  },
+  "wall.search": {
+    "description": "Allows to search posts on user or community walls.",
+    "tokens": [
+      "user",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "domain",
+        "description": "user or community screen name.",
+        "type": [
+          "integer",
+          "string"
+        ],
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "query",
+        "description": "search query string.",
+        "type": "string",
+        "maxLength": 9000
+      },
+      {
+        "name": "owners_only",
+        "description": "'1' - returns only page owner's posts.",
+        "type": "boolean"
+      },
+      {
+        "name": "count",
+        "description": "count of posts to return.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 100
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of posts.",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0
+      },
+      {
+        "name": "extended",
+        "description": "show extended post info.",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "$ref": "../base/objects.json#/definitions/base_user_group_fields"
+        }
+      }
+    ]
+  },
+  "utils.resolveScreenName": {
+    "description": "Detects a type of object (e.g., user, community, application) and its ID by screen name.",
+    "tokens": [
+      "user",
+      "group",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "screen_name",
+        "description": "Screen name of the user, community (e.g., 'apiclub,' 'andrew', or 'rules_of_war'), or application.",
+        "type": "string",
+        "required": true
+      }
+    ]
+  },
+  "likes.getList": {
+    "description": "Returns a list of IDs of users who added the specified object to their 'Likes' list.",
+    "tokens": [
+      "user",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "type",
+        "description": ", Object type: 'post' - post on user or community wall, 'comment' - comment on a wall post, 'photo' - photo, 'audio' - audio, 'video' - video, 'story' - story, 'note' - note, 'photo_comment' - comment on the photo, 'video_comment' - comment on the video, 'topic_comment' - comment in the discussion, 'sitepage' - page of the site where the [vk.com/dev/Like|Like widget] is installed",
+        "type": "string",
+        "required": true,
+        "$ref": "../likes/objects.json#/definitions/likes_type"
+      },
+      {
+        "name": "owner_id",
+        "description": "ID of the user, community, or application that owns the object. If the 'type' parameter is set as 'sitepage', the application ID is passed as 'owner_id'. Use negative value for a community id. If the 'type' parameter is not set, the 'owner_id' is assumed to be either the current user or the same application ID as if the 'type' parameter was set to 'sitepage'.",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "item_id",
+        "description": "Object ID. If 'type' is set as 'sitepage', 'item_id' can include the 'page_id' parameter value used during initialization of the [vk.com/dev/Like|Like widget].",
+        "type": "integer"
+      },
+      {
+        "name": "page_url",
+        "description": "URL of the page where the [vk.com/dev/Like|Like widget] is installed. Used instead of the 'item_id' parameter.",
+        "type": "string"
+      },
+      {
+        "name": "filter",
+        "description": "Filters to apply: 'likes' - returns information about all users who liked the object (default), 'copies' - returns information only about users who told their friends about the object",
+        "type": "string",
+        "enum": [
+          "copies",
+          "likes"
+        ]
+      },
+      {
+        "name": "friends_only",
+        "description": "Specifies which users are returned: '1' - to return only the current user's friends, '0' - to return all users (default)",
+        "type": "integer",
+        "default": 0,
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "name": "extended",
+        "description": "Specifies whether extended information will be returned. '1' - to return extended information about users and communities from the 'Likes' list, '0' - to return no additional information (default)",
+        "type": "boolean"
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to select a specific subset of users.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "count",
+        "description": "Number of user IDs to return (maximum '1000'). Default is '100' if 'friends_only' is set to '0', otherwise, the default is '10' if 'friends_only' is set to '1'.",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000
+      },
+      {
+        "name": "skip_own",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    ]
+  }
+}
