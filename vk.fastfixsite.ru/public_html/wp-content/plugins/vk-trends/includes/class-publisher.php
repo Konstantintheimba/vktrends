@@ -106,7 +106,7 @@ final class VKT_Publisher {
      */
     private static function use_community_key( $group_id, $media ) {
         return VKT_Community::configured()
-            && absint( $group_id ) === absint( VKT_COMMUNITY_ID )
+            && absint( $group_id ) === VKT_Community::group_id()
             && '' === (string) $media;
     }
 
@@ -144,7 +144,7 @@ final class VKT_Publisher {
         global $wpdb;
         $items = array();
         $total = 0;
-        if ( 'user' === VKT_API::mode() ) {
+        if ( VKT_Tokens::has( 'user' ) ) {
             $result = VKT_API::publishing_request( 'groups.get', array(
                 'filter' => 'editor',
                 'extended' => 1,
@@ -291,7 +291,7 @@ final class VKT_Publisher {
 
     public static function create( $data ) {
         global $wpdb;
-        if ( 'user' !== VKT_API::mode() && ! VKT_Community::configured() ) {
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
             return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
         // Будущий адаптер агентов проходит через те же проверки входных данных.
@@ -315,7 +315,7 @@ final class VKT_Publisher {
         }
         // Отказ на этапе создания: иначе запись уходит в очередь и падает уже
         // после публикации, а пользователь видит только код ошибки VK.
-        if ( $media && 'user' !== VKT_API::mode() ) {
+        if ( $media && ! VKT_Tokens::has( 'user' ) ) {
             return self::error( 'Файлы с сервера умеет публиковать только пользовательский токен VK ID: ключу сообщества VK запрещает загрузку фото и видео. Сохраните такой токен в настройках либо уберите файлы из записи.' );
         }
         if ( count( $media ) + count( array_filter( explode( ',', $attachments ) ) ) > 10 ) {
@@ -437,7 +437,7 @@ final class VKT_Publisher {
             $post['media_items'] = is_wp_error( $media ) ? array() : $media;
         }
         unset( $post );
-        $native_media = 'user' === VKT_API::mode();
+        $native_media = VKT_Tokens::has( 'user' );
         return array(
             'groups' => $groups,
             'posts' => $posts,
@@ -543,7 +543,7 @@ final class VKT_Publisher {
 
     public static function run_due( $limit = 2, $post_id = 0 ) {
         global $wpdb;
-        if ( 'user' !== VKT_API::mode() && ! VKT_Community::configured() ) {
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
             return self::error( 'Автопостинг ожидает ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
         if ( ! VKT_Store::lock( 'publisher', 120 ) ) {

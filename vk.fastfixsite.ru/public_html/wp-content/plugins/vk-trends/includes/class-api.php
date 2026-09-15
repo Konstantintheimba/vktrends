@@ -15,30 +15,32 @@ final class VKT_API {
         return array( 'kind' => 'service', 'access_token' => '', 'refresh_token' => '', 'expires_at' => 0, 'device_id' => '', 'client_id' => '', 'scope' => '' );
     }
 
-    // Расшифровывает и возвращает полную структуру токена. Понимает старый формат,
-    // где в шифре лежала просто строка сервисного ключа — не JSON-структура.
+    /**
+     * Какой слот обслужит метод.
+     *
+     * Часть методов VK принимает только пользовательский токен, остальное
+     * дешевле и надёжнее читать сервисным ключом: он не истекает и не требует
+     * прав. Если подходящего слота нет — берём любой доступный, чтобы ошибка
+     * пришла от VK с внятным текстом, а не от плагина.
+     */
+    const USER_ONLY = array( 'video.get', 'groups.get', 'wall.post', 'photos.getWallUploadServer', 'photos.saveWallPhoto', 'video.save' );
+
+    public static function slot_for( $method ) {
+        if ( in_array( $method, self::USER_ONLY, true ) && VKT_Tokens::has( 'user' ) ) {
+            return 'user';
+        }
+        if ( VKT_Tokens::has( 'service' ) ) {
+            return 'service';
+        }
+        return VKT_Tokens::has( 'user' ) ? 'user' : '';
+    }
+
     private static function token_data() {
-        if ( defined( 'VKT_ACCESS_TOKEN' ) ) {
-            return array_merge( self::empty_payload(), array( 'access_token' => trim( VKT_ACCESS_TOKEN ) ) );
-        }
-        $encrypted = get_option( 'vkt_token', '' );
-        if ( ! $encrypted || ! function_exists( 'openssl_decrypt' ) ) {
+        $slot = VKT_Tokens::has( 'service' ) ? 'service' : ( VKT_Tokens::has( 'user' ) ? 'user' : '' );
+        if ( '' === $slot ) {
             return array();
         }
-        $data = json_decode( $encrypted, true );
-        if ( ! is_array( $data ) || ! isset( $data['value'], $data['iv'], $data['tag'] ) ) {
-            return array();
-        }
-        $decrypted = (string) openssl_decrypt( base64_decode( $data['value'] ), 'aes-256-gcm', hash( 'sha256', wp_salt( 'auth' ), true ), OPENSSL_RAW_DATA, base64_decode( $data['iv'] ), base64_decode( $data['tag'] ) );
-        if ( '' === $decrypted ) {
-            return array();
-        }
-        $payload = json_decode( $decrypted, true );
-        if ( ! is_array( $payload ) || ! isset( $payload['access_token'] ) ) {
-            // Обратная совместимость: раньше здесь хранился обычный текст сервисного ключа.
-            return array_merge( self::empty_payload(), array( 'access_token' => $decrypted ) );
-        }
-        return wp_parse_args( $payload, self::empty_payload() );
+        return array_merge( self::empty_payload(), VKT_Tokens::get( $slot ), array( 'kind' => 'service' === $slot ? 'service' : 'user' ) );
     }
 
     public static function token() {
@@ -46,7 +48,7 @@ final class VKT_API {
         return (string) ( $data['access_token'] ?? '' );
     }
 
-    // Тип действующего токена: 'service', 'user' либо '' — если токена нет вовсе.
+    /** Режим чтения: чем плагин собирает данные. Наличие прочих ключей смотрите в VKT_Tokens. */
     public static function mode() {
         $data = self::token_data();
         return '' === ( $data['access_token'] ?? '' ) ? '' : $data['kind'];
@@ -127,6 +129,79 @@ final class VKT_API {
         return $report;
     }
 
+    /**
+     * Живая проверка конкретного слота: спрашиваем VK ровно тем ключом, что лежит
+     * в слоте, и возвращаем его дословный ответ. Результат закрепляется за слотом,
+     * чтобы в настройках было видно, какой именно ключ отказал и почему.
+     */
+    public static function probe_slot( $slot ) {
+        $definitions = VKT_Tokens::definitions();
+        if ( ! isset( $definitions[ $slot ] ) ) {
+            return new WP_Error( 'slot', 'Неизвестный слот ключа.', array( 'status' => 400 ) );
+        }
+        $token = VKT_Tokens::token( $slot );
+        if ( '' === $token ) {
+            return new WP_Error( 'no_token', 'Ключ в этом слоте не сохранён.', array( 'status' => 400 ) );
+        }
+        $checks = array(
+            'service' => array( array( 'wall.get', array( 'owner_id' => -1, 'count' => 1 ), 'Чтение стены' ) ),
+            'community' => array( array( 'groups.getTokenPermissions', array(), 'Права ключа сообщества' ) ),
+            'user' => array(
+                array( 'users.get', array(), 'Аккаунт' ),
+                array( 'groups.get', array( 'filter' => 'admin', 'count' => 1 ), 'Список сообществ (право groups)' ),
+                array( 'photos.getWallUploadServer', array( 'group_id' => VKT_Community::group_id() ?: 1 ), 'Загрузка фото (право photos)' ),
+                array( 'wall.post', array(), 'Публикация (право wall)' ),
+            ),
+        );
+        $report = array( 'slot' => $slot, 'title' => $definitions[ $slot ]['title'], 'checks' => array(), 'ok' => true );
+        foreach ( $checks[ $slot ] as $check ) {
+            list( $method, $params, $label ) = $check;
+            // wall.post проверяем заведомо пустым запросом: право видно по коду отказа,
+            // а запись при этом не создаётся.
+            $result = self::probe_call( $method, $params, $token );
+            $granted = $result['ok'] || in_array( $result['code'], array( 100, 113, 104 ), true );
+            $report['checks'][] = array(
+                'method' => $method,
+                'label' => $label,
+                'ok' => $granted,
+                'code' => $result['code'],
+                'message' => $result['message'],
+            );
+            if ( ! $granted ) {
+                $report['ok'] = false;
+            }
+        }
+        $failed = array_values( array_filter( $report['checks'], static fn( $check ) => ! $check['ok'] ) );
+        VKT_Tokens::note( $slot, $failed ? $failed[0]['label'] . ': ' . $failed[0]['message'] : '' );
+        return $report;
+    }
+
+    /** Один пробный вызов: возвращает код и текст VK, ничего не логируя как ошибку публикации. */
+    private static function probe_call( $method, $params, $token ) {
+        $response = wp_remote_post( 'https://api.vk.com/method/' . $method, array(
+            'timeout' => 15,
+            'redirection' => 0,
+            'sslverify' => true,
+            'limit_response_size' => 131072,
+            'body' => array_merge( $params, array( 'access_token' => $token, 'v' => VKT_Plugin::settings()['api_version'] ) ),
+        ) );
+        if ( is_wp_error( $response ) ) {
+            return array( 'ok' => false, 'code' => 0, 'message' => 'Нет связи с VK.' );
+        }
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+        if ( ! is_array( $body ) ) {
+            return array( 'ok' => false, 'code' => 0, 'message' => 'VK вернул нечитаемый ответ.' );
+        }
+        if ( isset( $body['error'] ) ) {
+            return array(
+                'ok' => false,
+                'code' => (int) ( $body['error']['error_code'] ?? 0 ),
+                'message' => str_replace( $token, '[hidden]', sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) ) ),
+            );
+        }
+        return array( 'ok' => true, 'code' => 0, 'message' => 'Метод доступен.' );
+    }
+
     public static function detect_token_kind( $token ) {
         $token = is_string( $token ) ? trim( $token ) : '';
         if ( '' === $token ) {
@@ -149,50 +224,19 @@ final class VKT_API {
         return is_array( $body ) && array_key_exists( 'response', $body ) ? 'community' : 'unknown';
     }
 
-    private static function store_payload( $payload ) {
-        if ( ! function_exists( 'openssl_encrypt' ) ) {
-            return new WP_Error( 'encryption', 'На сервере нужен OpenSSL для хранения токена.', array( 'status' => 500 ) );
-        }
-        $iv = random_bytes( 12 );
-        $tag = '';
-        $value = openssl_encrypt( wp_json_encode( $payload ), 'aes-256-gcm', hash( 'sha256', wp_salt( 'auth' ), true ), OPENSSL_RAW_DATA, $iv, $tag );
-        if ( false === $value ) {
-            return new WP_Error( 'encryption', 'Не удалось зашифровать токен.', array( 'status' => 500 ) );
-        }
-        update_option( 'vkt_token', wp_json_encode( array( 'iv' => base64_encode( $iv ), 'tag' => base64_encode( $tag ), 'value' => base64_encode( $value ) ) ), false );
-        return true;
-    }
 
     // $kind: 'service' — обычный ключ доступа. 'user' — пользовательский токен;
     // для автообновления $extra должен целиком содержать refresh_token, device_id и client_id.
+    /** Совместимость: старые вызовы кладут ключ в слот по его типу. */
     public static function save_token( $token, $kind = 'service', $extra = array() ) {
-        if ( defined( 'VKT_ACCESS_TOKEN' ) ) {
-            return new WP_Error( 'constant_token', 'Токен задан в wp-config.php. Измените его там.', array( 'status' => 400 ) );
-        }
-        $kind = in_array( $kind, array( 'service', 'user' ), true ) ? $kind : 'service';
-        $payload = self::empty_payload();
-        $payload['kind'] = $kind;
-        $payload['access_token'] = $token;
-        if ( 'user' === $kind ) {
-            $payload['refresh_token'] = (string) ( $extra['refresh_token'] ?? '' );
-            $payload['device_id'] = (string) ( $extra['device_id'] ?? '' );
-            $payload['client_id'] = (string) ( $extra['client_id'] ?? '' );
-            $payload['expires_at'] = ! empty( $extra['expires_in'] ) ? time() + (int) $extra['expires_in'] : 0;
-            // Права сохраняем как их назвал сам VK: по ним видно, что реально выдано.
-            $payload['scope'] = preg_replace( '/[^a-z_, ]/', '', (string) ( $extra['scope'] ?? '' ) );
-            $refresh_fields = array_filter( array( $payload['refresh_token'], $payload['device_id'], $payload['client_id'] ), static fn( $value ) => '' !== $value );
-            if ( $refresh_fields && 3 !== count( $refresh_fields ) ) {
-                return new WP_Error( 'user_token_incomplete', 'Данные автообновления указываются комплектом: refresh_token, device_id и client_id.', array( 'status' => 400 ) );
-            }
-        }
-        return self::store_payload( $payload );
+        return VKT_Tokens::save( 'user' === $kind ? 'user' : 'service', $token, $extra );
     }
 
     // Перед запросом обновляет пользовательскую пару токенов, если срок годности истекает
     // меньше чем через 5 минут. Сервисный ключ не истекает — обновлять нечего.
     public static function maybe_refresh() {
-        $data = self::token_data();
-        if ( '' === ( $data['access_token'] ?? '' ) || 'user' !== $data['kind'] ) {
+        $data = VKT_Tokens::get( 'user' );
+        if ( '' === ( $data['access_token'] ?? '' ) ) {
             return true;
         }
         if ( ! $data['expires_at'] || $data['expires_at'] - time() > 300 ) {
@@ -204,8 +248,8 @@ final class VKT_API {
         }
         try {
             // Пока ждали блокировку, токен мог обновиться в другом потоке.
-            $data = self::token_data();
-            if ( '' === ( $data['access_token'] ?? '' ) || 'user' !== $data['kind'] || ! $data['expires_at'] || $data['expires_at'] - time() > 300 ) {
+            $data = VKT_Tokens::get( 'user' );
+            if ( '' === ( $data['access_token'] ?? '' ) || ! $data['expires_at'] || $data['expires_at'] - time() > 300 ) {
                 return true;
             }
             if ( '' === $data['refresh_token'] || '' === $data['client_id'] || '' === $data['device_id'] ) {
@@ -307,8 +351,8 @@ final class VKT_API {
         if ( ! isset( $allowed[ $method ] ) ) {
             return new WP_Error( 'method', 'Метод не разрешён модулю публикаций.', array( 'status' => 400 ) );
         }
-        if ( 'user' !== self::mode() ) {
-            return new WP_Error( 'publishing_token', 'Для публикации нужен пользовательский токен VK ID с правами wall и groups.', array( 'status' => 400 ) );
+        if ( ! VKT_Tokens::has( 'user' ) ) {
+            return new WP_Error( 'publishing_token', 'Для публикации нужен пользовательский токен с правами wall, photos и groups. Сохраните его в настройках.', array( 'status' => 400 ) );
         }
         if ( ! is_array( $params ) || count( $params ) > 12 ) {
             return new WP_Error( 'params', 'Неверные параметры публикации.', array( 'status' => 400 ) );
@@ -361,9 +405,10 @@ final class VKT_API {
         if ( is_wp_error( $refreshed ) ) {
             return $refreshed;
         }
-        $token = self::token();
+        $slot = self::slot_for( $method );
+        $token = '' === $slot ? '' : VKT_Tokens::token( $slot );
         if ( '' === $token ) {
-            return new WP_Error( 'no_token', 'Сначала сохраните Access token в настройках.', array( 'status' => 400 ) );
+            return new WP_Error( 'no_token', 'Ни один ключ VK не сохранён. Добавьте его в настройках.', array( 'status' => 400 ) );
         }
         if ( ! VKT_Store::lock( 'api', 30 ) ) {
             return new WP_Error( 'rate_limit', 'Запрос уже выполняется. Подождите несколько секунд.', array( 'status' => 429, 'retryable' => true ) );
@@ -392,6 +437,7 @@ final class VKT_API {
                     $detail = sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) );
                     $error = new WP_Error( 'vk_' . $code, self::message( $code ) . ' [' . $method . ( '' !== $detail ? ': ' . mb_substr( $detail, 0, 120 ) : '' ) . ']', array( 'status' => 422, 'vk_code' => $code, 'retryable' => in_array( $code, array( 1, 6, 9, 10, 29, 32, 36 ), true ) ) );
                 } else {
+                    VKT_Tokens::note( $slot, '' );
                     VKT_Store::log( $method, $context, 'ok', 0, 'Запрос выполнен', $ms );
                     return array( 'response' => self::redact( $body['response'], $token ), 'duration_ms' => $ms, 'method' => $method );
                 }
@@ -399,6 +445,8 @@ final class VKT_API {
             $data = $error->get_error_data();
             $data['duration_ms'] = $ms;
             $error->add_data( $data );
+            // Ошибка остаётся закреплённой за слотом: в настройках видно, какой ключ виноват.
+            VKT_Tokens::note( $slot, $error->get_error_message() );
             VKT_Store::log( $method, $context, 'error', $data['vk_code'] ?? 0, $error->get_error_message(), $ms );
             return $error;
         } finally {

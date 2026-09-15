@@ -215,7 +215,7 @@ final class VKT_Collector {
             if ( ! $video ) {
                 return true;
             }
-            if ( 'user' === VKT_API::mode() ) {
+            if ( VKT_Tokens::has( 'user' ) ) {
                 return self::measure_video_point( $video );
             }
             $only = $video['owner_id'] . '_' . $video['video_id'];
@@ -241,7 +241,7 @@ final class VKT_Collector {
         $section_videos = array();
         // Видеораздел владельца доступен только пользовательскому токену и только по числовому ID,
         // короткое имя (domain) video.get не принимает.
-        if ( 'user' === VKT_API::mode() && 'owner' === $wall['kind'] ) {
+        if ( VKT_Tokens::has( 'user' ) && 'owner' === $wall['kind'] ) {
             $section = VKT_API::request( 'video.get', array( 'owner_id' => (int) $wall['value'], 'count' => 100 ), 'collector' );
             if ( ! is_wp_error( $section ) ) {
                 foreach ( (array) ( $section['response']['items'] ?? array() ) as $item ) {

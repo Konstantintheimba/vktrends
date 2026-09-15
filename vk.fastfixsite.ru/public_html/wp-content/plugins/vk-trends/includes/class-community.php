@@ -3,11 +3,20 @@ defined( 'ABSPATH' ) || exit;
 
 /** Управление тестовым сообществом и приём событий Callback API. */
 final class VKT_Community {
+    /** ID сообщества: константа важнее, иначе берём из настроек. */
+    public static function group_id() {
+        if ( defined( 'VKT_COMMUNITY_ID' ) && absint( VKT_COMMUNITY_ID ) ) {
+            return absint( VKT_COMMUNITY_ID );
+        }
+        return absint( VKT_Plugin::settings()['community_id'] ?? 0 );
+    }
+
+    public static function token() {
+        return VKT_Tokens::token( 'community' );
+    }
+
     public static function configured() {
-        return defined( 'VKT_COMMUNITY_ID' )
-            && absint( VKT_COMMUNITY_ID )
-            && defined( 'VKT_COMMUNITY_ACCESS_TOKEN' )
-            && '' !== trim( (string) VKT_COMMUNITY_ACCESS_TOKEN );
+        return self::group_id() > 0 && '' !== self::token();
     }
 
     public static function callback_configured() {
@@ -25,7 +34,7 @@ final class VKT_Community {
     public static function public_status() {
         return array(
             'configured' => self::configured(),
-            'group_id' => self::configured() ? absint( VKT_COMMUNITY_ID ) : 0,
+            'group_id' => self::configured() ? self::group_id() : 0,
             'callback_configured' => self::callback_configured(),
             'callback_url' => self::callback_configured() ? self::callback_url() : '',
         );
@@ -59,7 +68,7 @@ final class VKT_Community {
             'sslverify' => true,
             'limit_response_size' => 262144,
             'body' => array_merge( $params, array(
-                'access_token' => trim( (string) VKT_COMMUNITY_ACCESS_TOKEN ),
+                'access_token' => self::token(),
                 'v' => VKT_Plugin::settings()['api_version'],
             ) ),
         ) );
@@ -74,7 +83,7 @@ final class VKT_Community {
             $code = absint( $body['error']['error_code'] ?? 0 );
             // Причину VK называет текстом: без неё код 100 не подсказывает, какой
             // параметр не понравился. Сам ключ из текста вырезаем.
-            $reason = str_replace( trim( (string) VKT_COMMUNITY_ACCESS_TOKEN ), '[hidden]', sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) ) );
+            $reason = str_replace( self::token(), '[hidden]', sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) ) );
             return new WP_Error( 'vk_' . $code, 'VK отклонил запрос сообщества, код ' . $code . ( '' !== $reason ? ': ' . mb_substr( $reason, 0, 160 ) : '.' ), array(
                 'status' => 422,
                 'vk_code' => $code,
@@ -89,7 +98,7 @@ final class VKT_Community {
         if ( is_wp_error( $permissions ) ) {
             return $permissions;
         }
-        $group_id = absint( VKT_COMMUNITY_ID );
+        $group_id = self::group_id();
         $group_response = self::request( 'groups.getById', array( 'group_id' => $group_id, 'fields' => 'screen_name,photo_200' ) );
         if ( is_wp_error( $group_response ) ) {
             return $group_response;
@@ -117,7 +126,7 @@ final class VKT_Community {
 
     /** Публикует только в сообщество, которому принадлежит настроенный ключ. */
     public static function publish( $params ) {
-        $group_id = self::configured() ? absint( VKT_COMMUNITY_ID ) : 0;
+        $group_id = self::configured() ? self::group_id() : 0;
         if ( ! is_array( $params )
             || -$group_id !== (int) ( $params['owner_id'] ?? 0 )
             || 1 !== (int) ( $params['from_group'] ?? 0 ) ) {
@@ -136,7 +145,7 @@ final class VKT_Community {
         $data = json_decode( $raw, true );
         $secret = is_array( $data ) && is_string( $data['secret'] ?? null ) ? $data['secret'] : '';
         if ( ! is_array( $data )
-            || absint( $data['group_id'] ?? 0 ) !== absint( VKT_COMMUNITY_ID )
+            || absint( $data['group_id'] ?? 0 ) !== self::group_id()
             || ! hash_equals( (string) VKT_CALLBACK_SECRET, $secret ) ) {
             self::respond( 'forbidden', 403 );
         }

@@ -21,6 +21,7 @@ define( 'VKT_COMMUNITY_ID', 241464933 );
 class VKT_Community {
     public static bool $on = true;
     public static function configured() { return self::$on; }
+    public static function group_id() { return 241464933; }
 }
 
 require dirname( __DIR__ ) . '/includes/class-publisher.php';

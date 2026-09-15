@@ -28,6 +28,7 @@ function get_transient( $key ) { return false; }
 function set_transient( $key, $value, $ttl ) { return true; }
 function delete_transient( $key ) { return true; }
 
+class VKT_Tokens { public static function has( $slot ) { return false; } }
 class VKT_Store {
     public static array $entries = array();
     public static function log( $method, $context, $status, $code, $message, $ms = 0 ) {

@@ -15,6 +15,9 @@ class VKT_Plugin {
 class VKT_Store {
     public static function log() {}
 }
+class VKT_Tokens {
+    public static function token( $slot ) { return 'community' === $slot ? VKT_COMMUNITY_ACCESS_TOKEN : ''; }
+}
 function absint( $value ) { return abs( (int) $value ); }
 function admin_url( $path = '' ) { return 'https://example.test/wp-admin/' . ltrim( $path, '/' ); }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }

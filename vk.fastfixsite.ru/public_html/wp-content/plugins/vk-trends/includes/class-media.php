@@ -280,7 +280,7 @@ final class VKT_Media {
         // photos.getWallUploadServer (27), video.save (5) и docs (15), фото из
         // messages-альбома wall.post молча отбрасывает, а ссылку на файл
         // отклоняет кодом 100. Рабочего обходного пути нет.
-        if ( 'user' !== VKT_API::mode() ) {
+        if ( ! VKT_Tokens::has( 'user' ) ) {
             return self::error( 'VK не разрешает ключу сообщества загружать фото и видео. Чтобы прикладывать файлы с сервера, сохраните в настройках пользовательский токен VK ID с правами wall, photos, groups и video.' );
         }
         $attachments = array();

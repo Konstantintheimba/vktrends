@@ -66,7 +66,7 @@ final class VKT_Plugin {
     }
 
     public static function defaults() {
-        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true, 'publishing_review' => false, 'vkid_client_id' => 0, 'vkid_redirect' => '' );
+        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true, 'publishing_review' => false, 'vkid_client_id' => 0, 'vkid_redirect' => '', 'community_id' => 0 );
     }
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
@@ -106,6 +106,7 @@ final class VKT_Plugin {
             'token_scope' => $status['scope'] ?? '',
             'token_length' => $status['length'] ?? 0,
             'community' => VKT_Community::public_status(),
+            'tokens' => VKT_Tokens::status(),
             'vkid' => VKT_VKID::public_status(),
             'ai' => VKT_AI::public_status(),
             'proxy_host' => VKT_Links::proxy_host(),
@@ -268,7 +269,7 @@ final class VKT_Plugin {
                     if ( ! is_string( $data['token'] ) || ! preg_match( '/^[a-zA-Z0-9._\-]{20,2048}$/', trim( $data['token'] ) ) ) { return self::error( 'Введите Access token или целиком адрес из строки браузера после «Разрешить».' ); }
                     $kind = 'user' === ( $data['token_kind'] ?? '' ) ? 'user' : 'service';
                     if ( 'community' === VKT_API::detect_token_kind( $data['token'] ) ) {
-                        return self::error( 'Это ключ сообщества. Подключите его отдельно через VKT_COMMUNITY_ACCESS_TOKEN: общий токен используется для сбора или управления несколькими группами.' );
+                        return self::error( 'Это ключ сообщества — сохраните его в поле «Ключ сообщества», а не здесь.' );
                     }
                     $extra = array();
                     if ( 'user' === $kind ) {
@@ -302,6 +303,9 @@ final class VKT_Plugin {
                     $client_id = absint( $data['vkid_client_id'] );
                     if ( $client_id > 2147483647 ) { return self::error( 'ID приложения VK ID — это число из консоли разработчика.' ); }
                     $settings['vkid_client_id'] = $client_id;
+                }
+                if ( isset( $data['community_id'] ) ) {
+                    $settings['community_id'] = absint( $data['community_id'] );
                 }
                 if ( isset( $data['vkid_redirect'] ) ) {
                     $redirect = VKT_VKID::sanitize_redirect( $data['vkid_redirect'] );
@@ -414,6 +418,28 @@ final class VKT_Plugin {
                 return VKT_Community::check();
             case 'token_check':
                 return VKT_API::check_token();
+            case 'token_save': {
+                $slot = sanitize_key( $data['slot'] ?? '' );
+                $raw = is_string( $data['token'] ?? null ) ? trim( $data['token'] ) : '';
+                $extra = array();
+                // Адрес из браузера принимаем целиком: вырезать токен руками легко ошибиться.
+                if ( preg_match( '~[#?&]access_token=([a-zA-Z0-9._\-]{20,2048})~', $raw, $parsed ) ) {
+                    if ( preg_match( '~[#?&]expires_in=(\d{1,7})~', $raw, $lifetime ) ) {
+                        $extra['expires_in'] = (int) $lifetime[1];
+                    }
+                    $raw = $parsed[1];
+                }
+                foreach ( array( 'refresh_token', 'device_id', 'client_id', 'scope' ) as $field ) {
+                    if ( ! empty( $data[ $field ] ) && is_string( $data[ $field ] ) ) { $extra[ $field ] = trim( $data[ $field ] ); }
+                }
+                if ( ! empty( $data['expires_in'] ) ) { $extra['expires_in'] = absint( $data['expires_in'] ); }
+                $saved = VKT_Tokens::save( $slot, $raw, $extra );
+                return is_wp_error( $saved ) ? $saved : VKT_API::probe_slot( $slot );
+            }
+            case 'token_forget':
+                return VKT_Tokens::forget( sanitize_key( $data['slot'] ?? '' ) );
+            case 'token_probe':
+                return VKT_API::probe_slot( sanitize_key( $data['slot'] ?? '' ) );
             case 'vkid_start':
                 return VKT_VKID::start( $data['return_to'] ?? '' );
             case 'ai_text':

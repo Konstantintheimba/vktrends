@@ -311,6 +311,12 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-own-groups strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vkt-own-groups small { display: block; font-size: 9px; }
 .vkt-own-groups .vkt-button { min-height: 28px; padding: 4px 7px; font-size: 9px !important; }
+.vkt-token-cards { display: grid; gap: 14px; margin-bottom: 18px; }
+.vkt-token-card { border: 1px solid var(--vkt-line); border-radius: 10px; padding: 16px; background: #fbfcfe; }
+.vkt-token-card h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.vkt-token-card .vkt-panel-heading { align-items: flex-start; margin-bottom: 12px; }
+.vkt-token-card .vkt-info { margin: 10px 0; }
+.vkt-token-card form { margin-top: 12px; }
 .vkt-token-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: -6px 0 4px; }
 .vkt-token-preview code { background: #f4f7fc; border: 1px solid var(--vkt-line); border-radius: 6px; padding: 5px 9px; font-size: 12px; }
 .vkt-settings-sep { border: 0; border-top: 1px solid var(--vkt-line); margin: 26px 0 20px; }

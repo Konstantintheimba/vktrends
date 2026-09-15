@@ -207,18 +207,44 @@
         return heading('Журнал', 'Последние 100 запросов. Журнал хранится 30 дней.', button(`${icon('refresh')} Обновить`, 'reload')) +
             (state.logs.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Время</th><th>Метод</th><th>Откуда</th><th>Статус</th><th>Время ответа</th><th>Сообщение</th></tr></thead><tbody>${state.logs.map(l=>`<tr><td>${date(l.created_at)}</td><td><code>${esc(l.method)}</code></td><td>${({test:'Тест API',collector:'Сборщик',manual:'Вручную',search:'Поиск',publisher:'Автопостинг'})[l.context] || esc(l.context)}</td><td>${badge(l.status==='ok'?'Успешно':`Ошибка ${Number(l.code)||''}`,l.status==='ok'?'green':'red')}</td><td>${num(l.duration_ms)} мс</td><td>${esc(l.message)}</td></tr>`).join('')}</tbody></table></section>` : empty('Запросов ещё не было', 'Выполните тест API или найдите первое видео.', 'api','Открыть тест API'));
     }
+    const slotExtras = {
+        user: '<div class="vkt-form-row"><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="31536000" placeholder="86400"></label></div>',
+    };
+    function tokenReport(report) {
+        const rows = (report.checks || []).map(check => `<tr><td>${esc(check.label)}<small class="vkt-muted"><code>${esc(check.method)}</code></small></td><td>${badge(check.ok ? 'доступен' : 'отказ', check.ok ? 'green' : 'red')}</td><td>${check.code ? `код ${Number(check.code)}: ` : ''}${esc(check.message)}</td></tr>`).join('');
+        modal(`<h2>Проверка · ${esc(report.title || '')}</h2><p class="vkt-muted">Плагин вызвал методы VK этим ключом и показывает дословные ответы. Записи при этом не создаются.</p><div class="vkt-table-wrap"><table><thead><tr><th>Что проверяли</th><th>Итог</th><th>Ответ VK</th></tr></thead><tbody>${rows}</tbody></table></div>${report.ok ? '' : '<div class="vkt-info vkt-info-warning">Отказы остаются видны в карточке ключа, пока не будут исправлены.</div>'}`);
+    }
+    function tokenCard(slot) {
+        const life = slot.expires_in === null || slot.expires_in === undefined ? '' : ` · осталось ~${Math.round(slot.expires_in / 60)} мин.`;
+        const facts = slot.has_token
+            ? `<code>${esc(slot.preview)}</code> <span class="vkt-muted">${Number(slot.length) || 0} символов${life}${slot.scope ? ` · права: ${esc(slot.scope)}` : ''}${slot.refreshable ? ' · автообновление' : ''}</span>`
+            : '<span class="vkt-muted">Ключ не сохранён.</span>';
+        return `<section class="vkt-token-card">
+            <div class="vkt-panel-heading"><div><h3>${esc(slot.title)}</h3><p class="vkt-muted">${esc(slot.hint)}</p></div>${badge(slot.has_token ? 'Подключён' : 'Нет ключа', slot.has_token ? 'green' : '')}</div>
+            <div class="vkt-token-preview">${facts}</div>
+            ${slot.error ? `<div class="vkt-info vkt-info-warning">Последняя ошибка · ${date(slot.error.at)}<br>${esc(slot.error.message)}</div>` : ''}
+            ${slot.locked
+                ? `<p class="vkt-help">Задан константой <code>${esc(slot.constant)}</code> в wp-config.php — здесь не меняется.</p>`
+                : `<form data-form="token" class="vkt-form"><input type="hidden" name="slot" value="${esc(slot.slot)}">
+                    <label>Ключ или адрес из браузера<input type="password" name="token" autocomplete="new-password" maxlength="2048" placeholder="${slot.has_token ? 'Оставьте пустым, чтобы не менять' : 'Вставьте ключ'}"></label>
+                    ${slotExtras[slot.slot] || ''}
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить и проверить</button>${slot.has_token ? button('Проверить', 'token-probe', `data-slot="${esc(slot.slot)}"`) + button('Удалить', 'token-forget', `data-slot="${esc(slot.slot)}"`) : ''}</div>
+                </form>`}
+        </section>`;
+    }
     function settings() {
         const s = state.settings;
         const community = s.community || {};
         const ai = s.ai || {};
         const vkid = s.vkid || {};
+        const tokenSlots = s.tokens || [];
         const constantToken = s.token_source === 'wp-config.php';
         const currentKind = s.token_mode || 'service';
         const minutes = minutesLeft(s.token_expires_in);
         const expiryNote = minutes === null ? '' : s.token_refreshable ? ` · автообновление, осталось ~${minutes} мин.` : ` · без автообновления, осталось ~${minutes} мин.`;
         const modeNote = s.has_token ? `${modeLabel(s.token_mode)}${expiryNote}` : '';
         return heading('Настройки', 'Подключение к VK и параметры рабочего пространства.') +
-            `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Доступ к VK API</h2><form data-form="settings" class="vkt-form">
+            `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Доступ к VK API</h2><form data-form="settings" id="vkt-settings-form" class="vkt-form">
                 <div class="vkt-field-status">${badge(s.has_token?'Токен сохранён':'Не подключён',s.has_token?'green':'')}<span class="vkt-muted">${constantToken?'Задан в wp-config.php':'Хранится на сервере в зашифрованном виде'}${modeNote?` · ${modeNote}`:''}</span></div>
                 ${s.has_token?`<div class="vkt-token-preview"><code>${esc(s.token_preview||'')}</code><span class="vkt-muted">${Number(s.token_length)||0} символов · это то, что реально уходит в VK</span>${button('Проверить токен','token-check')}</div>${s.token_scope?`<p class="vkt-help">Права, выданные VK: <code>${esc(s.token_scope)}</code>. Для фото нужен <code>photos</code>, для публикации — <code>wall</code>.</p>`:''}`:''}
                 <label>Тип токена<select name="token_kind" ${constantToken?'disabled':''}><option value="service" ${currentKind==='service'?'selected':''}>Сервисный ключ приложения</option><option value="user" ${currentKind==='user'?'selected':''}>Пользовательский токен</option></select></label>
@@ -231,6 +257,11 @@
                 <label>Сервис рендеринга страниц<input name="proxy" autocomplete="off" maxlength="500" placeholder="${s.proxy_host?`Сейчас: ${esc(s.proxy_host)} · впишите новый адрес или очистите поле`:'https://api.example.com/?api_key=КЛЮЧ&url={url}'}"><small class="vkt-help">Пустое поле ничего не меняет, дефис очищает сохранённый адрес.</small></label>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить настройки</button>${s.has_token && !constantToken?button('Удалить токен','delete-token'):''}</div>
                 </form>
+                <hr class="vkt-settings-sep">
+                <h2>Ключи VK</h2>
+                <p class="vkt-muted">Каждый ключ живёт в своём слоте и используется для своей задачи. Ключи не заменяют друг друга: можно и нужно держать их одновременно.</p>
+                <div class="vkt-token-cards">${tokenSlots.map(tokenCard).join('')}</div>
+                <label>ID своего сообщества<input type="number" name="community_id" value="${Number(s.community?.group_id) || ''}" min="0" placeholder="Например, 241464933" form="vkt-settings-form"></label>
                 <hr class="vkt-settings-sep">
                 <h2>Пользовательский токен</h2>
                 <p class="vkt-muted">Единственный способ прикладывать фото и видео: ключ сообщества этого не умеет. Есть два пути — быстрый и с автообновлением.</p>
@@ -557,6 +588,21 @@
         if (command==='export-sources') { const list=state.sources.map(x=>x.value).join('\n'); modal(`<h2>Список источников</h2><p class="vkt-muted">Скопируйте и сохраните — этот же список можно вставить обратно через импорт.</p><textarea class="vkt-code-input" rows="12" readonly>${esc(list)}</textarea>`); return; }
         if (command==='add-source') { modal('<h2>Новый источник</h2><form data-form="source" class="vkt-form"><label>Тип<select name="kind"><option value="domain">Короткое имя сообщества</option><option value="owner">Числовой ID</option></select></label><label>Сообщество<input name="value" required maxlength="200" placeholder="team или -22822305"></label><p class="vkt-help">Короткое имя — часть адреса: для vk.com/team это team. Числовой ID сообщества пишется со знаком минус, ID пользователя — положительный.</p><button class="vkt-button vkt-primary">Сохранить источник</button></form>'); return; }
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
+        if (command==='token-probe' || command==='token-forget') {
+            el.disabled = true;
+            try {
+                if (command === 'token-forget') {
+                    if (!confirm('Удалить этот ключ из настроек?')) return;
+                    await act('token_forget', {slot: el.dataset.slot});
+                    toast('Ключ удалён.');
+                } else {
+                    tokenReport(await act('token_probe', {slot: el.dataset.slot}));
+                }
+                await load();
+            } catch (error) { toast(error.message, true); }
+            finally { el.disabled = false; }
+            return;
+        }
         if (command==='token-check') {
             el.disabled = true;
             try {
@@ -722,6 +768,13 @@
                     }
                     const started = await act('vkid_start', {return_to: location.href});
                     location.href = started.url;
+                    return;
+                }
+                case 'token': {
+                    if (!String(values.token || '').trim()) throw new Error('Вставьте ключ или адрес из браузера.');
+                    const report = await act('token_save', values);
+                    await load();
+                    tokenReport(report);
                     return;
                 }
                 case 'media-search': await mediaLibrary(values.search || ''); return;

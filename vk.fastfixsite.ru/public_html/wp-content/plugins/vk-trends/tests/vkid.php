@@ -28,6 +28,7 @@ class VKT_Plugin {
     public static function settings() { return array_merge( array( 'api_version' => '5.199', 'vkid_client_id' => 54770323 ), self::$extra ); }
 }
 class VKT_Store { public static function log() {} }
+class VKT_Tokens { public static function get( $slot ) { return array( 'access_token' => '' ); } }
 class VKT_API {
     public static array $saved = array();
     public static function save_token( $token, $kind = 'service', $extra = array() ) { self::$saved = compact( 'token', 'kind', 'extra' ); return true; }
@@ -89,8 +90,8 @@ $reflection = new ReflectionMethod( VKT_VKID::class, 'finish' );
 $assert( $reflection->isStatic(), 'Возврат обрабатывается статически, без состояния между запросами' );
 $source = file_get_contents( dirname( __DIR__ ) . '/includes/class-vkid.php' );
 $assert( str_contains( $source, "'scope' => (string) ( \$body['scope'] ?? '' )" ), 'Права из ответа VK ID передаются в сохранение токена' );
-$api = file_get_contents( dirname( __DIR__ ) . '/includes/class-api.php' );
-$assert( str_contains( $api, "\$payload['scope'] = preg_replace(" ), 'Права очищаются и сохраняются вместе с токеном' );
-$assert( str_contains( $api, "'scope' => (string) ( \$data['scope'] ?? '' )" ), 'Права видны в статусе для интерфейса' );
+$tokens = file_get_contents( dirname( __DIR__ ) . '/includes/class-tokens.php' );
+$assert( str_contains( $tokens, "'scope' => preg_replace(" ), 'Права очищаются и сохраняются вместе с ключом' );
+$assert( str_contains( $tokens, "'scope' => (string) \$entry['scope']" ), 'Права видны в статусе для интерфейса' );
 
 echo "All $checks offline VK ID checks passed.\n";
