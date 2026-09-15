@@ -32,7 +32,8 @@ $service = str_repeat( 'a', 40 );
 $user = 'vk1.a.' . str_repeat( 'b', 60 );
 $community = 'vk1.a.' . str_repeat( 'c', 60 );
 
-$assert( 3 === count( VKT_Tokens::definitions() ), 'Слотов ровно три: сервисный, пользовательский и сообщества' );
+$assert( 4 === count( VKT_Tokens::definitions() ), 'Слотов четыре: сервисный, пользовательский, защищённый ключ и сообщества' );
+$assert( isset( VKT_Tokens::definitions()['app_secret'] ), 'Защищённый ключ хранится тем же шифром, что и остальные' );
 $assert( ! VKT_Tokens::has( 'user' ), 'Пустое хранилище не выдаёт ключей' );
 
 // Ключи не вытесняют друг друга — это и было причиной поломки сбора данных.

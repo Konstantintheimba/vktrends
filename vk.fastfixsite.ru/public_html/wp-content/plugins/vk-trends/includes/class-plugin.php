@@ -66,7 +66,7 @@ final class VKT_Plugin {
     }
 
     public static function defaults() {
-        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true, 'publishing_review' => false, 'vkid_client_id' => 0, 'vkid_redirect' => '', 'community_id' => 0 );
+        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true, 'publishing_review' => false, 'vkid_client_id' => 0, 'vkid_redirect' => '', 'community_id' => 0, 'app_id' => 0 );
     }
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
@@ -107,6 +107,7 @@ final class VKT_Plugin {
             'token_length' => $status['length'] ?? 0,
             'community' => VKT_Community::public_status(),
             'tokens' => VKT_Tokens::status(),
+            'oauth' => VKT_OAuth::public_status(),
             'vkid' => VKT_VKID::public_status(),
             'ai' => VKT_AI::public_status(),
             'proxy_host' => VKT_Links::proxy_host(),
@@ -304,6 +305,9 @@ final class VKT_Plugin {
                     if ( $client_id > 2147483647 ) { return self::error( 'ID приложения VK ID — это число из консоли разработчика.' ); }
                     $settings['vkid_client_id'] = $client_id;
                 }
+                if ( isset( $data['app_id'] ) ) {
+                    $settings['app_id'] = absint( $data['app_id'] );
+                }
                 if ( isset( $data['community_id'] ) ) {
                     $settings['community_id'] = absint( $data['community_id'] );
                 }
@@ -438,6 +442,8 @@ final class VKT_Plugin {
             }
             case 'token_forget':
                 return VKT_Tokens::forget( sanitize_key( $data['slot'] ?? '' ) );
+            case 'oauth_exchange':
+                return VKT_OAuth::exchange( $data['code'] ?? '' );
             case 'token_probe':
                 return VKT_API::probe_slot( sanitize_key( $data['slot'] ?? '' ) );
             case 'vkid_start':

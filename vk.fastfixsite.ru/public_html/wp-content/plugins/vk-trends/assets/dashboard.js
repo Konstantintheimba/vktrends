@@ -238,6 +238,7 @@
         const ai = s.ai || {};
         const vkid = s.vkid || {};
         const tokenSlots = s.tokens || [];
+        const oauth = s.oauth || {};
         const constantToken = s.token_source === 'wp-config.php';
         const currentKind = s.token_mode || 'service';
         const minutes = minutesLeft(s.token_expires_in);
@@ -263,7 +264,21 @@
                 <div class="vkt-token-cards">${tokenSlots.map(tokenCard).join('')}</div>
                 <label>ID своего сообщества<input type="number" name="community_id" value="${Number(s.community?.group_id) || ''}" min="0" placeholder="Например, 241464933" form="vkt-settings-form"></label>
                 <hr class="vkt-settings-sep">
-                <h2>Пользовательский токен</h2>
+                <h2>Получить пользовательский токен · обмен кода</h2>
+                <p class="vkt-muted">Единственный способ, который работает с сервера: браузер получает одноразовый код, а меняет его на токен сам сервер защищённым ключом. Поэтому права классические (<code>${esc(oauth.scope || '')}</code>), а привязка к IP приходится на сервер, а не на ваш браузер.</p>
+                <form data-form="oauth" class="vkt-form">
+                    <div class="vkt-form-row">
+                        <label>ID приложения<input type="number" name="app_id" value="${Number(oauth.app_id) || ''}" min="1" placeholder="Например, 54770323"></label>
+                        <label>Адрес возврата приложения<input class="vkt-code-input" value="${esc(oauth.redirect || '')}" readonly></label>
+                    </div>
+                    <p class="vkt-help">Нужно приложение из <strong>dev.vk.ru</strong> (не из кабинета VK ID — тот отвечает <code>Security Error</code>). Защищённый ключ этого приложения сохраните в слоте «Защищённый ключ приложения» выше.</p>
+                    <div class="vkt-form-actions">${button(`${icon('arrow')} 1. Открыть страницу согласия`, 'oauth-open')}</div>
+                    <label>2. Адрес из браузера после «Разрешить»<input name="code" class="vkt-code-input" placeholder="https://oauth.vk.com/blank.html?code=…" autocomplete="off"></label>
+                    <p class="vkt-help">Код одноразовый и живёт около минуты — вставляйте сразу. Токен получит и сохранит сервер, в браузер он не попадёт.</p>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">3. Обменять код на токен</button></div>
+                </form>
+                <hr class="vkt-settings-sep">
+                <h2>Пользовательский токен · прочие способы</h2>
                 <p class="vkt-muted">Единственный способ прикладывать фото и видео: ключ сообщества этого не умеет. Есть два пути — быстрый и с автообновлением.</p>
                 <h3>Способ 1 · вставить токен вручную</h3>
                 <p class="vkt-muted">Работает с любым приложением, токен живёт около суток. Нажмите кнопку, разрешите доступ, затем скопируйте из браузера <strong>весь адрес целиком</strong> и вставьте его в поле «Access token» выше — плагин сам достанет токен и срок жизни и выберет нужный тип.</p>
@@ -617,6 +632,13 @@
             finally { el.disabled = false; }
             return;
         }
+        if (command==='oauth-open') {
+            const url = state.settings.oauth?.authorize_url;
+            if (!url) { toast('Сначала укажите ID приложения и сохраните настройки.', true); return; }
+            window.open(url, '_blank', 'noopener');
+            toast('Разрешите доступ, затем скопируйте адрес из браузера в поле ниже.');
+            return;
+        }
         if (command==='vkid-implicit') {
             const app = Number(state.settings.vkid?.client_id) || 0;
             if (!app) { toast('Сначала укажите ID приложения ниже и сохраните его.', true); return; }
@@ -768,6 +790,16 @@
                     }
                     const started = await act('vkid_start', {return_to: location.href});
                     location.href = started.url;
+                    return;
+                }
+                case 'oauth': {
+                    const appId = Number(values.app_id) || 0;
+                    if (!appId) throw new Error('Укажите ID приложения.');
+                    await act('settings', {app_id: appId});
+                    if (!String(values.code || '').trim()) { await load(); toast('ID приложения сохранён. Теперь нажмите «Открыть страницу согласия».'); return; }
+                    const report = await act('oauth_exchange', {code: values.code});
+                    await load();
+                    tokenReport(report);
                     return;
                 }
                 case 'token': {
