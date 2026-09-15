@@ -29,6 +29,7 @@ final class VKT_Publisher {
             'outbound_posts' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
                 message longtext NOT NULL,
                 attachments text NOT NULL,
+                media text NOT NULL,
                 signed tinyint unsigned NOT NULL DEFAULT 0,
                 close_comments tinyint unsigned NOT NULL DEFAULT 0,
                 origin varchar(20) NOT NULL DEFAULT 'manual',
@@ -47,6 +48,7 @@ final class VKT_Publisher {
                 attempts int unsigned NOT NULL DEFAULT 0,
                 available_at datetime NOT NULL,
                 vk_post_id bigint unsigned DEFAULT NULL,
+                media_attachments text NOT NULL,
                 guid varchar(64) NOT NULL,
                 error varchar(255) NOT NULL DEFAULT '',
                 published_at datetime DEFAULT NULL,
@@ -62,23 +64,124 @@ final class VKT_Publisher {
         return new WP_Error( 'vkt_publisher', $message, array( 'status' => $status ) );
     }
 
+    /**
+     * Собирает итоговую строку attachments для wall.post.
+     *
+     * Загруженные файлы идут первыми, ручные вложения следом, а внешняя ссылка
+     * по требованию VK остаётся единственной и последней.
+     */
+    private static function merge_attachments( $media, $manual ) {
+        $ids = array();
+        $link = '';
+        foreach ( array_merge( explode( ',', (string) $media ), explode( ',', (string) $manual ) ) as $item ) {
+            $item = trim( $item );
+            if ( '' === $item || in_array( $item, $ids, true ) ) {
+                continue;
+            }
+            if ( preg_match( '~^https?://~i', $item ) ) {
+                if ( '' !== $link && $link !== $item ) {
+                    return self::error( 'В записи допустима одна ссылка. Уберите ссылку из поля вложений или снимите локальный файл.' );
+                }
+                $link = $item;
+                continue;
+            }
+            $ids[] = $item;
+        }
+        if ( '' !== $link ) {
+            $ids[] = $link;
+        }
+        if ( count( $ids ) > 10 ) {
+            return self::error( 'В одной записи VK допускает не больше 10 вложений вместе с загруженными файлами.' );
+        }
+        return implode( ',', $ids );
+    }
+
+    /**
+     * Чем публиковать запись: ключом сообщества или пользовательским токеном.
+     *
+     * Фотографию загружает пользовательский токен, и принадлежит она группе.
+     * Публиковать её тем же токеном надёжнее: смешивать две учётные записи в
+     * одной записи VK не обязан принимать. Текст без вложений по-прежнему уходит
+     * ключом сообщества — этот путь уже проверен.
+     */
+    private static function use_community_key( $group_id, $media ) {
+        return VKT_Community::configured()
+            && absint( $group_id ) === absint( VKT_COMMUNITY_ID )
+            && '' === (string) $media;
+    }
+
+    /**
+     * Отдаёт вложения VK для локальных файлов задания.
+     *
+     * Результат сохраняется в самом задании: повторная попытка после сетевой
+     * ошибки не должна заново загружать те же файлы в сообщество.
+     */
+    private static function resolve_media( $delivery ) {
+        global $wpdb;
+        if ( '' === (string) $delivery['media'] ) {
+            return '';
+        }
+        if ( '' !== (string) $delivery['media_attachments'] ) {
+            return (string) $delivery['media_attachments'];
+        }
+        $attachments = VKT_Media::prepare_for_vk( explode( ',', (string) $delivery['media'] ), absint( $delivery['group_id'] ) );
+        if ( is_wp_error( $attachments ) ) {
+            return $attachments;
+        }
+        $attachments = (string) $attachments;
+        if ( '' !== $attachments ) {
+            $wpdb->update(
+                VKT_Store::table( 'outbound_deliveries' ),
+                array( 'media_attachments' => $attachments, 'updated_at' => gmdate( 'Y-m-d H:i:s' ) ),
+                array( 'id' => absint( $delivery['id'] ) )
+            );
+        }
+        return $attachments;
+    }
+
     /** Загружает все сообщества, где пользователь — администратор или редактор. */
     public static function sync_groups() {
         global $wpdb;
-        if ( 'user' !== VKT_API::mode() ) {
-            return self::error( 'Сначала сохраните пользовательский токен VK ID с правами wall и groups.' );
+        $items = array();
+        $total = 0;
+        if ( 'user' === VKT_API::mode() ) {
+            $result = VKT_API::publishing_request( 'groups.get', array(
+                'filter' => 'editor',
+                'extended' => 1,
+                'fields' => 'members_count,photo_200,screen_name',
+                'count' => 1000,
+            ) );
+            if ( is_wp_error( $result ) ) {
+                return $result;
+            }
+            $response = (array) ( $result['response'] ?? array() );
+            $items = (array) ( $response['items'] ?? array() );
+            $total = absint( $response['count'] ?? count( $items ) );
         }
-        $result = VKT_API::publishing_request( 'groups.get', array(
-            'filter' => 'editor',
-            'extended' => 1,
-            'fields' => 'members_count,photo_200,screen_name',
-            'count' => 1000,
-        ) );
-        if ( is_wp_error( $result ) ) {
-            return $result;
+        if ( VKT_Community::configured() ) {
+            $community = VKT_Community::check();
+            if ( is_wp_error( $community ) ) {
+                if ( ! $items ) {
+                    return $community;
+                }
+            } else {
+                $ids = array_map( static fn( $group ) => absint( $group['id'] ?? 0 ), $items );
+                if ( ! in_array( absint( $community['group_id'] ), $ids, true ) ) {
+                    $items[] = array(
+                        'id' => absint( $community['group_id'] ),
+                        'name' => $community['name'],
+                        'screen_name' => $community['screen_name'],
+                        'photo_200' => $community['photo'],
+                        'admin_level' => 3,
+                        'can_post' => in_array( 'wall', $community['permissions'], true ) ? 1 : 0,
+                    );
+                    ++$total;
+                }
+            }
         }
-        $response = (array) ( $result['response'] ?? array() );
-        $items = (array) ( $response['items'] ?? array() );
+        if ( ! $items ) {
+            return self::error( 'Настройте ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
+        }
         $table = VKT_Store::table( 'publishing_groups' );
         $now = gmdate( 'Y-m-d H:i:s' );
         $wpdb->query( 'START TRANSACTION' );
@@ -120,7 +223,7 @@ final class VKT_Publisher {
             $wpdb->query( 'ROLLBACK' );
             return self::error( $error->getMessage(), 500 );
         }
-        return array( 'synced' => $synced, 'total' => absint( $response['count'] ?? $synced ) );
+        return array( 'synced' => $synced, 'total' => max( $total, $synced ) );
     }
 
     public static function toggle_group( $id, $enabled ) {
@@ -155,6 +258,11 @@ final class VKT_Publisher {
                 if ( ! $url || ! wp_http_validate_url( $url ) || ++$links > 1 ) {
                     return self::error( 'Во вложениях допустима одна публичная ссылка http/https.' );
                 }
+                // VK строит из ссылки карточку и требует превью: прямой адрес
+                // файла её не даёт и отвечает «link_photo_sizing_rule».
+                if ( preg_match( '/\.(jpe?g|png|gif|webp|bmp|avif|svg|mp4|mov|webm|m4v)$/i', (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) {
+                    return self::error( 'Прямая ссылка на файл вложением не работает: VK делает из ссылки карточку и без превью отвечает «link_photo_sizing_rule. No photo given». Приложите файл через блок «Файлы с сервера» — для этого нужен пользовательский токен VK ID.' );
+                }
                 $result[] = $url;
             } elseif ( preg_match( '/^(photo|video|audio|doc|page|note|poll|album|market|market_album)-?[1-9]\d{0,18}_[1-9]\d{0,18}(?:_[a-zA-Z0-9_-]{1,255})?$/', $item, $match ) ) {
                 if ( 'audio' === $match[1] ) {
@@ -183,11 +291,10 @@ final class VKT_Publisher {
 
     public static function create( $data ) {
         global $wpdb;
-        if ( 'user' !== VKT_API::mode() ) {
-            return self::error( 'Для автопостинга нужен пользовательский токен VK ID с правами wall и groups.' );
+        if ( 'user' !== VKT_API::mode() && ! VKT_Community::configured() ) {
+            return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
-        // Будущий адаптер агентов может подготовить текст/вложения, но проходит
-        // через те же проверки и не может обойти ручное подтверждение.
+        // Будущий адаптер агентов проходит через те же проверки входных данных.
         $data = apply_filters( 'vkt_publisher_prepare_draft', $data );
         if ( ! is_array( $data ) ) {
             return self::error( 'Модуль подготовки вернул неверный формат записи.', 500 );
@@ -200,10 +307,24 @@ final class VKT_Publisher {
         if ( is_wp_error( $attachments ) ) {
             return $attachments;
         }
-        if ( '' === $message && '' === $attachments ) {
-            return self::error( 'Добавьте текст или вложение.' );
+        // Файлы с нашего сервера: храним ID вложений WordPress, а ID для VK
+        // получаем уже при отправке — он зависит от сообщества-адресата.
+        $media = VKT_Media::validate_ids( $data['media'] ?? array() );
+        if ( is_wp_error( $media ) ) {
+            return $media;
         }
-        if ( '' === $message && ! preg_match( '~(?:^|,)(?:photo|video)-?[1-9]\d{0,18}_[1-9]\d{0,18}(?:_[a-zA-Z0-9_-]{1,255})?(?:,|$)|https?://~i', $attachments ) ) {
+        // Отказ на этапе создания: иначе запись уходит в очередь и падает уже
+        // после публикации, а пользователь видит только код ошибки VK.
+        if ( $media && 'user' !== VKT_API::mode() ) {
+            return self::error( 'Файлы с сервера умеет публиковать только пользовательский токен VK ID: ключу сообщества VK запрещает загрузку фото и видео. Сохраните такой токен в настройках либо уберите файлы из записи.' );
+        }
+        if ( count( $media ) + count( array_filter( explode( ',', $attachments ) ) ) > 10 ) {
+            return self::error( 'В одной записи VK допускает не больше 10 вложений вместе с загруженными файлами.' );
+        }
+        if ( '' === $message && '' === $attachments && ! $media ) {
+            return self::error( 'Добавьте текст, файл или вложение.' );
+        }
+        if ( '' === $message && ! $media && ! preg_match( '~(?:^|,)(?:photo|video)-?[1-9]\d{0,18}_[1-9]\d{0,18}(?:_[a-zA-Z0-9_-]{1,255})?(?:,|$)|https?://~i', $attachments ) ) {
             return self::error( 'Запись без текста должна содержать фото, видео или внешнюю ссылку.' );
         }
         $group_ids = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $data['groups'] ?? array() ) ) ) ) );
@@ -228,20 +349,20 @@ final class VKT_Publisher {
             $scheduled_at = gmdate( 'Y-m-d H:i:s', max( time(), $timestamp ) );
         }
         $now = gmdate( 'Y-m-d H:i:s' );
-        // В ручном режиме все источники, включая будущих агентов, создают только
-        // черновик. Автоматический режим потребует отдельной серверной настройки.
-        $status = 'draft';
-        $delivery_status = 'waiting_approval';
+        $approval_required = ! empty( VKT_Plugin::settings()['publishing_review'] );
+        $status = $approval_required ? 'draft' : ( strtotime( $scheduled_at . ' UTC' ) > time() + 30 ? 'scheduled' : 'queued' );
+        $delivery_status = $approval_required ? 'waiting_approval' : 'pending';
         $origin = in_array( $data['origin'] ?? 'manual', array( 'manual', 'agents' ), true ) ? $data['origin'] : 'manual';
         $wpdb->query( 'START TRANSACTION' );
         try {
             $ok = $wpdb->insert( VKT_Store::table( 'outbound_posts' ), array(
                 'message' => $message,
                 'attachments' => $attachments,
+                'media' => implode( ',', $media ),
                 'signed' => empty( $data['signed'] ) ? 0 : 1,
                 'close_comments' => empty( $data['close_comments'] ) ? 0 : 1,
                 'origin' => $origin,
-                'editor_status' => 'awaiting',
+                'editor_status' => $approval_required ? 'awaiting' : 'approved',
                 'status' => $status,
                 'scheduled_at' => $scheduled_at,
                 'created_at' => $now,
@@ -269,8 +390,34 @@ final class VKT_Publisher {
             $wpdb->query( 'ROLLBACK' );
             return self::error( $error->getMessage(), 500 );
         }
-        do_action( 'vkt_publisher_draft_created', $post_id, $origin );
-        return array( 'id' => $post_id, 'status' => $status, 'processed' => 0 );
+        do_action( 'vkt_publisher_post_created', $post_id, $origin, $status );
+        if ( $approval_required ) {
+            do_action( 'vkt_publisher_draft_created', $post_id, $origin );
+        }
+        // Сразу обрабатываем именно только что созданную запись: старая очередь
+        // не должна отодвинуть публикацию, ради которой пользователь нажал кнопку.
+        $run = 'queued' === $status ? self::run_due( min( 10, count( $groups ) ), $post_id ) : array( 'processed' => 0 );
+        if ( is_wp_error( $run ) ) {
+            return array( 'id' => $post_id, 'status' => $status, 'warning' => $run->get_error_message(), 'processed' => 0 );
+        }
+        $current_status = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE id=%d', $post_id ) );
+        $response = array( 'id' => $post_id, 'status' => $current_status ?: $status, 'processed' => $run['processed'] );
+        if ( in_array( $response['status'], array( 'failed', 'partial' ), true ) ) {
+            $errors = (array) $wpdb->get_col( $wpdb->prepare(
+                "SELECT DISTINCT error FROM " . VKT_Store::table( 'outbound_deliveries' ) . " WHERE outbound_post_id=%d AND status='failed' AND error<>''",
+                $post_id
+            ) );
+            $response['warning'] = $errors ? implode( ' ', array_map( 'sanitize_text_field', $errors ) ) : 'VK не опубликовал запись. Подробности сохранены в истории.';
+        } elseif ( 'queued' === $response['status'] && ! empty( $run['processed'] ) ) {
+            $errors = (array) $wpdb->get_col( $wpdb->prepare(
+                "SELECT DISTINCT error FROM " . VKT_Store::table( 'outbound_deliveries' ) . " WHERE outbound_post_id=%d AND status='pending' AND error<>''",
+                $post_id
+            ) );
+            if ( $errors ) {
+                $response['warning'] = implode( ' ', array_map( 'sanitize_text_field', $errors ) ) . ' Плагин повторит отправку автоматически.';
+            }
+        }
+        return $response;
     }
 
     public static function state() {
@@ -285,13 +432,23 @@ final class VKT_Publisher {
                  FROM $deliveries_table d LEFT JOIN $groups_table g ON g.group_id=d.group_id WHERE d.outbound_post_id=%d ORDER BY d.id",
                 $post['id']
             ), ARRAY_A );
+            // Показываем сами файлы, а не их ID: удалённые из медиатеки отпадают.
+            $media = '' === (string) $post['media'] ? array() : VKT_Media::public_items( explode( ',', (string) $post['media'] ) );
+            $post['media_items'] = is_wp_error( $media ) ? array() : $media;
         }
         unset( $post );
+        $native_media = 'user' === VKT_API::mode();
         return array(
             'groups' => $groups,
             'posts' => $posts,
             'status' => array(
-                'token_ready' => 'user' === VKT_API::mode(),
+                'token_ready' => $native_media || VKT_Community::configured(),
+                'community_only' => ! $native_media && VKT_Community::configured(),
+                // Ключ сообщества не может загружать фото и видео: VK отвечает
+                // ошибкой 27, поэтому файл уходит публичной ссылкой.
+                'media_native' => $native_media,
+                'media_limit' => VKT_Media::MAX_ITEMS,
+                'ai' => VKT_AI::public_status(),
                 'next' => wp_next_scheduled( 'vkt_publish' ),
                 'last' => get_option( 'vkt_last_publish_run', null ),
             ),
@@ -337,7 +494,7 @@ final class VKT_Publisher {
         return array( 'ok' => true );
     }
 
-    /** Последний обязательный шлюз перед тем, как задания увидит cron. */
+    /** Необязательный шлюз проверки перед тем, как задания увидит cron. */
     public static function approve( $post_id ) {
         global $wpdb;
         $post_id = absint( $post_id );
@@ -364,7 +521,7 @@ final class VKT_Publisher {
             return self::error( 'Не удалось подтвердить публикацию.', 500 );
         }
         $wpdb->query( 'COMMIT' );
-        $run = 'queued' === $status ? self::run_due( 3 ) : array( 'processed' => 0 );
+        $run = 'queued' === $status ? self::run_due( 3, $post_id ) : array( 'processed' => 0 );
         if ( is_wp_error( $run ) ) {
             return array( 'id' => $post_id, 'status' => $status, 'warning' => $run->get_error_message() );
         }
@@ -384,10 +541,10 @@ final class VKT_Publisher {
         return array( 'ok' => true, 'deliveries' => (int) $result );
     }
 
-    public static function run_due( $limit = 2 ) {
+    public static function run_due( $limit = 2, $post_id = 0 ) {
         global $wpdb;
-        if ( 'user' !== VKT_API::mode() ) {
-            return self::error( 'Автопостинг ожидает пользовательский токен VK ID с правами wall и groups.' );
+        if ( 'user' !== VKT_API::mode() && ! VKT_Community::configured() ) {
+            return self::error( 'Автопостинг ожидает ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
         if ( ! VKT_Store::lock( 'publisher', 120 ) ) {
             return self::error( 'Публикация уже выполняется.', 409 );
@@ -396,13 +553,15 @@ final class VKT_Publisher {
         $deliveries = VKT_Store::table( 'outbound_deliveries' );
         $posts = VKT_Store::table( 'outbound_posts' );
         $groups = VKT_Store::table( 'publishing_groups' );
+        $post_id = absint( $post_id );
+        $post_filter = $post_id ? $wpdb->prepare( ' AND d.outbound_post_id=%d', $post_id ) : '';
         try {
             update_option( 'vkt_last_publish_run', gmdate( 'Y-m-d H:i:s' ), false );
             $wpdb->query( $wpdb->prepare( "UPDATE $deliveries SET status='pending' WHERE status='publishing' AND updated_at<%s", gmdate( 'Y-m-d H:i:s', time() - 180 ) ) );
             $rows = (array) $wpdb->get_results( $wpdb->prepare(
-                "SELECT d.*,p.message,p.attachments,p.signed,p.close_comments,g.id AS local_group_id,g.name,g.enabled,g.can_post
+                "SELECT d.*,p.message,p.attachments,p.media,p.signed,p.close_comments,g.id AS local_group_id,g.name,g.enabled,g.can_post
                  FROM $deliveries d JOIN $posts p ON p.id=d.outbound_post_id LEFT JOIN $groups g ON g.group_id=d.group_id
-                 WHERE d.status='pending' AND d.available_at<=%s ORDER BY d.available_at,d.id LIMIT %d",
+                 WHERE d.status='pending' AND d.available_at<=%s$post_filter ORDER BY d.available_at,d.id LIMIT %d",
                 gmdate( 'Y-m-d H:i:s' ), max( 1, min( 10, absint( $limit ) ) )
             ), ARRAY_A );
             foreach ( $rows as $index => $delivery ) {
@@ -411,9 +570,20 @@ final class VKT_Publisher {
                     continue;
                 }
                 $attempts = (int) $delivery['attempts'] + 1;
+                $attachments = $delivery['attachments'];
+                $result = null;
                 if ( ! $delivery['local_group_id'] || ! $delivery['enabled'] || ! $delivery['can_post'] ) {
                     $result = self::error( 'Сообщество выключено или право публикации отозвано.' );
                 } else {
+                    // ID вложения VK зависит от сообщества, поэтому файлы
+                    // загружаются на каждого адресата и кэшируются в задании.
+                    $media = self::resolve_media( $delivery );
+                    $attachments = is_wp_error( $media ) ? $media : self::merge_attachments( $media, $delivery['attachments'] );
+                    if ( is_wp_error( $attachments ) ) {
+                        $result = $attachments;
+                    }
+                }
+                if ( null === $result ) {
                     $params = array(
                         'owner_id' => -absint( $delivery['group_id'] ),
                         'from_group' => 1,
@@ -424,10 +594,15 @@ final class VKT_Publisher {
                     if ( '' !== $delivery['message'] ) {
                         $params['message'] = $delivery['message'];
                     }
-                    if ( '' !== $delivery['attachments'] ) {
-                        $params['attachments'] = $delivery['attachments'];
+                    if ( '' !== $attachments ) {
+                        $params['attachments'] = $attachments;
                     }
-                    $result = VKT_API::publishing_request( 'wall.post', $params );
+                    $result = self::use_community_key( $delivery['group_id'], $delivery['media'] )
+                        ? VKT_Community::publish( $params )
+                        : VKT_API::publishing_request( 'wall.post', $params );
+                    if ( ! is_wp_error( $result ) && ! absint( $result['response']['post_id'] ?? 0 ) ) {
+                        $result = self::error( 'VK не вернул ID опубликованной записи.', 502 );
+                    }
                 }
                 $changes = array( 'attempts' => $attempts, 'updated_at' => gmdate( 'Y-m-d H:i:s' ) );
                 if ( is_wp_error( $result ) ) {

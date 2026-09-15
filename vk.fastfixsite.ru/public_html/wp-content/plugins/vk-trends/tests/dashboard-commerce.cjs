@@ -9,18 +9,23 @@ const root = {querySelector: () => element, querySelectorAll: () => [], addEvent
 const communities = [{id: 1, kind: 'domain', value: 'first', title: 'Первое'}, {id: 2, kind: 'owner', value: '-2', title: 'Второе <script>alert(1)</script>'}];
 const state = {sources: communities, stats: {videos: 0, posts: 0}, settings: {has_token: false, paused: false}};
 const data = {posts: [], communities, summary: {recognized_posts: 0}, total: 0, pages: 1};
+const uploaded = {id: 42, type: 'image', name: 'promo.jpg', title: 'promo', size: 204800, url: 'https://example.test/promo.jpg', thumbnail: 'https://example.test/promo-medium.jpg'};
 const context = {
     window: {vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/'}, addEventListener() {}},
     document: {getElementById: () => root}, location: {hash: '#posts'}, URL, URLSearchParams, Intl, Date,
-    setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { return Object.entries(form.values); },
-    fetch: async url => { requests.push(new URL(url)); return {ok: true, json: async () => url.includes('/state?') ? state : data}; },
+    setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { if (form) return Object.entries(form.values); this.append = () => {}; },
+    fetch: async url => {
+        requests.push(new URL(url));
+        if (String(url).includes('media-upload')) return {ok: true, json: async () => uploaded};
+        return {ok: true, json: async () => String(url).includes('/state?') ? state : data};
+    },
 };
 const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8');
 // Replace only the initial async load with access to the real template functions.
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, setPublishing(value) {publishingData=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -46,8 +51,14 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
 
 (async () => {
     let submitted = false;
-    listeners.change({target: {matches: () => true, form: {requestSubmit() {submitted = true;}}}});
+    listeners.change({target: {matches: selector => selector.includes('posts-search'), form: {requestSubmit() {submitted = true;}}}});
     check(submitted, 'Changing the community submits the filter');
+    await listeners.change({target: {matches: selector => selector.includes('data-media-upload'), files: [{name: 'promo.jpg'}], value: 'promo.jpg', closest: () => null}});
+    check(context.window.testAPI.getMedia().length === 1 && context.window.testAPI.getMedia()[0].id === 42, 'Загруженный файл попадает в конструктор записи');
+    check(requests.some(url => url.pathname.endsWith('/media-upload')), 'Файл уходит отдельным multipart-маршрутом');
+    const chip = api.mediaChip(uploaded);
+    check(chip.includes('promo-medium.jpg') && chip.includes('200 КБ') && chip.includes('data-command="media-remove"'), 'Чип файла показывает превью, размер и кнопку удаления');
+    check(!api.mediaChip({...uploaded, thumbnail: 'javascript:alert(1)'}).includes('javascript:'), 'Небезопасный адрес превью не выводится');
     const form = {dataset: {form: 'posts-search'}, values: {search: 'лампа', sort: 'views', source: '2'}, querySelector: () => null};
     await listeners.submit({target: {closest: () => form}, preventDefault() {}});
     check(api.getSource() === 2, 'Selected community ID stored');
@@ -57,5 +68,52 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     const button = {dataset: {command: 'posts-filters-clear'}, disabled: false};
     await listeners.click({target: {closest: () => button}});
     check(api.getSource() === 0, 'Clear filters restores all communities');
+    // Раздел автопостинга целиком: ошибка в шаблоне ломает всю вкладку.
+    api.setPublishing({
+        groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: 'https://vk.test/g.jpg'}],
+        posts: [{id: 5, message: 'Текст', attachments: '', media_items: [uploaded], origin: 'manual', status: 'published', scheduled_at: '2026-09-14 04:00:00', deliveries: []}],
+        status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: true, text_model: 'grok-4.6', image_model: 'grok-imagine-image-2.0', video_model: 'grok-imagine-video-1.5', image_ratios: ['portrait'], video_ratios: ['story']}, next: 0, last: null},
+    });
+    state.settings.publishing_review = false;
+    const view = api.publishing();
+    check(view.includes('id="vkt-composer-media"') && view.includes('data-media-upload'), 'Конструктор показывает файлы и загрузку с компьютера');
+    check(view.includes('data-command="ai-text"') && view.includes('data-command="ai-image"') && view.includes('data-command="ai-video"'), 'Кнопки генерации доступны при настроенном ключе');
+    check(view.includes('promo-medium.jpg'), 'История показывает миниатюру приложенного файла');
+    // Ошибка доставки — протокол прошлой попытки, поэтому рядом всегда её время.
+    api.setPublishing({
+        groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: ''}],
+        posts: [{id: 6, message: 'Текст', attachments: '', media_items: [], origin: 'manual', status: 'failed', scheduled_at: '2026-09-14 04:00:00',
+            deliveries: [{id: 9, group_id: 987, status: 'failed', error: 'VK: авторизация не прошла.', updated_at: '2026-09-15 03:42:00', name: 'Моя группа'}]}],
+        status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: false}},
+    });
+    const failed = api.publishing();
+    check(failed.includes('VK: авторизация не прошла.') && failed.includes('попытка'), 'Рядом с ошибкой видно, когда была попытка');
+    // Ключ сообщества: VK запрещает медиа, поэтому блок файлов заменяется объяснением.
+    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: ''}], posts: [], status: {token_ready: true, community_only: true, media_native: false, media_limit: 10, ai: {configured: true, text_model: 'grok-4.6', image_model: 'i', video_model: 'v', image_ratios: ['portrait'], video_ratios: ['story']}}});
+    const communityOnly = api.publishing();
+    check(!communityOnly.includes('data-media-upload') && !communityOnly.includes('data-command="ai-image"'), 'Без пользовательского токена кнопки файлов и картинок не показываются');
+    check(communityOnly.includes('ошибкой 27') && communityOnly.includes('кодом 100'), 'Причина запрета названа конкретными кодами VK');
+    api.setPublishing({groups: [], posts: [], status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: false}}});
+    const plain = api.publishing();
+    check(!plain.includes('data-command="ai-image"'), 'Без ключа xAI кнопки генерации скрыты');
+    // Регрессия: при заданной константе VKT_ACCESS_TOKEN ID приложения всё равно
+    // должен сохраняться — иначе подключение VK ID не начать в принципе.
+    Object.assign(state.settings, {
+        has_token: true, token_mode: 'service', token_source: 'wp-config.php', token_expires_in: null,
+        token_refreshable: false, source_hours: 1, video_hours: 6, proxy_host: '',
+        community: {configured: false}, ai: {configured: true, text_model: 't', image_model: 'i', video_model: 'v'},
+        vkid: {configured: true, client_id: 54770323, locked: false, redirect_uri: 'https://example.test/wp-admin/admin-post.php?action=vkt_vkid', scope: 'wall photos groups video', has_secret: false, blocked_by_constant: true},
+    });
+    const blocked = api.settings();
+    check(blocked.includes('name="vkid_client_id"') && blocked.includes('value="54770323"'), 'Поле ID приложения показывает сохранённое значение');
+    // Слово disabled встречается в подсказке про выключенное приложение,
+    // поэтому смотрим именно на тег кнопки.
+    const vkidForm = blocked.slice(blocked.indexOf('data-form="vkid"'));
+    const vkidButton = vkidForm.slice(vkidForm.indexOf('<button'), vkidForm.indexOf('</button>'));
+    check(vkidButton.length > 0 && !vkidButton.includes('disabled'), 'Кнопка формы VK ID не блокируется константой — иначе ID не сохранить');
+    check(!vkidForm.slice(0, vkidForm.indexOf('</form>')).includes('input') || !/<input[^>]*\sdisabled/.test(vkidForm.slice(0, vkidForm.indexOf('</form>'))), 'Поле ID приложения остаётся доступным для ввода');
+    check(blocked.includes('Сохранить ID приложения'), 'Пока константа на месте, кнопка честно называется сохранением');
+    state.settings.vkid.blocked_by_constant = false;
+    check(api.settings().includes('Подключить VK ID'), 'Без константы кнопка запускает подключение');
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

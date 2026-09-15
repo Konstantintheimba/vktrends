@@ -59,6 +59,10 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( &$mo
     }
     // Страница магазина: возвращаем разметку товара либо антибот-заглушку.
     if ( ! str_starts_with( $url, 'https://api.vk.com/method/' ) ) {
+        if ( str_contains( $url, 'pu.vk.test' ) ) {
+            $seen[] = array( 'url' => $url, 'args' => $args );
+            return array( 'response' => array( 'code' => 200 ), 'body' => wp_json_encode( array( 'server' => 1234, 'photo' => '[{"photo":"x"}]', 'hash' => 'uploadhash' ) ) );
+        }
         if ( str_contains( $url, 'ozon.ru' ) ) {
             $seen[] = array( 'url' => $url, 'args' => $args );
             if ( 'guard' === $shop_mode ) {
@@ -97,6 +101,10 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( &$mo
         $body = array( 'response' => array( 'count' => 1, 'items' => array( array( 'id' => 987, 'name' => 'Моя тестовая группа', 'screen_name' => 'my_test_group', 'admin_level' => 3, 'can_post' => 1, 'photo_200' => 'https://vk.test/group.jpg' ) ) ) );
     } elseif ( 'wall.post' === $method ) {
         $body = array( 'response' => array( 'post_id' => 501 ) );
+    } elseif ( 'photos.getWallUploadServer' === $method ) {
+        $body = array( 'response' => array( 'upload_url' => 'https://pu.vk.test/upload.php?act=do_add' ) );
+    } elseif ( 'photos.saveWallPhoto' === $method ) {
+        $body = array( 'response' => array( array( 'id' => 777, 'owner_id' => -987, 'access_key' => 'accesskey1' ) ) );
     } else {
         $body = 'video.get' === $method
         ? array( 'response' => array( 'count' => 1, 'items' => array( $video ) ) )
@@ -300,6 +308,7 @@ $publishing_group = $wpdb->get_row( 'SELECT * FROM ' . VKT_Store::table( 'publis
 vkt_assert( 987 === (int) $publishing_group['group_id'] && 1 === (int) $publishing_group['can_post'], 'Managed community and write capability stored separately from sources' );
 vkt_assert( 'editor' === $seen[0]['args']['body']['filter'] && 'groups.get' === basename( $seen[0]['url'] ), 'Managed-community request uses the documented editor filter' );
 vkt_assert( is_wp_error( VKT_Publisher::create( array( 'groups' => array( $publishing_group['id'] ), 'attachments' => 'javascript:alert(1)' ) ) ), 'Unsafe publishing attachment rejected' );
+update_option( 'vkt_settings', array_merge( VKT_Plugin::settings(), array( 'publishing_review' => true ) ), false );
 $forced = vkt_action( 'publishing_create', array(
     'groups' => array( $publishing_group['id'] ),
     'message' => 'Попытка обойти ручную проверку',
@@ -315,13 +324,12 @@ $scheduled_delivery = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . VKT_Sto
 vkt_assert( 'waiting_approval' === $scheduled_delivery['status'], 'Cron cannot see an unapproved delivery' );
 $scheduled_approval = VKT_Publisher::approve( $scheduled['id'] );
 vkt_assert( ! is_wp_error( $scheduled_approval ) && 'scheduled' === $scheduled_approval['status'], 'Approved future publication enters the schedule' );
+update_option( 'vkt_settings', array_merge( VKT_Plugin::settings(), array( 'publishing_review' => false ) ), false );
 VKT_Store::unlock( 'api' );
 VKT_Store::unlock( 'publisher' );
 $seen = array();
 $published = VKT_Publisher::create( array( 'groups' => array( $publishing_group['id'] ), 'message' => 'Опубликовать сейчас', 'attachments' => 'photo-987_42', 'signed' => 1 ) );
-vkt_assert( ! is_wp_error( $published ) && 'draft' === $published['status'] && ! $seen, 'Immediate publication is still blocked by manual review' );
-$published = VKT_Publisher::approve( $published['id'] );
-vkt_assert( ! is_wp_error( $published ) && 1 === $published['processed'], 'Approved immediate publication processes its first delivery' );
+vkt_assert( ! is_wp_error( $published ) && 'published' === $published['status'] && 1 === $published['processed'], 'Default mode publishes immediately without manual review' );
 $delivery = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'outbound_deliveries' ) . ' WHERE outbound_post_id=%d', $published['id'] ), ARRAY_A );
 vkt_assert( 'published' === $delivery['status'] && 501 === (int) $delivery['vk_post_id'], 'VK post ID and successful per-group status stored' );
 $wall_post = array_values( array_filter( $seen, static fn( $entry ) => str_ends_with( $entry['url'], '/wall.post' ) ) )[0];
@@ -329,6 +337,34 @@ vkt_assert( -987 === (int) $wall_post['args']['body']['owner_id'] && 1 === (int)
 $publishing_state = VKT_Publisher::state();
 vkt_assert( isset( $publishing_state['posts'][0]['deliveries'] ), 'Publishing state exposes per-group results' );
 vkt_assert( ! str_contains( wp_json_encode( $publishing_state ), $delivery['guid'] ), 'Publishing state does not expose idempotency keys' );
+
+// Локальный файл: плагин сам загружает его в VK и подставляет ID вложения.
+vkt_assert( is_wp_error( VKT_Publisher::create( array( 'groups' => array( $publishing_group['id'] ), 'message' => 'Нет такого файла', 'media' => array( 99999999 ) ) ) ), 'Missing local file rejected before the queue' );
+$uploads = wp_upload_dir();
+$media_path = trailingslashit( $uploads['path'] ) . 'vkt-test-media.jpg';
+$image = imagecreatetruecolor( 12, 12 );
+imagejpeg( $image, $media_path );
+imagedestroy( $image );
+$attachment_id = wp_insert_attachment( array( 'post_mime_type' => 'image/jpeg', 'post_title' => 'Тестовый файл', 'post_status' => 'inherit' ), $media_path );
+require_once ABSPATH . 'wp-admin/includes/image.php';
+wp_update_attachment_metadata( $attachment_id, wp_generate_attachment_metadata( $attachment_id, $media_path ) );
+VKT_Store::unlock( 'api' );
+VKT_Store::unlock( 'publisher' );
+$seen = array();
+$with_media = VKT_Publisher::create( array( 'groups' => array( $publishing_group['id'] ), 'message' => 'Запись с файлом сайта', 'media' => array( $attachment_id ) ) );
+vkt_assert( ! is_wp_error( $with_media ) && 'published' === $with_media['status'], 'Post with a local file publishes without a manual VK attachment ID' );
+$media_methods = array_map( static fn( $entry ) => basename( parse_url( $entry['url'], PHP_URL_PATH ) ), $seen );
+vkt_assert( in_array( 'photos.getWallUploadServer', $media_methods, true ) && in_array( 'photos.saveWallPhoto', $media_methods, true ), 'Local file travels through the documented VK upload flow' );
+$upload_call = array_values( array_filter( $seen, static fn( $entry ) => str_contains( $entry['url'], 'pu.vk.test' ) ) )[0];
+vkt_assert( str_contains( (string) ( $upload_call['args']['headers']['Content-Type'] ?? '' ), 'multipart/form-data; boundary=' ), 'File body is sent as multipart/form-data' );
+$media_wall_post = array_values( array_filter( $seen, static fn( $entry ) => str_ends_with( $entry['url'], '/wall.post' ) ) )[0];
+vkt_assert( 'photo-987_777_accesskey1' === $media_wall_post['args']['body']['attachments'], 'Saved photo ID is substituted into wall.post automatically' );
+$media_delivery = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'outbound_deliveries' ) . ' WHERE outbound_post_id=%d', $with_media['id'] ), ARRAY_A );
+vkt_assert( 'photo-987_777_accesskey1' === $media_delivery['media_attachments'], 'Resolved attachment cached so a retry does not upload the file twice' );
+$media_state = VKT_Publisher::state();
+vkt_assert( $attachment_id === (int) ( $media_state['posts'][0]['media_items'][0]['id'] ?? 0 ), 'Publishing state shows the attached local file' );
+vkt_assert( ! isset( $media_state['posts'][0]['media_items'][0]['path'] ), 'Server paths are never exposed to the browser' );
+wp_delete_attachment( $attachment_id, true );
 
 // Точечный замер уже отслеживаемого ролика идёт через video.get, а не через переобход стены.
 $mock_mode = 'success';
@@ -389,6 +425,7 @@ vkt_assert( 0 === (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . VKT_Store::tab
 
 // Leave the isolated browser preview with genuine empty states.
 foreach ( array( 'videos', 'snapshots', 'posts', 'post_snapshots', 'post_products', 'shop_links', 'products', 'links', 'sources', 'jobs', 'logs', 'publishing_groups', 'outbound_posts', 'outbound_deliveries' ) as $table ) { $wpdb->query( 'TRUNCATE TABLE ' . VKT_Store::table( $table ) ); }
+if ( file_exists( $media_path ) ) { @unlink( $media_path ); }
 delete_option( 'vkt_token' );
 delete_option( 'vkt_last_run' );
 VKT_Store::unlock( 'api' );

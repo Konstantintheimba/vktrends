@@ -37,6 +37,12 @@ final class VKT_Plugin {
             add_menu_page( 'VK Trends', 'VK Trends', 'manage_options', 'vk-trends', static function () { require VKT_DIR . 'templates/app.php'; }, 'dashicons-chart-line', 3 );
         } );
         add_action( 'rest_api_init', array( self::class, 'routes' ) );
+        add_action( 'admin_post_nopriv_vkt_callback', array( 'VKT_Community', 'callback' ) );
+        add_action( 'admin_post_vkt_callback', array( 'VKT_Community', 'callback' ) );
+        // Возврат VK ID доступен только администратору: анонимной точки нет.
+        add_action( 'admin_post_vkt_vkid', array( 'VKT_VKID', 'finish' ) );
+        // Доверенный адрес возврата задаёт консоль VK, поэтому ловим код на любой своей странице.
+        add_action( 'template_redirect', array( 'VKT_VKID', 'maybe_capture' ) );
     }
 
     public static function activate() {
@@ -60,7 +66,7 @@ final class VKT_Plugin {
     }
 
     public static function defaults() {
-        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true );
+        return array( 'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true, 'publishing_review' => false, 'vkid_client_id' => 0, 'vkid_redirect' => '' );
     }
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
@@ -96,6 +102,12 @@ final class VKT_Plugin {
             'token_mode' => $status['mode'],
             'token_expires_in' => $status['expires_in'],
             'token_refreshable' => $status['refreshable'],
+            'token_preview' => $status['preview'] ?? '',
+            'token_scope' => $status['scope'] ?? '',
+            'token_length' => $status['length'] ?? 0,
+            'community' => VKT_Community::public_status(),
+            'vkid' => VKT_VKID::public_status(),
+            'ai' => VKT_AI::public_status(),
             'proxy_host' => VKT_Links::proxy_host(),
         ) );
     }
@@ -114,6 +126,7 @@ final class VKT_Plugin {
             'apiUrl' => get_permalink( (int) get_option( 'vkt_page_api' ) ),
             'homeUrl' => home_url( '/' ), 'adminUrl' => admin_url(),
             'user' => wp_get_current_user()->display_name,
+            'notice' => VKT_VKID::notice(),
             'methods' => VKT_API::methods(),
         ), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT ) . ';', 'before' );
     }
@@ -148,6 +161,24 @@ final class VKT_Plugin {
         } ) );
         register_rest_route( 'vk-trends/v1', '/publishing', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function () {
             $response = new WP_REST_Response( VKT_Publisher::state() );
+            $response->header( 'Cache-Control', 'no-store, private' );
+            return $response;
+        } ) );
+        // Медиатека WordPress как источник вложений: ID для VK плагин получает сам.
+        register_rest_route( 'vk-trends/v1', '/media', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function ( $r ) {
+            $response = new WP_REST_Response( array( 'items' => VKT_Media::library( absint( $r['limit'] ?? 24 ), sanitize_text_field( $r['search'] ?? '' ) ) ) );
+            $response->header( 'Cache-Control', 'no-store, private' );
+            return $response;
+        } ) );
+        // Загрузка идёт multipart/form-data, поэтому отдельно от /action.
+        register_rest_route( 'vk-trends/v1', '/media-upload', array( 'methods' => 'POST', 'permission_callback' => static function ( $request ) use ( $permission ) {
+            return current_user_can( 'upload_files' ) && $permission( $request );
+        }, 'callback' => static function () {
+            $item = VKT_Media::handle_upload();
+            if ( is_wp_error( $item ) ) {
+                return $item;
+            }
+            $response = new WP_REST_Response( $item );
             $response->header( 'Cache-Control', 'no-store, private' );
             return $response;
         } ) );
@@ -224,10 +255,20 @@ final class VKT_Plugin {
                     if ( defined( 'VKT_ACCESS_TOKEN' ) ) { return self::error( 'Токен задан в wp-config.php.' ); }
                     delete_option( 'vkt_token' );
                 } elseif ( ! empty( $data['token'] ) ) {
-                    if ( ! is_string( $data['token'] ) || ! preg_match( '/^[a-zA-Z0-9._\-]{20,2048}$/', trim( $data['token'] ) ) ) { return self::error( 'Введите только Access token, без URL, пробелов и HTML.' ); }
+                    // VK отдаёт токен во фрагменте адреса, а руками выцепить из него
+                    // нужный кусок легко ошибиться. Поэтому принимаем адрес целиком.
+                    $raw = is_string( $data['token'] ) ? trim( $data['token'] ) : '';
+                    if ( preg_match( '~[#?&]access_token=([a-zA-Z0-9._\-]{20,2048})~', $raw, $parsed ) ) {
+                        $data['token'] = $parsed[1];
+                        $data['token_kind'] = 'user';
+                        if ( empty( $data['expires_in'] ) && preg_match( '~[#?&]expires_in=(\d{1,7})~', $raw, $lifetime ) ) {
+                            $data['expires_in'] = (int) $lifetime[1];
+                        }
+                    }
+                    if ( ! is_string( $data['token'] ) || ! preg_match( '/^[a-zA-Z0-9._\-]{20,2048}$/', trim( $data['token'] ) ) ) { return self::error( 'Введите Access token или целиком адрес из строки браузера после «Разрешить».' ); }
                     $kind = 'user' === ( $data['token_kind'] ?? '' ) ? 'user' : 'service';
                     if ( 'community' === VKT_API::detect_token_kind( $data['token'] ) ) {
-                        return self::error( 'Это ключ сообщества. VK не разрешает использовать его для wall.post и загрузки фотографий на стену. Для автопостинга нужен пользовательский токен Standalone-приложения с правом wall.' );
+                        return self::error( 'Это ключ сообщества. Подключите его отдельно через VKT_COMMUNITY_ACCESS_TOKEN: общий токен используется для сбора или управления несколькими группами.' );
                     }
                     $extra = array();
                     if ( 'user' === $kind ) {
@@ -254,8 +295,18 @@ final class VKT_Plugin {
                     if ( isset( $data[ $key ] ) ) { $settings[ $key ] = self::snap_hours( (int) $data[ $key ] ); }
                 }
                 unset( $settings['interval'] );
-                foreach ( array( 'paused', 'homepage', 'posts', 'links' ) as $key ) {
+                foreach ( array( 'paused', 'homepage', 'posts', 'links', 'publishing_review' ) as $key ) {
                     if ( isset( $data[ $key ] ) ) { $settings[ $key ] = (bool) $data[ $key ]; }
+                }
+                if ( isset( $data['vkid_client_id'] ) ) {
+                    $client_id = absint( $data['vkid_client_id'] );
+                    if ( $client_id > 2147483647 ) { return self::error( 'ID приложения VK ID — это число из консоли разработчика.' ); }
+                    $settings['vkid_client_id'] = $client_id;
+                }
+                if ( isset( $data['vkid_redirect'] ) ) {
+                    $redirect = VKT_VKID::sanitize_redirect( $data['vkid_redirect'] );
+                    if ( is_wp_error( $redirect ) ) { return $redirect; }
+                    $settings['vkid_redirect'] = $redirect;
                 }
                 update_option( 'vkt_settings', $settings, false );
                 return self::public_settings();
@@ -359,12 +410,25 @@ final class VKT_Plugin {
                 return self::db_result( $wpdb->update( VKT_Store::table( 'sources' ), array( 'enabled' => empty( $data['enabled'] ) ? 0 : 1 ), array( 'id' => absint( $data['id'] ?? 0 ) ) ) );
             case 'publishing_sync':
                 return VKT_Publisher::sync_groups();
+            case 'community_check':
+                return VKT_Community::check();
+            case 'token_check':
+                return VKT_API::check_token();
+            case 'vkid_start':
+                return VKT_VKID::start( $data['return_to'] ?? '' );
+            case 'ai_text':
+                return VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '' );
+            case 'ai_image':
+                return VKT_AI::generate_image( $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' );
+            case 'ai_video_start':
+                return VKT_AI::start_video( $data['prompt'] ?? '', $data['ratio'] ?? 'story' );
+            case 'ai_video_status':
+                return VKT_AI::video_status( $data['request_id'] ?? '' );
             case 'publishing_group_toggle':
                 return VKT_Publisher::toggle_group( $data['id'] ?? 0, ! empty( $data['enabled'] ) );
             case 'publishing_create':
-                // Внешний REST-запрос всегда создаёт ручной черновик. Флаги
-                // клиента не могут обойти проверку перед отправкой в VK.
-                $data['approval_required'] = true;
+                // Режим проверки берётся только из серверной настройки.
+                unset( $data['approval_required'] );
                 $data['origin'] = 'manual';
                 return VKT_Publisher::create( $data );
             case 'publishing_run':

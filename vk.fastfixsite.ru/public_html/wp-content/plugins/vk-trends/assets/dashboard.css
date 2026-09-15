@@ -311,6 +311,38 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-own-groups strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vkt-own-groups small { display: block; font-size: 9px; }
 .vkt-own-groups .vkt-button { min-height: 28px; padding: 4px 7px; font-size: 9px !important; }
+.vkt-token-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: -6px 0 4px; }
+.vkt-token-preview code { background: #f4f7fc; border: 1px solid var(--vkt-line); border-radius: 6px; padding: 5px 9px; font-size: 12px; }
+.vkt-settings-sep { border: 0; border-top: 1px solid var(--vkt-line); margin: 26px 0 20px; }
+/* Конструктор записи: файлы с сервера и генерация. */
+.vkt-ai-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.vkt-ai-row .vkt-help { margin: 0; }
+.vkt-media { border: 1px solid var(--vkt-line); border-radius: 10px; padding: 14px; margin: 0; background: #fbfcfe; }
+.vkt-media legend { padding: 0 6px; color: #66758b; font-size: 12px; }
+.vkt-media-chips { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 12px; }
+.vkt-media-chips .vkt-muted { margin: 0; }
+.vkt-media-chip { position: relative; display: grid; grid-template-columns: 46px minmax(0,1fr); align-items: center; gap: 9px; border: 1px solid var(--vkt-line); border-radius: 9px; background: #fff; padding: 7px 30px 7px 7px; margin: 0; max-width: 260px; }
+.vkt-media-chip img, .vkt-media-kind { width: 46px; height: 46px; border-radius: 7px; object-fit: cover; background: #eaf1ff; }
+.vkt-media-kind { display: grid; place-items: center; color: #4d7fdc; }
+.vkt-media-chip figcaption { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vkt-media-chip strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vkt-media-chip small { font-size: 9px; color: var(--vkt-muted); }
+.vkt-media-remove { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--vkt-line); border-radius: 50%; background: #fff; color: #96a1b1; line-height: 1; cursor: pointer; }
+.vkt-media-remove:hover { color: #c0392b; border-color: #f0c4bd; }
+.vkt-media-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 9px; }
+.vkt-file { display: inline-flex !important; align-items: center; gap: 6px; cursor: pointer; }
+.vkt-file.is-busy { opacity: .55; pointer-events: none; }
+.vkt-media-library { display: grid; grid-template-columns: repeat(auto-fill,minmax(140px,1fr)); gap: 11px; margin-top: 16px; }
+.vkt-media-card { display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--vkt-line); border-radius: 10px; background: #fff; padding: 8px; cursor: pointer; text-align: left; }
+.vkt-media-card:hover { border-color: #8eb5f9; }
+.vkt-media-card img, .vkt-media-card .vkt-media-kind { width: 100%; height: 96px; border-radius: 7px; object-fit: cover; }
+.vkt-media-card span { display: flex; flex-direction: column; gap: 2px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vkt-media-card small { font-size: 9px; color: var(--vkt-muted); }
+.vkt-media-mini { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.vkt-media-mini img { width: 32px; height: 32px; border-radius: 5px; object-fit: cover; }
+.vkt-media-mini em { font-size: 9px; color: var(--vkt-muted); font-style: normal; }
+.vkt-form-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.vkt-form-inline label { flex: 1 1 220px; }
 .vkt-publishing-table td:first-child { min-width: 270px; max-width: 480px; white-space: normal; }
 .vkt-publishing-table td:nth-child(4) { min-width: 240px; white-space: normal; }
 .vkt-publishing-targets { display: flex; flex-direction: column; gap: 7px; }

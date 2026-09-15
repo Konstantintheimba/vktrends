@@ -116,6 +116,32 @@ final class VKT_Store {
                 $now
             ) );
         }
+        // С 0.11.2 публикация снова выполняется сразу по нажатию. На первом
+        // обновлении выключаем прежний обязательный шлюз и выпускаем только
+        // его ещё не отправленные черновики в очередь. Позже режим проверки
+        // можно снова включить явно в настройках.
+        if ( '' !== $installed_version && version_compare( $installed_version, '0.11.2', '<' ) ) {
+            $outbound_posts = self::table( 'outbound_posts' );
+            $deliveries = self::table( 'outbound_deliveries' );
+            $now = gmdate( 'Y-m-d H:i:s' );
+            $settings = VKT_Plugin::settings();
+            $settings['publishing_review'] = false;
+            update_option( 'vkt_settings', $settings, false );
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE $deliveries d INNER JOIN $outbound_posts p ON p.id=d.outbound_post_id
+                 SET d.status='pending',d.updated_at=%s
+                 WHERE d.status='waiting_approval' AND p.status='draft'",
+                $now
+            ) );
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE $outbound_posts p SET
+                    status=IF(scheduled_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 SECOND),'scheduled','queued'),
+                    editor_status='approved',updated_at=%s
+                 WHERE p.status='draft'
+                 AND EXISTS (SELECT 1 FROM $deliveries d WHERE d.outbound_post_id=p.id AND d.status='pending')",
+                $now
+            ) );
+        }
         update_option( 'vkt_db_version', VKT_VERSION, false );
     }
 

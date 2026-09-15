@@ -4,3 +4,11 @@ output/
 .playwright-cli/
 *.zip
 **/vk-trends/local-config.php
+
+# Конфиг сервера с ключами: в репозитории ему не место.
+vk.fastfixsite.ru/public_html/wp-config.php
+# Временные файлы ручных проверок API.
+*.tmp.html
+auth.html
+page.html
+body.html

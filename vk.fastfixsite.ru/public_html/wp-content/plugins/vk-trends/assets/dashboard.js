@@ -80,6 +80,8 @@
     let view = initial(), state = null, page = 1, localSearch = '', sort = 'velocity', searchResults = null, searchQuery = '', searchOffset = 0, searchShort = true, apiResult = null, apiMethod = 'wall.get', apiDraft = null, toastTimer, requestSequence = 0;
     // Витрина постов: своя пагинация, фильтры и режим отображения, независимые от роликов.
     let postsData = null, postsPage = 1, postsSearch = '', postsSort = 'velocity', postsSource = 0, postsMode = 'grid', postsFiltersOpen = false, postsFilters = {}, communitiesData = null, communitiesSort = 'views', publishingData = null;
+    // Файлы, выбранные в конструкторе записи: ID вложений WordPress, не VK.
+    let composerMedia = [], mediaLibraryItems = [], aiPrompt = '';
     function toast(message, error = false) {
         const el = $('#vkt-toast');
         el.textContent = message;
@@ -88,14 +90,16 @@
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => { el.hidden = true; }, error ? 9000 : 5000);
     }
-    async function request(path, data) {
-        // WordPress also supports plain permalinks: ?rest_route=/namespace/route.
+    // WordPress also supports plain permalinks: ?rest_route=/namespace/route.
+    function restUrl(path) {
         const url = new URL(config.rest);
         const [resource, query = ''] = path.split('?');
         if (url.searchParams.has('rest_route')) url.searchParams.set('rest_route', url.searchParams.get('rest_route') + resource);
         else url.pathname += resource;
         new URLSearchParams(query).forEach((value,key) => url.searchParams.set(key,value));
-        const response = await fetch(url.href, {method: data ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store', headers: {'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce}, ...(data ? {body: JSON.stringify(data)} : {})});
+        return url.href;
+    }
+    async function parse(response) {
         let payload;
         try { payload = await response.json(); } catch { throw new Error('Сервер вернул неожиданный ответ. Проверьте журнал PHP и доступность REST API.'); }
         if (!response.ok) {
@@ -104,6 +108,15 @@
             throw error;
         }
         return payload;
+    }
+    async function request(path, data) {
+        return parse(await fetch(restUrl(path), {method: data ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store', headers: {'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce}, ...(data ? {body: JSON.stringify(data)} : {})}));
+    }
+    // Файл уходит multipart/form-data, поэтому Content-Type ставит сам браузер.
+    async function upload(file) {
+        const body = new FormData();
+        body.append('file', file);
+        return parse(await fetch(restUrl('media-upload'), {method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: {'X-WP-Nonce': config.nonce}, body}));
     }
     const act = (action, values = {}) => request('action', {action, ...values});
     async function load(renderView = true) {
@@ -196,6 +209,9 @@
     }
     function settings() {
         const s = state.settings;
+        const community = s.community || {};
+        const ai = s.ai || {};
+        const vkid = s.vkid || {};
         const constantToken = s.token_source === 'wp-config.php';
         const currentKind = s.token_mode || 'service';
         const minutes = minutesLeft(s.token_expires_in);
@@ -204,16 +220,31 @@
         return heading('Настройки', 'Подключение к VK и параметры рабочего пространства.') +
             `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Доступ к VK API</h2><form data-form="settings" class="vkt-form">
                 <div class="vkt-field-status">${badge(s.has_token?'Токен сохранён':'Не подключён',s.has_token?'green':'')}<span class="vkt-muted">${constantToken?'Задан в wp-config.php':'Хранится на сервере в зашифрованном виде'}${modeNote?` · ${modeNote}`:''}</span></div>
+                ${s.has_token?`<div class="vkt-token-preview"><code>${esc(s.token_preview||'')}</code><span class="vkt-muted">${Number(s.token_length)||0} символов · это то, что реально уходит в VK</span>${button('Проверить токен','token-check')}</div>${s.token_scope?`<p class="vkt-help">Права, выданные VK: <code>${esc(s.token_scope)}</code>. Для фото нужен <code>photos</code>, для публикации — <code>wall</code>.</p>`:''}`:''}
                 <label>Тип токена<select name="token_kind" ${constantToken?'disabled':''}><option value="service" ${currentKind==='service'?'selected':''}>Сервисный ключ приложения</option><option value="user" ${currentKind==='user'?'selected':''}>Пользовательский токен</option></select></label>
-                <label>Access token<input type="password" name="token" autocomplete="new-password" placeholder="${s.has_token?'Оставьте пустым, чтобы сохранить текущий':'Вставьте Access token'}" ${constantToken?'disabled':''} maxlength="2048"></label>
+                <label>Access token<input type="password" name="token" autocomplete="new-password" placeholder="${s.has_token?'Оставьте пустым, чтобы сохранить текущий':'Токен или весь адрес из браузера'}" ${constantToken?'disabled':''} maxlength="2048"></label><small class="vkt-help">Можно вставить целиком адрес вида <code>https://oauth.vk.com/blank.html#access_token=…&amp;expires_in=86400</code> — токен, срок жизни и тип определятся сами.</small>
                 <fieldset id="vkt-user-token-fields" class="vkt-form-row" ${constantToken || currentKind!=='user'?'hidden':''}><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="86400" placeholder="Например, 86400"></label></fieldset>
-                <p class="vkt-help">Для автообновления укажите refresh_token, device_id и client_id полным комплектом. Токен Standalone/Implicit можно сохранить без них, но после истечения его придётся заменить вручную. Для автопостинга VK требует пользовательский токен с wall и groups; право wall выдаётся приложению отдельно. Ключ из раздела сообщества «Работа с API → Ключи доступа» не подходит и будет отклонён при сохранении. Секреты не возвращаются в браузер.</p>
+                <p class="vkt-help">Для автообновления укажите refresh_token, device_id и client_id полным комплектом. Токен Standalone/Implicit можно сохранить без них, но после истечения его придётся заменить вручную. Пользовательский токен с wall и groups нужен для управления несколькими группами. Ключ отдельного сообщества подключается серверной константой и публикует только на стене своей группы. Секреты не возвращаются в браузер.</p>
                 <div class="vkt-form-row"><label>Версия API<input name="api_version" value="${esc(s.api_version)}" required pattern="5\\.[0-9]{1,3}"></label></div>
                 <div class="vkt-form-row"><label>Обход сообществ<select name="source_hours">${hourOptions(s.source_hours)}</select><small class="vkt-help">Посты и видео со стены.</small></label><label>Замеры роликов<select name="video_hours">${hourOptions(s.video_hours)}</select><small class="vkt-help">Точечное обновление счётчиков.</small></label></div>
-                <label class="vkt-check"><input type="checkbox" name="homepage" ${s.homepage?'checked':''}>Показывать дашборд на главной</label><label class="vkt-check"><input type="checkbox" name="paused" ${s.paused?'checked':''}>Пауза автоматического сбора</label><label class="vkt-check"><input type="checkbox" name="posts" ${s.posts?'checked':''}>Сохранять посты сообществ при обходе стены</label><label class="vkt-check"><input type="checkbox" name="links" ${s.links?'checked':''}>Читать страницы товаров по ссылкам известных магазинов</label>
+                <label class="vkt-check"><input type="checkbox" name="homepage" ${s.homepage?'checked':''}>Показывать дашборд на главной</label><label class="vkt-check"><input type="checkbox" name="paused" ${s.paused?'checked':''}>Пауза автоматического сбора</label><label class="vkt-check"><input type="checkbox" name="posts" ${s.posts?'checked':''}>Сохранять посты сообществ при обходе стены</label><label class="vkt-check"><input type="checkbox" name="links" ${s.links?'checked':''}>Читать страницы товаров по ссылкам известных магазинов</label><label class="vkt-check"><input type="checkbox" name="publishing_review" ${s.publishing_review?'checked':''}>Требовать ручную проверку публикаций</label>
                 <label>Сервис рендеринга страниц<input name="proxy" autocomplete="off" maxlength="500" placeholder="${s.proxy_host?`Сейчас: ${esc(s.proxy_host)} · впишите новый адрес или очистите поле`:'https://api.example.com/?api_key=КЛЮЧ&url={url}'}"><small class="vkt-help">Пустое поле ничего не меняет, дефис очищает сохранённый адрес.</small></label>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить настройки</button>${s.has_token && !constantToken?button('Удалить токен','delete-token'):''}</div>
-            </form></section><aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Доступ только для вас</h2><p>Главная и API-страница открываются после входа в WordPress с правами администратора.</p><hr><h3>Публикация</h3><p>Ключ сообщества предназначен для Callback API, Long Poll и поддерживаемых методов управления, но не для создания записей. Для wall.post нужен токен пользователя Standalone-приложения и отдельно выданное право wall. Перед отправкой каждый пост остаётся черновиком до ручного подтверждения.</p><a href="https://dev.vk.com/ru/method/wall.post" target="_blank" rel="noopener noreferrer">wall.post в документации VK ↗</a><hr><p>Для роликов добавьте право video, для списка своих групп — groups.</p></aside></div>`;
+                </form>
+                <hr class="vkt-settings-sep">
+                <h2>Пользовательский токен</h2>
+                <p class="vkt-muted">Единственный способ прикладывать фото и видео: ключ сообщества этого не умеет. Есть два пути — быстрый и с автообновлением.</p>
+                <h3>Способ 1 · вставить токен вручную</h3>
+                <p class="vkt-muted">Работает с любым приложением, токен живёт около суток. Нажмите кнопку, разрешите доступ, затем скопируйте из браузера <strong>весь адрес целиком</strong> и вставьте его в поле «Access token» выше — плагин сам достанет токен и срок жизни и выберет нужный тип.</p>
+                <div class="vkt-form-actions">${button(`${icon('arrow')} Открыть страницу VK`, 'vkid-implicit')}</div>
+                <h3>Способ 2 · VK ID с автообновлением</h3>
+                ${vkid.blocked_by_constant ? '<div class="vkt-info vkt-info-warning">В <code>wp-config.php</code> задан <code>VKT_ACCESS_TOKEN</code>. Эта константа всегда трактуется как сервисный ключ и имеет приоритет над настройками, поэтому пользовательский токен сохранить не получится. Удалите или закомментируйте строку и обновите страницу.</div>' : ''}
+                <form data-form="vkid" class="vkt-form">
+                <label>ID приложения VK ID<input type="number" name="vkid_client_id" value="${Number(vkid.client_id) || ''}" min="1" step="1" placeholder="Например, 54770323" ${vkid.locked ? 'disabled' : ''}></label>
+                <label>Доверенный redirect URI<input class="vkt-code-input" name="vkid_redirect" value="${esc(vkid.redirect_uri || '')}" spellcheck="false"></label>
+                <p class="vkt-help">Адрес должен быть заранее прописан в приложении как доверенный. <strong>У приложений типа VK Mini App такого раздела нет</strong> — VK отвечает <code>redirect_uri is incorrect</code>, и тогда подходит только способ 1. Возврат плагин опознаёт по своему <code>state</code>, поэтому годится любая страница сайта. Запрашиваемые права: <code>${esc(vkid.scope || '')}</code>.</p>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('lock')} ${vkid.blocked_by_constant ? 'Сохранить ID приложения' : 'Подключить VK ID'}</button></div>
+                </form></section><aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Доступ только для вас</h2><p>Главная и API-страница открываются после входа в WordPress с правами администратора.</p><hr><h3>Тестовое сообщество</h3>${community.configured ? `<p>Настроен отдельный ключ сообщества <strong>#${Number(community.group_id)}</strong>. Он не возвращается в браузер.</p>${community.callback_configured ? `<label>Адрес Callback API<input class="vkt-code-input" value="${esc(community.callback_url)}" readonly></label><p class="vkt-help">Укажите этот адрес в настройках Callback API и нажмите «Подтвердить» в VK.</p>` : '<p class="vkt-muted">Данные Callback API не настроены.</p>'}${button('Проверить ключ и права', 'community-check')}` : '<p class="vkt-muted">Отдельный ключ сообщества не настроен.</p>'}<hr><h3>Генерация xAI</h3>${ai.configured ? `<p>Ключ задан в wp-config.php и в браузер не возвращается. Модели: <code>${esc(ai.text_model)}</code>, <code>${esc(ai.image_model)}</code>, <code>${esc(ai.video_model)}</code>. Кнопки генерации доступны в конструкторе записи.</p>` : '<p class="vkt-muted">Константа <code>VKT_XAI_API_KEY</code> не задана — кнопки генерации скрыты.</p>'}<hr><h3>Публикация</h3><p>Проверено живым API: ключ сообщества с правом wall публикует только на стене этой же группы. Для нескольких управляемых групп нужен пользовательский токен. Загрузку фото и видео VK разрешает только пользовательскому токену — ключ сообщества отвечает ошибкой 27, поэтому файл уходит публичной ссылкой. По умолчанию запись без даты отправляется сразу; ручную проверку можно отдельно включить слева.</p><a href="https://dev.vk.com/ru/method/wall.post" target="_blank" rel="noopener noreferrer">wall.post в документации VK ↗</a><hr><p>Для роликов добавьте право video, для списка своих групп — groups.</p></aside></div>`;
     }
     // ——— Посты сообществ ———
     const postUrl = post => `https://vk.com/wall${Number(post.owner_id)}_${Number(post.post_id)}`;
@@ -317,6 +348,63 @@
                 : empty('Сообществ пока нет', 'Добавьте источники — сводка появится после первого обхода стен.', 'sources', 'Добавить источники'));
     }
     const publishingStatuses = {draft: 'Ожидает проверки', waiting_approval: 'Ожидает проверки', scheduled: 'Запланировано', queued: 'В очереди', publishing: 'Публикуется', pending: 'В очереди', published: 'Опубликовано', partial: 'Частично', failed: 'Ошибка', cancelled: 'Отменено'};
+    const fileSize = bytes => {
+        const n = Number(bytes) || 0;
+        return n >= 1048576 ? decimal(n / 1048576, 1) + ' МБ' : Math.max(1, Math.round(n / 1024)) + ' КБ';
+    };
+    const mediaChip = item => `<figure class="vkt-media-chip">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<figcaption><strong>${esc(item.title || item.name)}</strong><small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></figcaption><button type="button" class="vkt-media-remove" data-command="media-remove" data-id="${Number(item.id)}" aria-label="Убрать файл">×</button></figure>`;
+    const composerMediaHtml = () => composerMedia.length
+        ? composerMedia.map(mediaChip).join('')
+        : '<p class="vkt-muted">Файлы не выбраны. Загрузите с компьютера, возьмите из медиатеки или сгенерируйте.</p>';
+    // Чипы обновляем точечно: перерисовка раздела стёрла бы набранный текст и выбранные группы.
+    function renderComposerMedia() {
+        const box = $('#vkt-composer-media');
+        if (box) box.innerHTML = composerMediaHtml();
+    }
+    function addComposerMedia(item) {
+        if (!item || !item.id) return false;
+        const limit = Number(publishingData?.status?.media_limit) || 10;
+        if (composerMedia.some(media => Number(media.id) === Number(item.id))) { toast('Этот файл уже выбран.'); return false; }
+        if (composerMedia.length >= limit) { toast(`VK принимает не больше ${limit} вложений в одной записи.`, true); return false; }
+        composerMedia.push(item);
+        renderComposerMedia();
+        return true;
+    }
+    async function mediaLibrary(search = '') {
+        modal(`<h2>Медиатека</h2><p class="vkt-muted">Загружаем файлы…</p>`);
+        const items = (await request(`media?limit=48&search=${encodeURIComponent(search)}`)).items || [];
+        const grid = items.length
+            ? `<div class="vkt-media-library">${items.map(item => `<button type="button" class="vkt-media-card" data-command="media-pick" data-id="${Number(item.id)}">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<span>${esc(item.title || item.name)}<small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></span></button>`).join('')}</div>`
+            : `<p class="vkt-muted">${search ? 'По этому запросу ничего нет.' : 'В медиатеке пока нет изображений и MP4-видео.'}</p>`;
+        modal(`<h2>Медиатека</h2><p class="vkt-muted">Изображения и MP4-видео сайта. Плагин сам передаст файл в VK — ID вложения искать не нужно.</p><form data-form="media-search" class="vkt-form vkt-form-inline"><label>Поиск<input name="search" value="${esc(search)}" placeholder="Название файла"></label><button class="vkt-button">${icon('search')} Найти</button></form>${grid}`);
+        mediaLibraryItems = items;
+    }
+    const ratioLabels = {portrait: 'Вертикально 3:4', square: 'Квадрат 1:1', landscape: 'Горизонтально 16:9', story: 'История 9:16'};
+    const ratioOptions = list => (list || []).map(value => `<option value="${esc(value)}">${esc(ratioLabels[value] || value)}</option>`).join('');
+    function aiDialog(kind) {
+        const ai = publishingData?.status?.ai || {};
+        if (!ai.configured) { toast('Ключ xAI не задан в wp-config.php.', true); return; }
+        const titles = {text: 'Текст записи', image: 'Изображение', video: 'Видео'};
+        const hints = {
+            text: 'Опишите, о чём пост. Уже набранный текст уйдёт как черновик для доработки.',
+            image: 'Опишите кадр. Готовый файл попадёт в медиатеку сайта и сразу прикрепится к записи.',
+            video: 'Опишите сцену. Ролик длится 6 секунд и генерируется 1–3 минуты.',
+        };
+        const models = {text: ai.text_model, image: ai.image_model, video: ai.video_model};
+        const ratios = kind === 'image' ? ai.image_ratios : kind === 'video' ? ai.video_ratios : null;
+        modal(`<h2>Генерация · ${titles[kind]}</h2><p class="vkt-muted">${hints[kind]} Модель: <code>${esc(models[kind] || '')}</code>.</p><form data-form="ai-${kind}" class="vkt-form"><label>Что нужно сделать<textarea name="prompt" rows="5" required minlength="3" maxlength="5000" placeholder="Например: анонс распродажи осенней коллекции">${esc(aiPrompt)}</textarea></label>${ratios ? `<label>Формат кадра<select name="ratio">${ratioOptions(ratios)}</select></label>` : ''}<div id="vkt-ai-progress" class="vkt-help" hidden></div><button class="vkt-button vkt-primary">${icon('fire')} Сгенерировать</button></form>`);
+    }
+    // Видео у xAI готовится асинхронно: запускаем задачу и опрашиваем её статус.
+    async function awaitVideo(requestId) {
+        const progress = $('#vkt-ai-progress');
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 4000 : 8000));
+            const status = await act('ai_video_status', {request_id: requestId});
+            if (status.status === 'done') return status.media;
+            if (progress) { progress.hidden = false; progress.textContent = `Готовность ролика: ${Number(status.progress) || 0}%. Не закрывайте окно.`; }
+        }
+        throw new Error('Ролик готовится дольше обычного. Откройте генерацию ещё раз через минуту — результат подхватится по тому же заданию.');
+    }
     const publishingBadge = status => badge(publishingStatuses[status] || esc(status), status === 'published' ? 'green' : status === 'failed' || status === 'partial' ? 'red' : '');
     function publishing() {
         if (!publishingData) return heading('Автопостинг', 'Загружаем свои сообщества и очередь публикаций…') + '<div class="vkt-loading">Загружаем…</div>';
@@ -324,22 +412,25 @@
         const enabled = groups.filter(group => Number(group.enabled) && Number(group.can_post));
         const posts = publishingData.posts || [];
         const totals = posts.reduce((result, post) => { result[post.status] = (result[post.status] || 0) + 1; return result; }, {});
+        const aiReady = !!publishingData.status?.ai?.configured;
+        const nativeMedia = !!publishingData.status?.media_native;
         const groupChoices = enabled.map(group => `<label class="vkt-publishing-group"><input type="checkbox" name="groups" value="${Number(group.id)}"><span>${safeUrl(group.photo || '') ? `<img src="${safeUrl(group.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<i>${esc(String(group.name || group.group_id).slice(0, 1))}</i>`}<strong>${esc(group.name || `club${group.group_id}`)}</strong><small>${esc(group.screen_name || `club${group.group_id}`)}</small></span></label>`).join('');
         const rows = posts.map(post => {
             const deliveries = post.deliveries || [];
             const targets = deliveries.map(delivery => {
                 const title = esc(delivery.name || delivery.screen_name || `club${delivery.group_id}`);
                 const link = Number(delivery.vk_post_id) ? `https://vk.com/wall-${Number(delivery.group_id)}_${Number(delivery.vk_post_id)}` : '';
-                return `<span class="vkt-publishing-target">${link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${title} ↗</a>` : title} ${publishingBadge(delivery.status)}${delivery.error ? `<small>${esc(delivery.error)}</small>` : ''}</span>`;
+                return `<span class="vkt-publishing-target">${link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${title} ↗</a>` : title} ${publishingBadge(delivery.status)}${delivery.error ? `<small>${esc(delivery.error)}${delivery.updated_at ? ` · попытка ${date(delivery.updated_at)}` : ''}</small>` : ''}</span>`;
             }).join('');
             const cancellable = deliveries.some(delivery => ['pending', 'waiting_approval'].includes(delivery.status));
             const retryable = deliveries.some(delivery => delivery.status === 'failed');
-            return `<tr><td><strong>${esc(post.message ? String(post.message).slice(0, 130) : 'Публикация с вложением')}</strong>${post.attachments ? `<small class="vkt-muted">${esc(post.attachments)}</small>` : ''}<small class="vkt-muted">${post.origin === 'agents' ? 'Подготовлено агентами' : 'Создано вручную'}</small></td><td>${date(post.scheduled_at)}</td><td>${publishingBadge(post.status)}</td><td><div class="vkt-publishing-targets">${targets}</div></td><td class="vkt-table-actions">${post.status === 'draft' ? button('Проверить', 'publishing-review', `data-id="${Number(post.id)}"`) : ''}${retryable ? button('Повторить', 'publishing-retry', `data-id="${Number(post.id)}"`) : ''}${cancellable ? button('Отменить', 'publishing-cancel', `data-id="${Number(post.id)}"`) : ''}</td></tr>`;
+            return `<tr><td><strong>${esc(post.message ? String(post.message).slice(0, 130) : 'Публикация с вложением')}</strong>${post.attachments ? `<small class="vkt-muted">${esc(post.attachments)}</small>` : ''}${(post.media_items || []).length ? `<span class="vkt-media-mini">${post.media_items.map(item => safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="${esc(item.name)}" loading="lazy">` : `<em>${esc(item.name)}</em>`).join('')}</span>` : ''}<small class="vkt-muted">${post.origin === 'agents' ? 'Подготовлено агентами' : 'Создано вручную'}</small></td><td>${date(post.scheduled_at)}</td><td>${publishingBadge(post.status)}</td><td><div class="vkt-publishing-targets">${targets}</div></td><td class="vkt-table-actions">${post.status === 'draft' ? button('Проверить', 'publishing-review', `data-id="${Number(post.id)}"`) : ''}${retryable ? button('Повторить', 'publishing-retry', `data-id="${Number(post.id)}"`) : ''}${cancellable ? button('Отменить', 'publishing-cancel', `data-id="${Number(post.id)}"`) : ''}</td></tr>`;
         }).join('');
         return heading('Автопостинг', 'Создавайте записи и публикуйте их сразу или по расписанию в несколько своих групп.', button(`${icon('refresh')} Обновить мои группы`, 'publishing-sync', '', true) + button('Запустить очередь', 'publishing-run')) +
             (!publishingData.status.token_ready ? '<div class="vkt-info vkt-info-warning">Для публикации сохраните в настройках пользовательский токен VK ID с разрешениями <code>wall</code> и <code>groups</code>. Сервисный ключ умеет только читать стены.</div>' : '') +
-            `<div class="vkt-stats">${stat('Своих групп', num(enabled.length), 'Включены и доступны для записи', 'people')}${stat('На проверке', num(totals.draft || 0), 'Без подтверждения отправка невозможна', 'check', 'purple')}${stat('Опубликовано', num(totals.published || 0), 'Полностью во все адресаты', 'send', 'green')}${stat('С ошибкой', num((totals.failed || 0) + (totals.partial || 0)), 'Можно повторить только неудачные адресаты', 'list', 'orange')}</div>` +
-            `<div class="vkt-publishing-layout"><section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Новая запись</h2><p>Один текст можно подготовить сразу для нескольких сообществ.</p></div></div>${enabled.length ? `<form data-form="publishing" class="vkt-form"><fieldset class="vkt-publishing-groups"><legend>Куда публикуем</legend>${groupChoices}</fieldset><label>Текст записи<textarea name="message" rows="9" maxlength="16000" placeholder="Напишите текст поста…"></textarea></label><label>Вложения VK или ссылка<textarea name="attachments" rows="3" class="vkt-code-input" placeholder="photo-123_456, video-123_789 или https://example.com"></textarea><small class="vkt-help">До 10 ID вложений через запятую или с новой строки; внешняя ссылка — только одна. Фото сначала загрузите в VK и вставьте его ID.</small></label><label>Дата и время публикации<input type="datetime-local" name="scheduled_at"><small class="vkt-help">Оставьте пустым для публикации сразу после подтверждения. Время вводится в часовом поясе вашего устройства.</small></label><div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="signed">Подписать запись моим именем</label><label class="vkt-check"><input type="checkbox" name="close_comments">Закрыть комментарии</label></div><p class="vkt-help">Сначала запись сохранится как черновик. Отправка в VK начнётся только после отдельного подтверждения на экране проверки.</p><button class="vkt-button vkt-primary">${icon('check')} Сохранить на ручную проверку</button></form>` : empty(groups.length ? 'Нет доступных групп' : 'Подключите свои сообщества', groups.length ? 'Обновите список: право редактора могло быть отозвано, либо все группы выключены.' : 'Нажмите «Обновить мои группы»: VK вернёт сообщества, где вы администратор или редактор.')}</section>` +
+            (publishingData.status.community_only ? '<div class="vkt-info">Подключён ключ одного сообщества. Нажмите «Обновить мои группы»: плагин добавит его как доступного адресата. Этот ключ публикует только на собственной стене и только текст — медиа VK ему запрещает.</div>' : '') +
+            `<div class="vkt-stats">${stat('Своих групп', num(enabled.length), 'Включены и доступны для записи', 'people')}${stat('В очереди', num((totals.queued || 0) + (totals.scheduled || 0) + (totals.draft || 0)), state.settings.publishing_review ? 'Черновики ждут подтверждения' : 'Отправка сразу или по расписанию', 'check', 'purple')}${stat('Опубликовано', num(totals.published || 0), 'Полностью во все адресаты', 'send', 'green')}${stat('С ошибкой', num((totals.failed || 0) + (totals.partial || 0)), 'Можно повторить только неудачные адресаты', 'list', 'orange')}</div>` +
+            `<div class="vkt-publishing-layout"><section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Новая запись</h2><p>Один текст можно подготовить сразу для нескольких сообществ.</p></div></div>${enabled.length ? `<form data-form="publishing" class="vkt-form"><fieldset class="vkt-publishing-groups"><legend>Куда публикуем</legend>${groupChoices}</fieldset><label>Текст записи<textarea name="message" rows="9" maxlength="16000" placeholder="Напишите текст поста…"></textarea></label>${aiReady ? `<div class="vkt-ai-row">${button(`${icon('fire')} Сгенерировать текст`, 'ai-text')}<small class="vkt-help">Черновик уйдёт в модель как основа.</small></div>` : ''}<fieldset class="vkt-media"><legend>Файлы с сервера</legend>${nativeMedia ? `<div id="vkt-composer-media" class="vkt-media-chips">${composerMediaHtml()}</div><div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*,video/mp4" data-media-upload hidden>${icon('plus')} Загрузить файл</label>${button(`${icon('layers')} Из медиатеки`, 'media-library')}${aiReady ? button(`${icon('fire')} Картинка`, 'ai-image') + button(`${icon('play')} Видео`, 'ai-video') : ''}</div><small class="vkt-help">До 10 файлов. Файл уходит в VK прямо с сервера: ID вложения плагин получает сам, отдельно для каждого сообщества.</small>` : '<div class="vkt-info vkt-info-warning">VK не разрешает ключу сообщества прикладывать медиа: загрузка фото закрыта ошибкой 27, видео — ошибкой 5, а ссылка на файл отклоняется кодом 100. Обходного пути нет. Сохраните в настройках пользовательский токен VK ID с правами <code>wall</code>, <code>photos</code>, <code>groups</code> и <code>video</code> — тогда файлы и генерация картинок станут доступны. Текст публикуется и сейчас.</div>'}</fieldset><label>Вложения VK или ссылка<textarea name="attachments" rows="3" class="vkt-code-input" placeholder="photo-123_456, video-123_789 или https://example.com"></textarea><small class="vkt-help">Необязательное поле для уже существующих вложений VK. До 10 ID через запятую; внешняя ссылка — только одна, и она должна вести на страницу с превью: прямой адрес картинки VK отклоняет.</small></label><label>Дата и время публикации<input type="datetime-local" name="scheduled_at"><small class="vkt-help">Оставьте пустым — запись отправится сразу после нажатия кнопки. Время вводится в часовом поясе вашего устройства.</small></label><div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="signed">Подписать запись моим именем</label><label class="vkt-check"><input type="checkbox" name="close_comments">Закрыть комментарии</label></div><p class="vkt-help">${state.settings.publishing_review ? 'Включена ручная проверка: запись сначала сохранится черновиком.' : 'Ручная проверка выключена: запись без даты будет опубликована сразу.'}</p><button class="vkt-button vkt-primary">${icon('send')} ${state.settings.publishing_review ? 'Сохранить на проверку' : 'Опубликовать / запланировать'}</button></form>` : empty(groups.length ? 'Нет доступных групп' : 'Подключите свои сообщества', groups.length ? 'Обновите список: право редактора могло быть отозвано, либо все группы выключены.' : 'Нажмите «Обновить мои группы»: VK вернёт сообщества, где вы администратор или редактор.')}</section>` +
             `<aside class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Мои сообщества</h2><p>Отдельный список: наблюдаемые источники не получают права записи.</p></div></div>${groups.length ? `<div class="vkt-own-groups">${groups.map(group => `<div><span>${safeUrl(group.photo || '') ? `<img src="${safeUrl(group.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<strong>${esc(group.name || `club${group.group_id}`)}</strong><small><a href="https://vk.com/${esc(group.screen_name || `club${group.group_id}`)}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a></small></span><span>${Number(group.can_post) ? badge(Number(group.enabled) ? 'Включено' : 'Выключено', Number(group.enabled) ? 'green' : '') : badge('Нет права записи', 'red')}${Number(group.can_post) ? button(Number(group.enabled) ? 'Выключить' : 'Включить', 'publishing-group-toggle', `data-id="${Number(group.id)}" data-enabled="${Number(group.enabled) ? 0 : 1}"`) : ''}</span></div>`).join('')}</div>` : '<p class="vkt-muted">Список ещё не загружен из VK.</p>'}</aside></div>` +
             `<div class="vkt-section-title"><h2>История и очередь</h2><span class="vkt-muted">Последняя проверка cron: ${date(publishingData.status.last)}</span></div>` +
             (posts.length ? `<section class="vkt-panel vkt-table-wrap"><table class="vkt-publishing-table"><thead><tr><th>Запись</th><th>Когда</th><th>Статус</th><th>Сообщества</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Публикаций пока нет', 'Создайте первую запись: она появится здесь со статусом для каждой выбранной группы.'));
@@ -358,7 +449,7 @@
         const post = (publishingData?.posts || []).find(item => String(item.id) === String(id));
         if (!post) return;
         const targets = (post.deliveries || []).map(delivery => `<li>${esc(delivery.name || delivery.screen_name || `club${delivery.group_id}`)}</li>`).join('');
-        modal(`<h2>Проверка публикации</h2><p class="vkt-muted">Проверьте весь текст, вложения, адресатов и время. До подтверждения cron эту запись не отправит.</p><h3>Текст</h3><div class="vkt-review-copy">${esc(post.message || 'Без текста')}</div><h3>Вложения</h3><p class="vkt-code-input">${esc(post.attachments || 'Нет')}</p><h3>Сообщества</h3><ul>${targets}</ul><div class="vkt-detail-stats"><span>Публикация<strong>${date(post.scheduled_at)}</strong></span><span>Подпись<strong>${Number(post.signed) ? 'Да' : 'Нет'}</strong></span><span>Комментарии<strong>${Number(post.close_comments) ? 'Закрыты' : 'Открыты'}</strong></span></div><div class="vkt-form-actions">${button(`${icon('check')} Подтвердить и отправить`, 'publishing-approve', `data-id="${Number(post.id)}"`, true)}${button('Отменить черновик', 'publishing-cancel', `data-id="${Number(post.id)}"`)}</div>`);
+        modal(`<h2>Проверка публикации</h2><p class="vkt-muted">Проверьте весь текст, вложения, адресатов и время. До подтверждения cron эту запись не отправит.</p><h3>Текст</h3><div class="vkt-review-copy">${esc(post.message || 'Без текста')}</div><h3>Вложения</h3><p class="vkt-code-input">${esc(post.attachments || 'Нет')}</p>${(post.media_items || []).length ? `<h3>Файлы с сервера</h3><div class="vkt-media-chips">${post.media_items.map(item => `<figure class="vkt-media-chip">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<figcaption><strong>${esc(item.title || item.name)}</strong><small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></figcaption></figure>`).join('')}</div>` : ''}<h3>Сообщества</h3><ul>${targets}</ul><div class="vkt-detail-stats"><span>Публикация<strong>${date(post.scheduled_at)}</strong></span><span>Подпись<strong>${Number(post.signed) ? 'Да' : 'Нет'}</strong></span><span>Комментарии<strong>${Number(post.close_comments) ? 'Закрыты' : 'Открыты'}</strong></span></div><div class="vkt-form-actions">${button(`${icon('check')} Подтвердить и отправить`, 'publishing-approve', `data-id="${Number(post.id)}"`, true)}${button('Отменить черновик', 'publishing-cancel', `data-id="${Number(post.id)}"`)}</div>`);
     }
     function videoDetail(id) {
         const v = state.videos.find(v=>String(v.id)===String(id));
@@ -466,6 +557,35 @@
         if (command==='export-sources') { const list=state.sources.map(x=>x.value).join('\n'); modal(`<h2>Список источников</h2><p class="vkt-muted">Скопируйте и сохраните — этот же список можно вставить обратно через импорт.</p><textarea class="vkt-code-input" rows="12" readonly>${esc(list)}</textarea>`); return; }
         if (command==='add-source') { modal('<h2>Новый источник</h2><form data-form="source" class="vkt-form"><label>Тип<select name="kind"><option value="domain">Короткое имя сообщества</option><option value="owner">Числовой ID</option></select></label><label>Сообщество<input name="value" required maxlength="200" placeholder="team или -22822305"></label><p class="vkt-help">Короткое имя — часть адреса: для vk.com/team это team. Числовой ID сообщества пишется со знаком минус, ID пользователя — положительный.</p><button class="vkt-button vkt-primary">Сохранить источник</button></form>'); return; }
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
+        if (command==='token-check') {
+            el.disabled = true;
+            try {
+                const r = await act('token_check');
+                const life = r.expires_in === null || r.expires_in === undefined ? 'без срока' : `осталось ~${Math.round(r.expires_in/60)} мин.`;
+                modal(`<h2>Проверка токена</h2><p class="vkt-muted">Плагин отправил в VK <code>users.get</code> с тем токеном, который сохранён.</p>`
+                    + `<div class="vkt-detail-stats"><span>Ответ VK<strong>${r.ok?'принят':'отклонён'}</strong></span><span>Тип<strong>${esc(modeLabel(r.mode)||r.mode||'—')}</strong></span><span>Срок<strong>${esc(life)}</strong></span></div>`
+                    + `<h3>Что хранится</h3><p class="vkt-code-input">${esc(r.preview||'')} · ${Number(r.length)||0} символов · источник: ${esc(r.source||'')}</p>`
+                    + `<h3>Ответ VK</h3><p>${r.ok?`Аккаунт: <strong>${esc(r.name||'')}</strong> (id ${Number(r.user_id)||0})`:`Код ${Number(r.vk_code)||0}: ${esc(r.message||'')}`}</p>`
+                    + (r.ok?'':'<div class="vkt-info vkt-info-warning">Если код 5 — токен просрочен, отозван или сохранён не целиком. Сверьте огрызок выше с началом и концом того, что вставляли.</div>'));
+            } catch (error) { toast(error.message, true); }
+            finally { el.disabled = false; }
+            return;
+        }
+        if (command==='vkid-implicit') {
+            const app = Number(state.settings.vkid?.client_id) || 0;
+            if (!app) { toast('Сначала укажите ID приложения ниже и сохраните его.', true); return; }
+            const url = `https://oauth.vk.com/authorize?client_id=${app}&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope=wall,photos,groups,video&response_type=token&v=5.199`;
+            window.open(url, '_blank', 'noopener');
+            toast('Разрешите доступ, затем скопируйте адрес из браузера целиком в поле «Access token».');
+            return;
+        }
+        if (command==='media-remove') { composerMedia = composerMedia.filter(item => Number(item.id) !== Number(el.dataset.id)); renderComposerMedia(); return; }
+        if (command==='media-pick') {
+            const item = mediaLibraryItems.find(media => Number(media.id) === Number(el.dataset.id));
+            if (addComposerMedia(item)) dialog.close();
+            return;
+        }
+        if (command==='ai-text' || command==='ai-image' || command==='ai-video') { aiDialog(command.slice(3)); return; }
         if (command==='video-detail') { videoDetail(el.dataset.id); return; }
         if (command==='post-detail') { postDetail(el.dataset.id); return; }
         if (command==='posts-filters') { postsFiltersOpen = !postsFiltersOpen; render(); return; }
@@ -474,6 +594,7 @@
         if (command==='communities-sort') { communitiesSort = el.dataset.value; render(); return; }
         el.disabled = true;
         try {
+            if (command==='media-library') { await mediaLibrary(); return; }
             if (command==='history') { await history(el.dataset.id); return; }
             if (command==='post-history') { await postHistory(el.dataset.id); return; }
             if (command==='community-posts') {
@@ -495,6 +616,12 @@
             if (command==='save-result') { await act('save_video',{video:el.dataset.id}); toast('Ролик сохранён. Первый замер записан.'); el.textContent='Сохранено'; await load(false); return; }
             if (command==='collect') { toast('Сбор запущен, ожидаем ответы VK…'); const result=await act('collect'); toast(result.message); }
             if (command==='publishing-sync') { const result=await act('publishing_sync'); toast(`Синхронизировано своих групп: ${result.synced}.`); }
+            if (command==='community-check') {
+                const result=await act('community_check');
+                const permissions=(result.permissions || []).join(', ') || 'не перечислены';
+                modal(`<h2>${esc(result.name || `Сообщество #${result.group_id}`)}</h2><p class="vkt-muted">${result.screen_name ? `<a href="https://vk.com/${esc(result.screen_name)}" target="_blank" rel="noopener noreferrer">vk.com/${esc(result.screen_name)} ↗</a>` : `ID ${Number(result.group_id)}`}</p><h3>Права ключа</h3><p>${esc(permissions)}</p>${result.callback_url ? `<h3>Callback API</h3><input class="vkt-code-input" value="${esc(result.callback_url)}" readonly><p class="vkt-help">Ключ и Callback-секрет наружу не передаются.</p>` : ''}`);
+                toast('Ключ сообщества и его права подтверждены VK.');
+            }
             if (command==='publishing-run') { const result=await act('publishing_run'); toast(result.message); }
             if (command==='publishing-approve') {
                 if (!window.confirm('Публикация проверена и готова к отправке в выбранные сообщества?')) return;
@@ -561,17 +688,75 @@
                     catch(error) { apiResult=error.payload || {error:error.message}; toast(error.message,true); }
                     await load(false); render(); return;
                 }
-                case 'settings': await act('settings',{...values,homepage:!!values.homepage,paused:!!values.paused,posts:!!values.posts,links:!!values.links,source_hours:Number(values.source_hours),video_hours:Number(values.video_hours)}); form.elements.token.value=''; toast('Настройки сохранены.'); break;
+                case 'settings': {
+                    const hadToken = String(values.token || '').trim() !== '';
+                    await act('settings',{...values,homepage:!!values.homepage,paused:!!values.paused,posts:!!values.posts,links:!!values.links,publishing_review:!!values.publishing_review,source_hours:Number(values.source_hours),video_hours:Number(values.video_hours)});
+                    form.elements.token.value='';
+                    // Сразу спрашиваем VK, принят ли токен: иначе о проблеме
+                    // становится известно только из записей прошлых попыток.
+                    if (hadToken) {
+                        try {
+                            const check = await act('token_check');
+                            toast(check.ok
+                                ? `Токен сохранён и принят VK: ${check.name || 'аккаунт ' + check.user_id}.`
+                                : `Токен сохранён, но VK его отклонил — код ${check.vk_code}: ${check.message}`, !check.ok);
+                        } catch (error) { toast(`Токен сохранён, но проверить не вышло: ${error.message}`, true); }
+                    } else {
+                        toast('Настройки сохранены.');
+                    }
+                    break;
+                }
                 case 'video': await act('save_video',values); dialog.close(); toast('Ролик добавлен, замер сохранён.'); break;
                 case 'product': await act('product',values); dialog.close(); toast('Товар добавлен. Привяжите его к ролику через меню ролика.'); break;
                 case 'source': await act('source',values); dialog.close(); toast('Источник сохранён.'); break;
+                case 'vkid': {
+                    const clientId = Number(values.vkid_client_id) || 0;
+                    if (!clientId) throw new Error('Укажите ID приложения из консоли dev.vk.ru.');
+                    await act('settings', {vkid_client_id: clientId, vkid_redirect: values.vkid_redirect || ''});
+                    // Константа мешает только сохранению токена, поэтому ID
+                    // запоминаем в любом случае и не уводим в VK впустую.
+                    if (state.settings.vkid?.blocked_by_constant) {
+                        await load();
+                        toast('ID приложения сохранён. Теперь уберите VKT_ACCESS_TOKEN из wp-config.php, обновите страницу и нажмите «Подключить VK ID».');
+                        return;
+                    }
+                    const started = await act('vkid_start', {return_to: location.href});
+                    location.href = started.url;
+                    return;
+                }
+                case 'media-search': await mediaLibrary(values.search || ''); return;
+                case 'ai-text': {
+                    aiPrompt = values.prompt;
+                    const target = $('[data-form="publishing"] textarea[name="message"]');
+                    const result = await act('ai_text',{prompt:values.prompt,current:target?.value || ''});
+                    if (target) { target.value = result.text; target.dispatchEvent(new Event('input',{bubbles:true})); }
+                    dialog.close();
+                    toast('Текст готов — проверьте его перед отправкой.');
+                    return;
+                }
+                case 'ai-image': {
+                    aiPrompt = values.prompt;
+                    addComposerMedia(await act('ai_image',{prompt:values.prompt,ratio:values.ratio || 'portrait'}));
+                    dialog.close();
+                    toast('Изображение сохранено в медиатеку и прикреплено к записи.');
+                    return;
+                }
+                case 'ai-video': {
+                    aiPrompt = values.prompt;
+                    const started = await act('ai_video_start',{prompt:values.prompt,ratio:values.ratio || 'story'});
+                    addComposerMedia(await awaitVideo(started.request_id));
+                    dialog.close();
+                    toast('Ролик сохранён в медиатеку и прикреплён к записи.');
+                    return;
+                }
                 case 'publishing': {
                     const groups = [...form.querySelectorAll('input[name="groups"]:checked')].map(input => Number(input.value));
                     if (!groups.length) throw new Error('Выберите хотя бы одно сообщество.');
                     const scheduledAt = values.scheduled_at ? new Date(values.scheduled_at).toISOString() : '';
-                    const result = await act('publishing_create',{message:values.message || '',attachments:values.attachments || '',groups,scheduled_at:scheduledAt,signed:!!values.signed,close_comments:!!values.close_comments});
+                    const result = await act('publishing_create',{message:values.message || '',attachments:values.attachments || '',media:composerMedia.map(item => Number(item.id)),groups,scheduled_at:scheduledAt,signed:!!values.signed,close_comments:!!values.close_comments});
+                    composerMedia = [];
                     form.reset();
-                    toast('Черновик сохранён. Откройте «Проверить» перед отправкой.');
+                    toast(result.warning || (result.status === 'published' ? 'Запись опубликована.' : result.status === 'scheduled' ? 'Запись поставлена в расписание.' : 'Запись поставлена в очередь.'), !!result.warning);
                     break;
                 }
                 case 'import': {
@@ -586,7 +771,19 @@
         } catch(error) { toast(error.message,true); }
         finally { if(submit) { submit.disabled=false; submit.removeAttribute('aria-busy'); } }
     });
-    root.addEventListener('change',event=> {
+    root.addEventListener('change',async event=> {
+        if (event.target.matches('[data-media-upload]')) {
+            const input = event.target;
+            const file = input.files?.[0];
+            input.value = '';
+            if (!file) return;
+            const label = input.closest('label');
+            label?.classList.add('is-busy');
+            try { addComposerMedia(await upload(file)); toast('Файл загружен и прикреплён к записи.'); }
+            catch (error) { toast(error.message, true); }
+            finally { label?.classList.remove('is-busy'); }
+            return;
+        }
         if (event.target.matches('[data-form="posts-search"] select[name="source"]')) { event.target.form.requestSubmit(); return; }
         if(event.target.id==='vkt-method') { apiMethod=event.target.value; apiDraft=null; render(); }
         if(event.target.name==='token_kind') { const fields=$('#vkt-user-token-fields'); if(fields) fields.hidden = event.target.value!=='user'; }
@@ -600,5 +797,14 @@
         content.focus({preventScroll:true});
         try { await load(); } catch(error) { toast(error.message,true); }
     });
+    if (config.notice?.message) {
+        toast(config.notice.message, !!config.notice.error);
+        try {
+            const clean = new URL(location.href);
+            clean.searchParams.delete('vkt_vkid');
+            clean.searchParams.delete('vkt_vkid_message');
+            history.replaceState(null, '', clean.href);
+        } catch {}
+    }
     load().catch(error=> { content.innerHTML=heading('Не удалось загрузить данные','Проверьте вход в WordPress и доступность REST API.')+`<div class="vkt-info">${esc(error.message)}</div>${button('Повторить','reload')}`; toast(error.message,true); });
 })();
