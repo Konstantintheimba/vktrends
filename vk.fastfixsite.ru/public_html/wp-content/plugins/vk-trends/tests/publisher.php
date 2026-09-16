@@ -81,7 +81,9 @@ $assert( is_wp_error( $merge->invoke( null, implode( ',', $many ), '' ) ), 'Фа
 $picker = new ReflectionMethod( VKT_Publisher::class, 'use_community_key' );
 $picker->setAccessible( true );
 $assert( true === $picker->invoke( null, 241464933, '' ), 'Текст в своё сообщество уходит ключом сообщества' );
-$assert( false === $picker->invoke( null, 241464933, '11,12' ), 'Запись с файлами публикует пользовательский токен, загрузивший фото' );
+// wall.post пользовательским токеном VK запрещает приложениям не типа Standalone,
+// поэтому публикует всегда ключ сообщества, а токен только загружает фото.
+$assert( true === $picker->invoke( null, 241464933, '11,12' ), 'Запись с файлами тоже публикует ключ сообщества' );
 $assert( false === $picker->invoke( null, 987, '' ), 'Чужая группа ключом сообщества не публикуется' );
 VKT_Community::$on = false;
 $assert( false === $picker->invoke( null, 241464933, '' ), 'Без настроенного ключа сообщества остаётся пользовательский токен' );

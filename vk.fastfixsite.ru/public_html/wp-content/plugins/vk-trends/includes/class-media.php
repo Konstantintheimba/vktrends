@@ -170,6 +170,12 @@ final class VKT_Media {
         return self::public_item( $attachment_id );
     }
 
+    /** Пустые «» и «[]» означают, что сервер загрузки файл отверг. */
+    private static function accepted( $uploaded ) {
+        $photo = trim( (string) ( $uploaded['photo'] ?? '' ) );
+        return '' !== $photo && '[]' !== $photo;
+    }
+
     private static function multipart_upload( $url, $field, $item ) {
         $url = esc_url_raw( (string) $url, array( 'https' ) );
         if ( ! $url || ! wp_http_validate_url( $url ) ) {
@@ -204,15 +210,30 @@ final class VKT_Media {
         return $data;
     }
 
+    /**
+     * Сервер загрузки VK изредка отвечает пустым photo — файл он при этом не
+     * принял. Отдавать такую пустоту в photos.saveWallPhoto бессмысленно: VK
+     * ответит «photo is undefined», и причина будет непонятна. Поэтому пробуем
+     * ещё раз с новым адресом загрузки и только потом сдаёмся.
+     */
     private static function upload_photo( $item, $group_id ) {
-        $server = VKT_API::publishing_request( 'photos.getWallUploadServer', array( 'group_id' => $group_id ) );
-        if ( is_wp_error( $server ) ) {
-            return $server;
+        $uploaded = null;
+        for ( $attempt = 1; $attempt <= 2; ++$attempt ) {
+            $server = VKT_API::publishing_request( 'photos.getWallUploadServer', array( 'group_id' => $group_id ) );
+            if ( is_wp_error( $server ) ) {
+                return $server;
+            }
+            $uploaded = self::multipart_upload( (string) ( $server['response']['upload_url'] ?? '' ), 'photo', $item );
+            if ( is_wp_error( $uploaded ) ) {
+                return $uploaded;
+            }
+            if ( self::accepted( $uploaded ) ) {
+                break;
+            }
+            $uploaded = null;
         }
-        $upload_url = (string) ( $server['response']['upload_url'] ?? '' );
-        $uploaded = self::multipart_upload( $upload_url, 'photo', $item );
-        if ( is_wp_error( $uploaded ) ) {
-            return $uploaded;
+        if ( null === $uploaded ) {
+            return self::error( 'Сервер загрузки VK не принял файл «' . $item['name'] . '»: в ответе пустое поле photo. Проверьте, что это обычный JPEG или PNG и он не повреждён.', 502, true );
         }
         foreach ( array( 'server', 'photo', 'hash' ) as $field ) {
             if ( ! isset( $uploaded[ $field ] ) || ! is_scalar( $uploaded[ $field ] ) ) {

@@ -211,7 +211,7 @@
         user: '<div class="vkt-form-row"><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="31536000" placeholder="86400"></label></div>',
     };
     function tokenReport(report) {
-        const rows = (report.checks || []).map(check => `<tr><td>${esc(check.label)}<small class="vkt-muted"><code>${esc(check.method)}</code></small></td><td>${badge(check.ok ? 'доступен' : 'отказ', check.ok ? 'green' : 'red')}</td><td>${check.code ? `код ${Number(check.code)}: ` : ''}${esc(check.message)}</td></tr>`).join('');
+        const rows = (report.checks || []).map(check => `<tr><td>${esc(check.label)}<small class="vkt-muted"><code>${esc(check.method)}</code></small></td><td>${badge(check.ok ? 'доступен' : check.optional ? 'не нужен' : 'отказ', check.ok ? 'green' : check.optional ? '' : 'red')}</td><td>${check.code ? `код ${Number(check.code)}: ` : ''}${esc(check.message)}</td></tr>`).join('');
         modal(`<h2>Проверка · ${esc(report.title || '')}</h2><p class="vkt-muted">Плагин вызвал методы VK этим ключом и показывает дословные ответы. Записи при этом не создаются.</p><div class="vkt-table-wrap"><table><thead><tr><th>Что проверяли</th><th>Итог</th><th>Ответ VK</th></tr></thead><tbody>${rows}</tbody></table></div>${report.ok ? '' : '<div class="vkt-info vkt-info-warning">Отказы остаются видны в карточке ключа, пока не будут исправлены.</div>'}`);
     }
     function tokenCard(slot) {
@@ -247,7 +247,7 @@
         return heading('Настройки', 'Подключение к VK и параметры рабочего пространства.') +
             `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Доступ к VK API</h2><form data-form="settings" id="vkt-settings-form" class="vkt-form">
                 <div class="vkt-field-status">${badge(s.has_token?'Токен сохранён':'Не подключён',s.has_token?'green':'')}<span class="vkt-muted">${constantToken?'Задан в wp-config.php':'Хранится на сервере в зашифрованном виде'}${modeNote?` · ${modeNote}`:''}</span></div>
-                ${s.has_token?`<div class="vkt-token-preview"><code>${esc(s.token_preview||'')}</code><span class="vkt-muted">${Number(s.token_length)||0} символов · это то, что реально уходит в VK</span>${button('Проверить токен','token-check')}</div>${s.token_scope?`<p class="vkt-help">Права, выданные VK: <code>${esc(s.token_scope)}</code>. Для фото нужен <code>photos</code>, для публикации — <code>wall</code>.</p>`:''}`:''}
+                
                 <label>Тип токена<select name="token_kind" ${constantToken?'disabled':''}><option value="service" ${currentKind==='service'?'selected':''}>Сервисный ключ приложения</option><option value="user" ${currentKind==='user'?'selected':''}>Пользовательский токен</option></select></label>
                 <label>Access token<input type="password" name="token" autocomplete="new-password" placeholder="${s.has_token?'Оставьте пустым, чтобы сохранить текущий':'Токен или весь адрес из браузера'}" ${constantToken?'disabled':''} maxlength="2048"></label><small class="vkt-help">Можно вставить целиком адрес вида <code>https://oauth.vk.com/blank.html#access_token=…&amp;expires_in=86400</code> — токен, срок жизни и тип определятся сами.</small>
                 <fieldset id="vkt-user-token-fields" class="vkt-form-row" ${constantToken || currentKind!=='user'?'hidden':''}><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="86400" placeholder="Например, 86400"></label></fieldset>
@@ -271,8 +271,9 @@
                         <label>ID приложения<input type="number" name="app_id" value="${Number(oauth.app_id) || ''}" min="1" placeholder="Например, 54770323"></label>
                         <label>Адрес возврата приложения<input class="vkt-code-input" value="${esc(oauth.redirect || '')}" readonly></label>
                     </div>
-                    <p class="vkt-help">Нужно приложение из <strong>dev.vk.ru</strong> (не из кабинета VK ID — тот отвечает <code>Security Error</code>). Защищённый ключ этого приложения сохраните в слоте «Защищённый ключ приложения» выше.</p>
-                    <div class="vkt-form-actions">${button(`${icon('arrow')} 1. Открыть страницу согласия`, 'oauth-open')}</div>
+                    <div class="vkt-info">Здесь нужен ID приложения из консоли <strong>dev.vk.ru</strong> — это <strong>не тот же номер</strong>, что в блоке VK ID ниже. Приложение из кабинета VK ID классический OAuth не обслуживает и отвечает <code>Security Error</code>; плагин проверит это до перехода. Защищённый ключ того же приложения сохраните в слоте «Защищённый ключ приложения» выше.</div>
+                    <div class="vkt-form-actions">${button(`${icon('arrow')} 1. Открыть страницу согласия`, 'oauth-open')}${safeUrl(oauth.authorize_url || '') ? `<a class="vkt-button" href="${safeUrl(oauth.authorize_url)}" target="_blank" rel="noopener noreferrer">та же ссылка ↗</a>` : ''}</div>
+                    <p class="vkt-help">Если вкладка не открылась — её заблокировал браузер; тогда нажмите ссылку рядом.</p>
                     <label>2. Адрес из браузера после «Разрешить»<input name="code" class="vkt-code-input" placeholder="https://oauth.vk.com/blank.html?code=…" autocomplete="off"></label>
                     <p class="vkt-help">Код одноразовый и живёт около минуты — вставляйте сразу. Токен получит и сохранит сервер, в браузер он не попадёт.</p>
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">3. Обменять код на токен</button></div>
@@ -618,25 +619,22 @@
             finally { el.disabled = false; }
             return;
         }
-        if (command==='token-check') {
+        if (command==='oauth-open') {
+            const field = $('[data-form="oauth"] input[name="app_id"]');
+            const appId = Number(field?.value) || 0;
+            if (!appId) { toast('Укажите ID приложения.', true); return; }
+            // Вкладку открываем синхронно по клику: после await браузер считает
+            // вызов не пользовательским и молча блокирует всплывающее окно.
+            const win = window.open('', '_blank');
+            if (win) win.opener = null;
             el.disabled = true;
             try {
-                const r = await act('token_check');
-                const life = r.expires_in === null || r.expires_in === undefined ? 'без срока' : `осталось ~${Math.round(r.expires_in/60)} мин.`;
-                modal(`<h2>Проверка токена</h2><p class="vkt-muted">Плагин отправил в VK <code>users.get</code> с тем токеном, который сохранён.</p>`
-                    + `<div class="vkt-detail-stats"><span>Ответ VK<strong>${r.ok?'принят':'отклонён'}</strong></span><span>Тип<strong>${esc(modeLabel(r.mode)||r.mode||'—')}</strong></span><span>Срок<strong>${esc(life)}</strong></span></div>`
-                    + `<h3>Что хранится</h3><p class="vkt-code-input">${esc(r.preview||'')} · ${Number(r.length)||0} символов · источник: ${esc(r.source||'')}</p>`
-                    + `<h3>Ответ VK</h3><p>${r.ok?`Аккаунт: <strong>${esc(r.name||'')}</strong> (id ${Number(r.user_id)||0})`:`Код ${Number(r.vk_code)||0}: ${esc(r.message||'')}`}</p>`
-                    + (r.ok?'':'<div class="vkt-info vkt-info-warning">Если код 5 — токен просрочен, отозван или сохранён не целиком. Сверьте огрызок выше с началом и концом того, что вставляли.</div>'));
-            } catch (error) { toast(error.message, true); }
+                const checked = await act('oauth_check', {app_id: appId});
+                if (win) { win.location.href = checked.authorize_url; toast('Приложение подходит. Разрешите доступ и вставьте адрес в поле ниже.'); }
+                else { toast('Браузер заблокировал вкладку — откройте ссылку рядом с кнопкой.', true); }
+                await load();
+            } catch (error) { if (win) win.close(); toast(error.message, true); }
             finally { el.disabled = false; }
-            return;
-        }
-        if (command==='oauth-open') {
-            const url = state.settings.oauth?.authorize_url;
-            if (!url) { toast('Сначала укажите ID приложения и сохраните настройки.', true); return; }
-            window.open(url, '_blank', 'noopener');
-            toast('Разрешите доступ, затем скопируйте адрес из браузера в поле ниже.');
             return;
         }
         if (command==='vkid-implicit') {

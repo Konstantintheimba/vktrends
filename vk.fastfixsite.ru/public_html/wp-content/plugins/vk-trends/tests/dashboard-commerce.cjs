@@ -115,5 +115,13 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(blocked.includes('Сохранить ID приложения'), 'Пока константа на месте, кнопка честно называется сохранением');
     state.settings.vkid.blocked_by_constant = false;
     check(api.settings().includes('Подключить VK ID'), 'Без константы кнопка запускает подключение');
+    // Каждой команде в разметке должен отвечать обработчик: вырезав соседний
+    // блок кода, легко осиротить кнопку, и она молча перестаёт работать.
+    const commands = new Set();
+    for (const m of source.matchAll(/data-command="([a-z-]+)"/g)) commands.add(m[1]);
+    for (const m of source.matchAll(/button\(`?[^`']*`?,\s*'([a-z-]+)'/g)) commands.add(m[1]);
+    const orphans = [...commands].filter(name => !source.includes(`command==='${name}'`));
+    check(orphans.length === 0, `У каждой кнопки есть обработчик (осиротели: ${orphans.join(', ') || 'нет'})`);
+    check(source.includes("window.open('', '_blank')"), 'Вкладка согласия открывается синхронно по клику, иначе её блокирует браузер');
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

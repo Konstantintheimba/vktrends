@@ -66,6 +66,77 @@ final class VKT_OAuth {
         ), '', '&', PHP_QUERY_RFC3986 );
     }
 
+    /**
+     * Проверяет приложение до перехода в VK.
+     *
+     * Приложения из кабинета VK ID классический OAuth не обслуживает и отвечает
+     * «Security Error». Ошибку видно только после перехода, поэтому спрашиваем
+     * VK заранее и объясняем, какое приложение нужно.
+     */
+    public static function check_app() {
+        if ( ! self::app_id() ) {
+            return self::error( 'Укажите ID приложения.' );
+        }
+        $response = wp_remote_get( self::authorize_url(), array( 'timeout' => 15, 'redirection' => 0, 'sslverify' => true, 'limit_response_size' => 65536 ) );
+        if ( is_wp_error( $response ) ) {
+            return self::error( 'Не удалось связаться с oauth.vk.com.', 502 );
+        }
+        $body = (string) wp_remote_retrieve_body( $response );
+        $decoded = json_decode( $body, true );
+        if ( is_array( $decoded ) && isset( $decoded['error'] ) ) {
+            $reason = sanitize_text_field( (string) ( $decoded['error_description'] ?? $decoded['error'] ) );
+            if ( false !== stripos( $reason, 'security error' ) ) {
+                return self::error( 'Приложение ' . self::app_id() . ' не обслуживает классический OAuth. Так отвечают приложения из кабинета VK ID — здесь нужен ID приложения из консоли dev.vk.ru, это другое число.', 422 );
+            }
+            if ( false !== stripos( $reason, 'redirect_uri' ) ) {
+                return self::error( 'Приложение ' . self::app_id() . ' не принимает адрес возврата ' . self::REDIRECT . '. Проверьте, что это приложение из dev.vk.ru.', 422 );
+            }
+            return self::error( 'VK отклонил запрос: ' . mb_substr( $reason, 0, 180 ), 422 );
+        }
+        return array( 'ok' => true, 'app_id' => self::app_id(), 'authorize_url' => self::authorize_url() );
+    }
+
+    /**
+     * Проверяет пару «приложение + защищённый ключ», не тратя настоящий код.
+     *
+     * VK сверяет client_id и client_secret раньше, чем сам код, поэтому с заведомо
+     * негодным кодом ответ различается: жалоба на client_secret означает неверный
+     * ключ, жалоба на код — что ключ принят.
+     */
+    public static function check_secret() {
+        if ( ! self::configured() ) {
+            return self::error( 'Укажите ID приложения и его защищённый ключ.' );
+        }
+        $response = wp_remote_get( self::EXCHANGE . '?' . http_build_query( array(
+            'client_id' => self::app_id(),
+            'client_secret' => VKT_Tokens::token( 'app_secret' ),
+            'redirect_uri' => self::REDIRECT,
+            'code' => 'vkt-probe-not-a-real-code',
+        ), '', '&', PHP_QUERY_RFC3986 ), array( 'timeout' => 15, 'redirection' => 0, 'sslverify' => true, 'limit_response_size' => 65536 ) );
+        if ( is_wp_error( $response ) ) {
+            return self::error( 'Не удалось связаться с oauth.vk.com.', 502 );
+        }
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+        $reason = is_array( $body ) ? strtolower( (string) ( $body['error_description'] ?? $body['error'] ?? '' ) ) : '';
+        if ( str_contains( $reason, 'client_secret' ) || str_contains( $reason, 'client id' ) || str_contains( $reason, 'client_id' ) ) {
+            VKT_Tokens::note( 'app_secret', 'VK не принял защищённый ключ приложения ' . self::app_id() . '.' );
+            return self::error( 'VK не принял защищённый ключ. Нужен ключ приложения ' . self::app_id() . ' из консоли dev.vk.ru → Разработка → Ключи доступа → «Защищённый ключ». Ключ другого приложения и перевыпущенный старый не подойдут.', 422 );
+        }
+        VKT_Tokens::note( 'app_secret', '' );
+        return array(
+            'slot' => 'app_secret',
+            'title' => 'Защищённый ключ приложения',
+            'ok' => true,
+            'checks' => array( array(
+                'method' => 'oauth.access_token',
+                'label' => 'Приложение ' . self::app_id() . ' и его защищённый ключ',
+                'ok' => true,
+                'code' => 0,
+                'message' => 'Пара принята: VK ругается только на пробный код, а не на ключ. Можно менять настоящий код.',
+            ) ),
+        );
+    }
+
     /** Достаёт код из вставленного адреса: выцеплять его руками легко ошибиться. */
     public static function parse_code( $raw ) {
         $raw = trim( (string) $raw );
@@ -104,6 +175,11 @@ final class VKT_OAuth {
         if ( empty( $body['access_token'] ) ) {
             $reason = sanitize_text_field( (string) ( $body['error_description'] ?? $body['error'] ?? '' ) );
             VKT_Store::log( 'oauth.access_token', 'refresh', 'error', (int) wp_remote_retrieve_response_code( $response ), 'Обмен кода отклонён', 0 );
+            // Виноват ключ или код — подсказки разные, и путать их нельзя.
+            if ( str_contains( strtolower( $reason ), 'client_secret' ) || str_contains( strtolower( $reason ), 'client_id' ) ) {
+                VKT_Tokens::note( 'app_secret', 'VK не принял защищённый ключ приложения ' . self::app_id() . '.' );
+                return self::error( 'VK не принял защищённый ключ приложения ' . self::app_id() . '. Возьмите актуальный в dev.vk.ru → Разработка → Ключи доступа → «Защищённый ключ» и сохраните его в слоте «Защищённый ключ приложения». Код при этом не тратится — он всё ещё нужен новый.', 422 );
+            }
             return self::error( 'VK отклонил обмен кода' . ( $reason ? ': ' . mb_substr( $reason, 0, 180 ) : '.' ) . ' Код одноразовый и живёт около минуты — получите новый.', 422 );
         }
         $saved = VKT_Tokens::save( 'user', (string) $body['access_token'], array(

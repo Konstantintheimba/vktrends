@@ -442,6 +442,13 @@ final class VKT_Plugin {
             }
             case 'token_forget':
                 return VKT_Tokens::forget( sanitize_key( $data['slot'] ?? '' ) );
+            case 'oauth_check':
+                if ( isset( $data['app_id'] ) ) {
+                    $settings = self::settings();
+                    $settings['app_id'] = absint( $data['app_id'] );
+                    update_option( 'vkt_settings', $settings, false );
+                }
+                return VKT_OAuth::check_app();
             case 'oauth_exchange':
                 return VKT_OAuth::exchange( $data['code'] ?? '' );
             case 'token_probe':

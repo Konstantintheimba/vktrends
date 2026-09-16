@@ -143,6 +143,10 @@ final class VKT_API {
         if ( '' === $token ) {
             return new WP_Error( 'no_token', 'Ключ в этом слоте не сохранён.', array( 'status' => 400 ) );
         }
+        // Защищённый ключ не токен: его проверяет обмен, а не методы API.
+        if ( 'app_secret' === $slot ) {
+            return VKT_OAuth::check_secret();
+        }
         $checks = array(
             'service' => array( array( 'wall.get', array( 'owner_id' => -1, 'count' => 1 ), 'Чтение стены' ) ),
             'community' => array( array( 'groups.getTokenPermissions', array(), 'Права ключа сообщества' ) ),
@@ -160,18 +164,23 @@ final class VKT_API {
             // а запись при этом не создаётся.
             $result = self::probe_call( $method, $params, $token );
             $granted = $result['ok'] || in_array( $result['code'], array( 100, 113, 104 ), true );
+            // Публикацию пользовательским токеном VK разрешает только приложениям
+            // типа Standalone. Когда настроен ключ сообщества, публикует он —
+            // и этот отказ ничему не мешает, поэтому не считаем его провалом.
+            $optional = 'wall.post' === $method && VKT_Community::configured();
             $report['checks'][] = array(
                 'method' => $method,
                 'label' => $label,
                 'ok' => $granted,
+                'optional' => $optional && ! $granted,
                 'code' => $result['code'],
-                'message' => $result['message'],
+                'message' => $result['message'] . ( $optional && ! $granted ? ' — это не мешает: на стене своего сообщества публикует ключ сообщества, а токен нужен только для загрузки фото.' : '' ),
             );
-            if ( ! $granted ) {
+            if ( ! $granted && ! $optional ) {
                 $report['ok'] = false;
             }
         }
-        $failed = array_values( array_filter( $report['checks'], static fn( $check ) => ! $check['ok'] ) );
+        $failed = array_values( array_filter( $report['checks'], static fn( $check ) => ! $check['ok'] && empty( $check['optional'] ) ) );
         VKT_Tokens::note( $slot, $failed ? $failed[0]['label'] . ': ' . $failed[0]['message'] : '' );
         return $report;
     }

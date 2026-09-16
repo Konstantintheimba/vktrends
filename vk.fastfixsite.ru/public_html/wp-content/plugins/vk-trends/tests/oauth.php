@@ -18,11 +18,19 @@ class VKT_Tokens {
     public static function has( $slot ) { return 'app_secret' === $slot; }
     public static function token( $slot ) { return 'app_secret' === $slot ? 'SECRET_VALUE_0123456789' : ''; }
     public static function save( $slot, $token, $extra = array() ) { self::$saved = compact( 'slot', 'token', 'extra' ); return true; }
+    public static array $notes = array();
+    public static function note( $slot, $message ) { self::$notes[ $slot ] = $message; }
 }
 $GLOBALS['requests'] = array();
 function wp_remote_get( $url, $args = array() ) {
     $GLOBALS['requests'][] = $url;
+    if ( str_contains( $url, '/authorize?' ) ) {
+        return array( 'response' => array( 'code' => 200 ), 'body' => $GLOBALS['authorize_body'] ?? '<html></html>' );
+    }
     parse_str( (string) parse_url( $url, PHP_URL_QUERY ), $query );
+    if ( 'BADSECRET' === ( $GLOBALS['secret_mode'] ?? '' ) ) {
+        return array( 'response' => array( 'code' => 401 ), 'body' => json_encode( array( 'error' => 'invalid_client', 'error_description' => 'client_secret is incorrect' ) ) );
+    }
     if ( 'GOODCODE123' !== ( $query['code'] ?? '' ) ) {
         return array( 'response' => array( 'code' => 401 ), 'body' => json_encode( array( 'error' => 'invalid_grant', 'error_description' => 'Code is invalid or expired' ) ) );
     }
@@ -65,10 +73,43 @@ $assert( 'wall,photos,groups,video' === VKT_Tokens::$saved['extra']['scope'], '�
 $assert( str_contains( $GLOBALS['requests'][0], 'client_secret=SECRET_VALUE_0123456789' ), 'Обмен выполняет сервер своим защищённым ключом' );
 $assert( str_starts_with( $GLOBALS['requests'][0], 'https://oauth.vk.com/access_token?' ), 'Используется документированный адрес обмена' );
 
+// Приложение проверяется до перехода: Security Error объясняется по-русски.
+$GLOBALS['authorize_body'] = json_encode( array( 'error' => 'invalid_request', 'error_description' => 'Security Error' ) );
+$bad = VKT_OAuth::check_app();
+$assert( is_wp_error( $bad ), 'Неподходящее приложение отсеивается до открытия вкладки' );
+$assert( str_contains( $bad->get_error_message(), 'dev.vk.ru' ), 'Сказано, откуда брать нужный ID' );
+$assert( str_contains( $bad->get_error_message(), 'VK ID' ), 'Названа причина: приложение из кабинета VK ID' );
+$GLOBALS['authorize_body'] = json_encode( array( 'error' => 'invalid_request', 'error_description' => 'redirect_uri is incorrect' ) );
+$bad_redirect = VKT_OAuth::check_app();
+$assert( is_wp_error( $bad_redirect ) && str_contains( $bad_redirect->get_error_message(), 'адрес возврата' ), 'Отказ по адресу возврата объясняется отдельно' );
+$GLOBALS['authorize_body'] = '<!DOCTYPE html><html>форма входа</html>';
+$good = VKT_OAuth::check_app();
+$assert( ! is_wp_error( $good ) && true === $good['ok'], 'Подходящее приложение проходит проверку' );
+$assert( str_contains( $good['authorize_url'], 'response_type=code' ), 'Возвращается тот же адрес согласия' );
+
 $failed = VKT_OAuth::exchange( 'https://oauth.vk.com/blank.html?code=EXPIRED999' );
 $assert( is_wp_error( $failed ), 'Просроченный код отклоняется' );
 $assert( str_contains( $failed->get_error_message(), 'Code is invalid or expired' ), 'Причина отказа от VK показана дословно' );
 $assert( str_contains( $failed->get_error_message(), 'одноразовый' ), 'Подсказка про одноразовость кода на месте' );
 $assert( is_wp_error( VKT_OAuth::exchange( 'мусор' ) ), 'Строка без кода отклоняется до запроса' );
+
+// Ключ проверяется заведомо негодным кодом: настоящий при этом не тратится.
+$GLOBALS['secret_mode'] = '';
+$probe = VKT_OAuth::check_secret();
+$assert( ! is_wp_error( $probe ) && true === $probe['ok'], 'Верный ключ распознаётся по жалобе VK на код, а не на ключ' );
+$last = end( $GLOBALS['requests'] );
+$assert( str_contains( $last, 'code=vkt-probe-not-a-real-code' ), 'Проверка использует пробный код, а не настоящий' );
+$GLOBALS['secret_mode'] = 'BADSECRET';
+$bad_secret = VKT_OAuth::check_secret();
+$assert( is_wp_error( $bad_secret ), 'Неверный ключ отсеивается' );
+$assert( str_contains( $bad_secret->get_error_message(), 'dev.vk.ru' ), 'Сказано, где взять правильный ключ' );
+$assert( str_contains( $bad_secret->get_error_message(), '54770323' ), 'Названо приложение, ключ которого нужен' );
+
+// При обмене причина отказа разделяется: ключ или код.
+$secret_fail = VKT_OAuth::exchange( 'https://oauth.vk.com/blank.html?code=GOODCODE123' );
+$assert( is_wp_error( $secret_fail ), 'Неверный ключ ломает обмен' );
+$assert( str_contains( $secret_fail->get_error_message(), 'защищённый ключ' ), 'Виноват ключ, и это сказано прямо' );
+$assert( ! str_contains( $secret_fail->get_error_message(), 'живёт около минуты' ), 'Про одноразовость кода тут не пишем — код ни при чём' );
+$GLOBALS['secret_mode'] = '';
 
 echo "All $checks offline OAuth checks passed.\n";
