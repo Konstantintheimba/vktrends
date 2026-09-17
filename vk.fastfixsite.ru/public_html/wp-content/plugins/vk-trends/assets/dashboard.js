@@ -212,7 +212,7 @@
     };
     function tokenReport(report) {
         const rows = (report.checks || []).map(check => `<tr><td>${esc(check.label)}<small class="vkt-muted"><code>${esc(check.method)}</code></small></td><td>${badge(check.ok ? 'доступен' : check.optional ? 'не нужен' : 'отказ', check.ok ? 'green' : check.optional ? '' : 'red')}</td><td>${check.code ? `код ${Number(check.code)}: ` : ''}${esc(check.message)}</td></tr>`).join('');
-        modal(`<h2>Проверка · ${esc(report.title || '')}</h2><p class="vkt-muted">Плагин вызвал методы VK этим ключом и показывает дословные ответы. Записи при этом не создаются.</p><div class="vkt-table-wrap"><table><thead><tr><th>Что проверяли</th><th>Итог</th><th>Ответ VK</th></tr></thead><tbody>${rows}</tbody></table></div>${report.ok ? '' : '<div class="vkt-info vkt-info-warning">Отказы остаются видны в карточке ключа, пока не будут исправлены.</div>'}`);
+        modal(`<h2>Проверка · ${esc(report.title || '')}</h2><p class="vkt-muted">${esc(report.note || 'Плагин вызвал методы VK этим ключом и показывает дословные ответы. Записи при этом не создаются.')}</p>${(report.verdict || []).length ? `<div class="vkt-info"><strong>Что из этого следует</strong><ul>${report.verdict.map(line => `<li>${esc(line)}</li>`).join('')}</ul></div>` : ''}<div class="vkt-table-wrap"><table><thead><tr><th>Что проверяли</th><th>Итог</th><th>Ответ VK</th></tr></thead><tbody>${rows}</tbody></table></div>${report.ok ? '' : '<div class="vkt-info vkt-info-warning">Отказы остаются видны в карточке ключа, пока не будут исправлены.</div>'}`);
     }
     function tokenCard(slot) {
         const life = slot.expires_in === null || slot.expires_in === undefined ? '' : ` · осталось ~${Math.round(slot.expires_in / 60)} мин.`;
@@ -473,7 +473,7 @@
             const retryable = deliveries.some(delivery => delivery.status === 'failed');
             return `<tr><td><strong>${esc(post.message ? String(post.message).slice(0, 130) : 'Публикация с вложением')}</strong>${post.attachments ? `<small class="vkt-muted">${esc(post.attachments)}</small>` : ''}${(post.media_items || []).length ? `<span class="vkt-media-mini">${post.media_items.map(item => safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="${esc(item.name)}" loading="lazy">` : `<em>${esc(item.name)}</em>`).join('')}</span>` : ''}<small class="vkt-muted">${post.origin === 'agents' ? 'Подготовлено агентами' : 'Создано вручную'}</small></td><td>${date(post.scheduled_at)}</td><td>${publishingBadge(post.status)}</td><td><div class="vkt-publishing-targets">${targets}</div></td><td class="vkt-table-actions">${post.status === 'draft' ? button('Проверить', 'publishing-review', `data-id="${Number(post.id)}"`) : ''}${retryable ? button('Повторить', 'publishing-retry', `data-id="${Number(post.id)}"`) : ''}${cancellable ? button('Отменить', 'publishing-cancel', `data-id="${Number(post.id)}"`) : ''}</td></tr>`;
         }).join('');
-        return heading('Автопостинг', 'Создавайте записи и публикуйте их сразу или по расписанию в несколько своих групп.', button(`${icon('refresh')} Обновить мои группы`, 'publishing-sync', '', true) + button('Запустить очередь', 'publishing-run')) +
+        return heading('Автопостинг', 'Создавайте записи и публикуйте их сразу или по расписанию в несколько своих групп.', button(`${icon('refresh')} Обновить мои группы`, 'publishing-sync', '', true) + button('Запустить очередь', 'publishing-run') + button('Стенд постинга', 'probe-matrix')) +
             (!publishingData.status.token_ready ? '<div class="vkt-info vkt-info-warning">Для публикации сохраните в настройках пользовательский токен VK ID с разрешениями <code>wall</code> и <code>groups</code>. Сервисный ключ умеет только читать стены.</div>' : '') +
             (publishingData.status.community_only ? '<div class="vkt-info">Подключён ключ одного сообщества. Нажмите «Обновить мои группы»: плагин добавит его как доступного адресата. Этот ключ публикует только на собственной стене и только текст — медиа VK ему запрещает.</div>' : '') +
             `<div class="vkt-stats">${stat('Своих групп', num(enabled.length), 'Включены и доступны для записи', 'people')}${stat('В очереди', num((totals.queued || 0) + (totals.scheduled || 0) + (totals.draft || 0)), state.settings.publishing_review ? 'Черновики ждут подтверждения' : 'Отправка сразу или по расписанию', 'check', 'purple')}${stat('Опубликовано', num(totals.published || 0), 'Полностью во все адресаты', 'send', 'green')}${stat('С ошибкой', num((totals.failed || 0) + (totals.partial || 0)), 'Можно повторить только неудачные адресаты', 'list', 'orange')}</div>` +
@@ -604,6 +604,13 @@
         if (command==='export-sources') { const list=state.sources.map(x=>x.value).join('\n'); modal(`<h2>Список источников</h2><p class="vkt-muted">Скопируйте и сохраните — этот же список можно вставить обратно через импорт.</p><textarea class="vkt-code-input" rows="12" readonly>${esc(list)}</textarea>`); return; }
         if (command==='add-source') { modal('<h2>Новый источник</h2><form data-form="source" class="vkt-form"><label>Тип<select name="kind"><option value="domain">Короткое имя сообщества</option><option value="owner">Числовой ID</option></select></label><label>Сообщество<input name="value" required maxlength="200" placeholder="team или -22822305"></label><p class="vkt-help">Короткое имя — часть адреса: для vk.com/team это team. Числовой ID сообщества пишется со знаком минус, ID пользователя — положительный.</p><button class="vkt-button vkt-primary">Сохранить источник</button></form>'); return; }
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
+        if (command==='probe-matrix') {
+            el.disabled = true;
+            try { tokenReport(await act('probe_matrix')); }
+            catch (error) { toast(error.message, true); }
+            finally { el.disabled = false; }
+            return;
+        }
         if (command==='token-probe' || command==='token-forget') {
             el.disabled = true;
             try {

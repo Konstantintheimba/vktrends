@@ -147,14 +147,31 @@ final class VKT_API {
         if ( 'app_secret' === $slot ) {
             return VKT_OAuth::check_secret();
         }
+        // На своей группе из константы проверка была зелёной, пока публикация
+        // падала: адресат в конструкторе выбирается другой. Проверяем те же
+        // группы, куда уходят файлы.
+        $photos = array();
+        $targets = class_exists( 'VKT_Publisher' ) ? VKT_Publisher::upload_targets() : array();
+        foreach ( $targets as $target ) {
+            $photos[] = array(
+                'photos.getWallUploadServer',
+                array( 'group_id' => absint( $target['group_id'] ) ),
+                'Загрузка фото в «' . $target['name'] . '» (право photos)',
+            );
+        }
+        if ( ! $photos && VKT_Community::group_id() ) {
+            $photos[] = array( 'photos.getWallUploadServer', array( 'group_id' => VKT_Community::group_id() ), 'Загрузка фото (право photos)' );
+        }
         $checks = array(
             'service' => array( array( 'wall.get', array( 'owner_id' => -1, 'count' => 1 ), 'Чтение стены' ) ),
             'community' => array( array( 'groups.getTokenPermissions', array(), 'Права ключа сообщества' ) ),
-            'user' => array(
-                array( 'users.get', array(), 'Аккаунт' ),
-                array( 'groups.get', array( 'filter' => 'admin', 'count' => 1 ), 'Список сообществ (право groups)' ),
-                array( 'photos.getWallUploadServer', array( 'group_id' => VKT_Community::group_id() ?: 1 ), 'Загрузка фото (право photos)' ),
-                array( 'wall.post', array(), 'Публикация (право wall)' ),
+            'user' => array_merge(
+                array(
+                    array( 'users.get', array(), 'Аккаунт' ),
+                    array( 'groups.get', array( 'filter' => 'admin', 'count' => 1 ), 'Список сообществ (право groups)' ),
+                ),
+                $photos,
+                array( array( 'wall.post', array(), 'Публикация (право wall)' ) )
             ),
         );
         $report = array( 'slot' => $slot, 'title' => $definitions[ $slot ]['title'], 'checks' => array(), 'ok' => true );
@@ -167,14 +184,21 @@ final class VKT_API {
             // Публикацию пользовательским токеном VK разрешает только приложениям
             // типа Standalone. Когда настроен ключ сообщества, публикует он —
             // и этот отказ ничему не мешает, поэтому не считаем его провалом.
-            $optional = 'wall.post' === $method && VKT_Community::configured();
+            $optional = ( 'wall.post' === $method && VKT_Community::configured() )
+                // Отказ загрузки в чужое сообщество — это отсутствие в нём прав
+                // администратора, а не изъян ключа: отчёт по токену из-за
+                // такого адресата краснеть не должен.
+                || ( 'photos.getWallUploadServer' === $method && absint( $params['group_id'] ?? 0 ) !== VKT_Community::group_id() );
+            $tail = 'wall.post' === $method
+                ? ' — это не мешает: на стене своего сообщества публикует ключ сообщества, а токен нужен только для загрузки фото.'
+                : ' — в это сообщество файл не приложить: право загрузки даёт администрирование, а его у токена нет. Записи с файлами отправляйте в своё сообщество.';
             $report['checks'][] = array(
                 'method' => $method,
                 'label' => $label,
                 'ok' => $granted,
                 'optional' => $optional && ! $granted,
                 'code' => $result['code'],
-                'message' => $result['message'] . ( $optional && ! $granted ? ' — это не мешает: на стене своего сообщества публикует ключ сообщества, а токен нужен только для загрузки фото.' : '' ),
+                'message' => $result['message'] . ( $optional && ! $granted ? $tail : '' ),
             );
             if ( ! $granted && ! $optional ) {
                 $report['ok'] = false;
@@ -185,8 +209,187 @@ final class VKT_API {
         return $report;
     }
 
-    /** Один пробный вызов: возвращает код и текст VK, ничего не логируя как ошибку публикации. */
+    /**
+     * Стенд постинга: один прогон вместо череды догадок. У каждого ключа своя
+     * роль, и спрашивать у него чужую работу бессмысленно — VK ответит
+     * отказом, который ничего не значит. photos.saveWallPhoto, video.save и
+     * настоящий wall.post с текстом сюда не входят намеренно: они уже создают
+     * объекты в сообществе.
+     */
+    public static function probe_matrix() {
+        $targets = class_exists( 'VKT_Publisher' ) ? VKT_Publisher::upload_targets() : array();
+        if ( ! $targets ) {
+            return new WP_Error( 'no_targets', 'Стенду нужен хотя бы один адресат: включите сообщество в «Автопостинге» либо задайте VKT_COMMUNITY_ID.', array( 'status' => 400 ) );
+        }
+        $definitions = VKT_Tokens::definitions();
+        $own = VKT_Community::group_id();
+        $report = array(
+            'title' => 'Стенд постинга',
+            'note' => 'Каждый ключ опрошен только по своей работе. Вызваны методы, которые ничего не создают: ни записей, ни фотографий.',
+            'verdict' => array(),
+            'checks' => array(),
+            // Уровень отчёта всегда ok: стенд ничего не закрепляет за ключами
+            // через note(), а отказ в чужой группе — факт о группе, не о ключе.
+            'ok' => true,
+        );
+        $uploads = array();
+        $publishes = array();
+        foreach ( array( 'user', 'community', 'service' ) as $slot ) {
+            $token = VKT_Tokens::token( $slot );
+            if ( '' === $token ) {
+                continue;
+            }
+            $title = (string) ( $definitions[ $slot ]['title'] ?? $slot );
+            foreach ( self::matrix_calls( $slot, $targets, $own ) as $call ) {
+                $result = self::probe_call( $call['method'], $call['params'], $token );
+                // Код 100 значит «право есть, параметров нет»: для wall.post это
+                // и есть разрешение, а запись при этом не создаётся.
+                $granted = $result['ok'] || in_array( $result['code'], array( 100, 113, 104 ), true );
+                $optional = ! $granted && ! empty( $call['optional'] );
+                $message = 'groups.getById' === $call['method'] && $result['ok']
+                    ? self::group_rights( $result['response'] )
+                    // Код 6 — это темп запросов, а не отсутствие права:
+                    // без пояснения строка читается как настоящий отказ.
+                    : $result['message'] . ( 6 === $result['code'] ? ' — это ограничение частоты запросов VK, а не отказ в праве. Повторите стенд.' : '' );
+                $report['checks'][] = array(
+                    'method' => $call['method'],
+                    'label' => $title . ' · ' . $call['what'],
+                    'ok' => $granted,
+                    'optional' => $optional,
+                    'code' => $result['code'],
+                    'message' => $message . ( $optional ? (string) ( $call['tail'] ?? '' ) : '' ),
+                );
+                $group = absint( $call['group'] ?? 0 );
+                if ( $group && 'photos.getWallUploadServer' === $call['method'] ) {
+                    $uploads[ $group ] = $granted;
+                }
+                if ( $group && 'wall.post' === $call['method'] ) {
+                    $publishes[ $group ] = $granted;
+                }
+            }
+        }
+        if ( ! $report['checks'] ) {
+            return new WP_Error( 'no_tokens', 'Ни один ключ VK не сохранён — проверять нечем.', array( 'status' => 400 ) );
+        }
+        $report['verdict'] = self::matrix_verdict( $targets, $uploads, $publishes );
+        return $report;
+    }
+
+    /**
+     * Что спрашивать у конкретного ключа. Сервисный ключ по замыслу VK читает
+     * стены и только: просить у него загрузку и публикацию — значит собирать
+     * красные строки о том, что и не должно работать. Ключ сообщества
+     * публикует на своей стене, а фото ему закрыты кодом 27. Загружать файлы
+     * умеет один пользовательский токен, зато wall.post закрыт уже ему.
+     */
+    private static function matrix_calls( $slot, $targets, $own ) {
+        if ( 'service' === $slot ) {
+            return array( array(
+                'method' => 'wall.get',
+                'params' => array( 'owner_id' => -absint( $targets[0]['group_id'] ), 'count' => 1 ),
+                'what' => 'чтение стены — вся его работа',
+            ) );
+        }
+        if ( 'community' === $slot ) {
+            $calls = array( array( 'method' => 'groups.getTokenPermissions', 'params' => array(), 'what' => 'выданные права' ) );
+            foreach ( $targets as $target ) {
+                if ( absint( $target['group_id'] ) !== $own ) {
+                    continue;
+                }
+                $calls[] = array(
+                    'method' => 'wall.post',
+                    'params' => array( 'owner_id' => -$own ),
+                    'what' => 'право публикации в «' . $target['name'] . '»',
+                    'group' => $own,
+                );
+            }
+            return $calls;
+        }
+        $calls = array(
+            array( 'method' => 'users.get', 'params' => array(), 'what' => 'чей это ключ' ),
+            array( 'method' => 'groups.get', 'params' => array( 'filter' => 'editor', 'count' => 1 ), 'what' => 'свои сообщества' ),
+            array(
+                'method' => 'wall.post',
+                'params' => array(),
+                'what' => 'право публикации',
+                'optional' => VKT_Community::configured(),
+                'tail' => ' — это не мешает: на стене своего сообщества публикует ключ сообщества, а токен нужен только для загрузки файлов.',
+            ),
+        );
+        foreach ( $targets as $target ) {
+            $group_id = absint( $target['group_id'] );
+            $where = ' в «' . $target['name'] . '»';
+            $calls[] = array(
+                'method' => 'groups.getById',
+                'params' => array( 'group_ids' => $group_id, 'fields' => 'can_post,is_admin,admin_level' ),
+                'what' => 'права' . $where,
+            );
+            $calls[] = array(
+                'method' => 'photos.getWallUploadServer',
+                'params' => array( 'group_id' => $group_id ),
+                'what' => 'адрес загрузки файлов' . $where,
+                'group' => $group_id,
+            );
+        }
+        return $calls;
+    }
+
+    /** Итог по строке на сообщество: уйдёт ли туда запись с файлом и чем именно. */
+    private static function matrix_verdict( $targets, $uploads, $publishes ) {
+        $lines = array();
+        foreach ( $targets as $target ) {
+            $group_id = absint( $target['group_id'] );
+            $upload = ! empty( $uploads[ $group_id ] );
+            $publish = ! empty( $publishes[ $group_id ] );
+            if ( $upload && $publish ) {
+                $lines[] = $target['name'] . ' — запись с файлами уйдёт: файл грузит пользовательский токен, публикует ключ сообщества.';
+            } elseif ( $upload ) {
+                $lines[] = $target['name'] . ' — файл загрузится, а публиковать нечем: нужен ключ сообщества именно этой группы, потому что пользовательскому токену wall.post закрыт для приложений не типа Standalone.';
+            } elseif ( $publish ) {
+                $lines[] = $target['name'] . ' — текст опубликуется, а файл не загрузится: пользовательскому токену закрыт photos.getWallUploadServer в этой группе.';
+            } else {
+                $lines[] = $target['name'] . ' — ни загрузки, ни публикации: нужен пользовательский токен с правом photos и ключ сообщества этой группы.';
+            }
+        }
+        return $lines;
+    }
+
+    /** Ответ groups.getById словами. Догадок не строим: право загрузки проверено живым вызовом в соседней строке отчёта. */
+    private static function group_rights( $response ) {
+        $group = (array) ( $response['groups'][0] ?? $response[0] ?? array() );
+        if ( ! $group ) {
+            return 'VK не вернул данные сообщества.';
+        }
+        $levels = array( 0 => 'не администратор', 1 => 'модератор', 2 => 'редактор', 3 => 'администратор' );
+        $admin = absint( $group['admin_level'] ?? 0 );
+        return sprintf( '%s (admin_level %d), can_post %d', $levels[ $admin ] ?? 'неизвестно', $admin, absint( $group['can_post'] ?? 0 ) );
+    }
+
+    /** Пауза между пробными вызовами, микросекунды. Ноль ставится только offline-тестами. */
+    public static $probe_pause_us = 350000;
+
+    /**
+     * Один пробный вызов. VK считает частоту, а стенд делает запросы десятками
+     * подряд — без паузы часть проверок возвращала код 6 вместо настоящего
+     * ответа. Одна повторная попытка после паузы отделяет ограничение частоты
+     * от настоящего отказа в праве.
+     */
     private static function probe_call( $method, $params, $token ) {
+        $result = array( 'ok' => false, 'code' => 6, 'message' => 'VK ограничил частоту запросов.' );
+        for ( $attempt = 1; $attempt <= 2; ++$attempt ) {
+            if ( self::$probe_pause_us > 0 ) {
+                usleep( 1 === $attempt ? (int) self::$probe_pause_us : 1200000 );
+            }
+            $result = self::probe_request( $method, $params, $token );
+            if ( 6 !== $result['code'] ) {
+                return $result;
+            }
+        }
+        return $result;
+    }
+
+    /** Сам запрос: возвращает код и текст VK, ничего не логируя как ошибку публикации. */
+    private static function probe_request( $method, $params, $token ) {
         $response = wp_remote_post( 'https://api.vk.com/method/' . $method, array(
             'timeout' => 15,
             'redirection' => 0,
@@ -208,7 +411,7 @@ final class VKT_API {
                 'message' => str_replace( $token, '[hidden]', sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) ) ),
             );
         }
-        return array( 'ok' => true, 'code' => 0, 'message' => 'Метод доступен.' );
+        return array( 'ok' => true, 'code' => 0, 'message' => 'Метод доступен.', 'response' => $body['response'] ?? null );
     }
 
     public static function detect_token_kind( $token ) {
@@ -251,6 +454,13 @@ final class VKT_API {
         if ( ! $data['expires_at'] || $data['expires_at'] - time() > 300 ) {
             return true;
         }
+        // Токен классического обмена кода приходит без пары обновления:
+        // VKT_Tokens::save() пишет refresh_token, device_id и client_id
+        // пустыми. Обновлять его через id.vk.ru нечем, а отказ останавливал
+        // всю публикацию на ровном месте — работаем, пока VK его принимает.
+        if ( '' === $data['refresh_token'] || '' === $data['client_id'] || '' === $data['device_id'] ) {
+            return true;
+        }
         if ( ! VKT_Store::lock( 'token_refresh', 20 ) ) {
             // Токен уже обновляет другой запрос — работаем со старым значением, пока не истёк совсем.
             return true;
@@ -262,7 +472,9 @@ final class VKT_API {
                 return true;
             }
             if ( '' === $data['refresh_token'] || '' === $data['client_id'] || '' === $data['device_id'] ) {
-                return new WP_Error( 'refresh_incomplete', 'Не хватает данных для автообновления пользовательского токена VK ID. Сохраните его заново.', array( 'status' => 400 ) );
+                // Пара обновления исчезла, пока ждали блокировку: не повод
+                // отказывать в запросе — ключ ещё действует.
+                return true;
             }
             $response = wp_remote_post( 'https://id.vk.ru/oauth2/auth', array(
                 'timeout' => 15, 'redirection' => 0, 'sslverify' => true,
@@ -419,8 +631,18 @@ final class VKT_API {
         if ( '' === $token ) {
             return new WP_Error( 'no_token', 'Ни один ключ VK не сохранён. Добавьте его в настройках.', array( 'status' => 400 ) );
         }
-        if ( ! VKT_Store::lock( 'api', 30 ) ) {
-            return new WP_Error( 'rate_limit', 'Запрос уже выполняется. Подождите несколько секунд.', array( 'status' => 429, 'retryable' => true ) );
+        // Темп запросов к VK держится этой блокировкой: после каждого ответа
+        // она отпускается на секунду вперёд. Раньше занятая блокировка сразу
+        // возвращала отказ, и запись с фотографией не могла уйти в принципе:
+        // её отправка — три запроса подряд (getWallUploadServer →
+        // saveWallPhoto → wall.post), и второй всегда падал «Запрос уже
+        // выполняется». Теперь ждём своей очереди.
+        $waited = 0;
+        while ( ! VKT_Store::lock( 'api', 30 ) ) {
+            if ( ++$waited > 12 ) {
+                return new WP_Error( 'rate_limit', 'Очередь запросов к VK не освободилась за пять секунд. Повторите попытку.', array( 'status' => 429, 'retryable' => true ) );
+            }
+            usleep( 400000 );
         }
         $started = microtime( true );
         try {

@@ -109,6 +109,8 @@
 .vkt-footer { margin: 0 38px; min-height: 60px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--vkt-line); font-size: 10px; color: #a0aaba; }
 .vkt-footer .vkt-muted { font-size: 9px; margin-left: 6px; color: #b4bdcb; }
 .vkt-info { border: 1px solid #dfeafb; background: #eff5ff; color: #6780a3; border-radius: 8px; padding: 15px 18px; font-size: 12px; line-height: 1.8; margin-bottom: 23px; }
+.vkt-info ul { margin: 6px 0 0; padding-left: 17px; }
+.vkt-info li { margin-top: 3px; }
 .vkt-search-form { display: flex; gap: 18px; align-items: center; }
 .vkt-search-input { display: flex; align-items: center; gap: 10px; flex: 1; color: #90a0b5; }
 .vkt-search-input input { border: 0; background: #f7f9fc; }

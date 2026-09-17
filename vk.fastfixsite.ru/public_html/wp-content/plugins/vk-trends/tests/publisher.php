@@ -4,6 +4,9 @@ define( 'ABSPATH', __DIR__ . '/' );
 
 class WP_Error {
     public function __construct( public $code = '', public $message = '', public $data = array() ) {}
+    public function get_error_message() { return $this->message; }
+    public function get_error_data() { return $this->data; }
+    public function add_data( $data ) { $this->data = $data; }
 }
 function esc_url_raw( $url, $protocols = array() ) {
     $scheme = strtolower( (string) parse_url( $url, PHP_URL_SCHEME ) );
@@ -20,9 +23,59 @@ function absint( $value ) { return abs( (int) $value ); }
 define( 'VKT_COMMUNITY_ID', 241464933 );
 class VKT_Community {
     public static bool $on = true;
+    public static array $published = array();
     public static function configured() { return self::$on; }
     public static function group_id() { return 241464933; }
+    public static string $fail_with = '';
+    public static function publish( $params ) {
+        if ( '' !== self::$fail_with ) { return new WP_Error( 'vk_100', self::$fail_with, array( 'status' => 422, 'vk_code' => 100 ) ); }
+        self::$published[] = $params;
+        return array( 'response' => array( 'post_id' => 1 ) );
+    }
 }
+const ARRAY_A = 'ARRAY_A';
+const OBJECT_K = 'OBJECT_K';
+function update_option( $name, $value, $autoload = true ) { return true; }
+class VKT_Store {
+    public static function table( $name ) { return 'wp_vkt_' . $name; }
+    public static function lock( $name, $seconds ) { return true; }
+    public static function unlock( $name ) {}
+    public static function log() {}
+}
+class VKT_Tokens {
+    public static function has( $slot ) { return 'user' === $slot; }
+    public static function token( $slot ) { return 'user' === $slot ? 'USER_TOKEN' : ''; }
+}
+class VKT_Media {
+    public static function prepare_for_vk( $ids, $group_id ) { return ''; }
+}
+// Ни один тест очереди не должен дойти до сети: вызов записывается и виден в проверке.
+$GLOBALS['vkt_http'] = 0;
+function wp_remote_post( $url, $args ) { ++$GLOBALS['vkt_http']; return new WP_Error( 'blocked', 'Сеть в тесте недоступна' ); }
+class VKT_Test_WPDB {
+    public array $queries = array();
+    public array $updates = array();
+    public array $rows = array();
+    public function prepare( $sql, ...$args ) {
+        foreach ( $args as $arg ) {
+            $sql = preg_replace( '/%[sd]/', is_int( $arg ) ? (string) $arg : "'" . $arg . "'", $sql, 1 );
+        }
+        return $sql;
+    }
+    public function query( $sql ) { $this->queries[] = $sql; return 1; }
+    public function get_results( $sql, $mode = null ) {
+        $this->queries[] = $sql;
+        if ( str_contains( $sql, 'GROUP BY status' ) ) { return array(); }
+        $rows = $this->rows;
+        $this->rows = array();
+        return $rows;
+    }
+    public function get_var( $sql ) { return ''; }
+    public function get_col( $sql ) { return array(); }
+    public function update( $table, $data, $where ) { $this->updates[] = array( 'table' => $table, 'data' => $data, 'where' => $where ); return 1; }
+}
+$wpdb = new VKT_Test_WPDB();
+$GLOBALS['wpdb'] = $wpdb;
 
 require dirname( __DIR__ ) . '/includes/class-publisher.php';
 
@@ -88,5 +141,69 @@ $assert( false === $picker->invoke( null, 987, '' ), 'Чужая группа к
 VKT_Community::$on = false;
 $assert( false === $picker->invoke( null, 241464933, '' ), 'Без настроенного ключа сообщества остаётся пользовательский токен' );
 VKT_Community::$on = true;
+
+// Повтор вручную: кэш вложений VK сбрасывается, иначе отклонённая строка
+// отправляется снова и снова.
+VKT_Publisher::retry( 7 );
+$retry_sql = $wpdb->queries[0];
+$assert( str_contains( $retry_sql, "media_attachments=''" ), 'Кнопка «Повторить» сбрасывает кэш вложений VK' );
+$assert( str_contains( $retry_sql, "status='failed'" ), 'В очередь возвращаются только проваленные доставки' );
+$assert( str_contains( $retry_sql, "attempts=0" ), 'Счётчик попыток обнуляется' );
+
+// Запись, созданная прежней версией: прямая ссылка на файл в поле вложений.
+// Текущие проверки обязаны поймать её до обращения к VK.
+$wpdb->queries = array();
+$wpdb->updates = array();
+$wpdb->rows = array( array(
+    'id' => 3,
+    'outbound_post_id' => 7,
+    'group_id' => 241464933,
+    'attempts' => 0,
+    'media' => '',
+    'media_attachments' => '',
+    'attachments' => 'https://example.com/photo.jpg',
+    'message' => 'Осенний пост',
+    'signed' => 0,
+    'close_comments' => 0,
+    'guid' => 'guid-3',
+    'local_group_id' => 1,
+    'name' => 'Своя группа',
+    'enabled' => 1,
+    'can_post' => 1,
+) );
+VKT_Publisher::run_due( 1 );
+$failed = array_values( array_filter( $wpdb->updates, static fn( $update ) => 'failed' === ( $update['data']['status'] ?? '' ) ) );
+$assert( 1 === count( $failed ), 'Запись прежней версии отклонена очередью' );
+$assert( str_contains( $failed[0]['data']['error'], 'Прямая ссылка на файл' ), 'Причина отказа объяснена словами, а не кодом VK' );
+$assert( 0 === $GLOBALS['vkt_http'], 'До VK дело не дошло: ни одного сетевого запроса' );
+$assert( array() === VKT_Community::$published, 'Ключ сообщества такую запись не публикует' );
+
+// Дословный отказ VK про ссылку читается как поломка плагина, поэтому причина
+// в очереди объясняется словами.
+$wpdb->updates = array();
+VKT_Community::$fail_with = 'VK отклонил запрос сообщества, код 100: One of the parameters specified was missing or invalid: Violated: link_photo_sizing_rule. No photo given';
+$wpdb->rows = array( array(
+    'id' => 4,
+    'outbound_post_id' => 8,
+    'group_id' => 241464933,
+    'attempts' => 0,
+    'media' => '',
+    'media_attachments' => '',
+    'attachments' => 'https://example.com/tovar',
+    'message' => 'Запись со ссылкой',
+    'signed' => 0,
+    'close_comments' => 0,
+    'guid' => 'guid-4',
+    'local_group_id' => 1,
+    'name' => 'Своя группа',
+    'enabled' => 1,
+    'can_post' => 1,
+) );
+VKT_Publisher::run_due( 1 );
+$link_failed = array_values( array_filter( $wpdb->updates, static fn( $update ) => isset( $update['data']['error'] ) && '' !== (string) $update['data']['error'] ) );
+$assert( 1 === count( $link_failed ), 'Отказ по ссылке записан в доставку' );
+$assert( str_contains( $link_failed[0]['data']['error'], 'VK не собрал карточку из ссылки' ), 'Причина объяснена словами' );
+$assert( ! str_contains( $link_failed[0]['data']['error'], 'link_photo_sizing_rule' ), 'Внутренний код VK в сообщение не попадает' );
+VKT_Community::$fail_with = '';
 
 echo "All $checks offline publisher checks passed.\n";

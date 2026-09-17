@@ -237,6 +237,30 @@ final class VKT_Publisher {
         return false === $result ? self::error( 'Не удалось изменить сообщество.', 500 ) : array( 'ok' => true );
     }
 
+    /**
+     * Адресаты, куда плагин действительно грузит файлы. Право загрузки надо
+     * проверять на них: groups.get(filter=editor) приводит в список и
+     * сообщества, где владелец токена просто участник, а туда загрузка
+     * закрыта — и видно это только на конкретном group_id. Своя группа из
+     * константы идёт первой и попадает в список даже выключенной.
+     */
+    public static function upload_targets( $limit = 5 ) {
+        global $wpdb;
+        $table = VKT_Store::table( 'publishing_groups' );
+        $limit = max( 1, min( 50, (int) $limit ) );
+        $rows = (array) $wpdb->get_results( $wpdb->prepare(
+            "SELECT group_id,name FROM $table WHERE enabled=1 AND can_post=1 ORDER BY name,id LIMIT %d",
+            $limit
+        ), ARRAY_A );
+        $community = VKT_Community::group_id();
+        if ( ! $community || in_array( $community, array_map( static fn( $row ) => absint( $row['group_id'] ), $rows ), true ) ) {
+            return $rows;
+        }
+        $name = (string) $wpdb->get_var( $wpdb->prepare( "SELECT name FROM $table WHERE group_id=%d", $community ) );
+        array_unshift( $rows, array( 'group_id' => $community, 'name' => '' !== $name ? $name : 'своё сообщество ' . $community ) );
+        return array_slice( $rows, 0, $limit );
+    }
+
     private static function sanitize_attachments( $raw ) {
         $raw = is_string( $raw ) ? trim( $raw ) : '';
         if ( '' === $raw ) {
@@ -534,7 +558,11 @@ final class VKT_Publisher {
         global $wpdb;
         $post_id = absint( $post_id );
         $now = gmdate( 'Y-m-d H:i:s' );
-        $result = $wpdb->query( $wpdb->prepare( "UPDATE " . VKT_Store::table( 'outbound_deliveries' ) . " SET status='pending',attempts=0,available_at=%s,error='',updated_at=%s WHERE outbound_post_id=%d AND status='failed'", $now, $now, $post_id ) );
+        // Кэш вложений VK сбрасывается. Он нужен, чтобы автоматический повтор
+        // после сетевой ошибки не загрузил те же файлы дважды, но эта кнопка
+        // работает только по status='failed': там в кэше лежит ровно то, что VK
+        // отклонил. Автоматический повтор идёт по 'pending' и кэш сохраняет.
+        $result = $wpdb->query( $wpdb->prepare( "UPDATE " . VKT_Store::table( 'outbound_deliveries' ) . " SET status='pending',attempts=0,available_at=%s,error='',media_attachments='',updated_at=%s WHERE outbound_post_id=%d AND status='failed'", $now, $now, $post_id ) );
         if ( false === $result ) {
             return self::error( 'Не удалось вернуть публикацию в очередь.', 500 );
         }
@@ -576,10 +604,13 @@ final class VKT_Publisher {
                 if ( ! $delivery['local_group_id'] || ! $delivery['enabled'] || ! $delivery['can_post'] ) {
                     $result = self::error( 'Сообщество выключено или право публикации отозвано.' );
                 } else {
+                    // Записи прежних версий проходят текущие проверки: иначе
+                    // разрешённое тогда уходит в VK и возвращается кодом 100.
+                    $manual = self::sanitize_attachments( $delivery['attachments'] );
                     // ID вложения VK зависит от сообщества, поэтому файлы
                     // загружаются на каждого адресата и кэшируются в задании.
-                    $media = self::resolve_media( $delivery );
-                    $attachments = is_wp_error( $media ) ? $media : self::merge_attachments( $media, $delivery['attachments'] );
+                    $media = is_wp_error( $manual ) ? $manual : self::resolve_media( $delivery );
+                    $attachments = is_wp_error( $media ) ? $media : self::merge_attachments( $media, $manual );
                     if ( is_wp_error( $attachments ) ) {
                         $result = $attachments;
                     }
@@ -611,7 +642,16 @@ final class VKT_Publisher {
                     $retry = ! empty( $error_data['retryable'] ) && $attempts < self::MAX_ATTEMPTS;
                     $changes['status'] = $retry ? 'pending' : 'failed';
                     $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + min( 3600, 60 * ( 2 ** $attempts ) ) );
-                    $changes['error'] = mb_substr( $result->get_error_message(), 0, 255 );
+                    // VK строит из ссылки карточку и требует у неё превью.
+                    // Дословное link_photo_sizing_rule читается как поломка
+                    // плагина, хотя дело в самой ссылке во вложениях.
+                    $message = $result->get_error_message();
+                    // Только ответ самого VK: собственная подсказка плагина про
+                    // прямую ссылку на файл точнее и упоминает то же правило.
+                    if ( 100 === (int) ( $error_data['vk_code'] ?? 0 ) && str_contains( $message, 'link_photo_sizing_rule' ) ) {
+                        $message = 'VK не собрал карточку из ссылки во вложениях: на странице нет изображения подходящего размера. Уберите ссылку или замените её на страницу с превью.';
+                    }
+                    $changes['error'] = mb_substr( $message, 0, 255 );
                 } else {
                     $changes['status'] = 'published';
                     $changes['vk_post_id'] = absint( $result['response']['post_id'] ?? 0 );
