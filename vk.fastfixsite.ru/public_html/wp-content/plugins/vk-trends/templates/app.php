@@ -10,9 +10,16 @@
             <a href="#posts" data-nav="posts"><span data-icon="post"></span>Посты<span id="vkt-post-count" class="vkt-nav-count">0</span></a>
             <a href="#communities" data-nav="communities"><span data-icon="people"></span>Сообщества</a>
             <a href="#publishing" data-nav="publishing"><span data-icon="send"></span>Автопостинг</a>
+            <a href="#series" data-nav="series"><span data-icon="clock"></span>Серия постов</a>
             <a href="#videos" data-nav="videos"><span data-icon="play"></span>Мои ролики<span id="vkt-video-count" class="vkt-nav-count">0</span></a>
             <a href="#products" data-nav="products"><span data-icon="bag"></span>Товары</a>
             <a href="#sources" data-nav="sources"><span data-icon="layers"></span>Источники</a>
+        </nav>
+        <div class="vkt-nav-caption">ПОДКЛЮЧЕНИЯ</div>
+        <nav aria-label="Подключения">
+            <a href="#reading" data-nav="reading"><span data-icon="eye"></span>Чтение постов<span id="vkt-reading-dot" class="vkt-nav-dot"></span></a>
+            <a href="#posting" data-nav="posting"><span data-icon="post"></span>Публикация<span id="vkt-posting-dot" class="vkt-nav-dot"></span></a>
+            <a href="#attachments" data-nav="attachments"><span data-icon="plus"></span>Что можно прикрепить</a>
         </nav>
         <div class="vkt-nav-caption">ИНСТРУМЕНТЫ</div>
         <nav aria-label="Инструменты">

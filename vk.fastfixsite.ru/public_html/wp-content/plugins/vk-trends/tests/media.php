@@ -70,6 +70,9 @@ function wp_remote_retrieve_response_code( $response ) { return (int) $response[
 function wp_remote_retrieve_body( $response ) { return (string) $response['body']; }
 
 require dirname( __DIR__ ) . '/includes/class-media.php';
+// Предел серии живёт в публикаторе: в боевом плагине оба класса подключены
+// безусловно, а изолированному тексту нужна только константа.
+class VKT_Publisher { const MAX_SERIES_SLOTS = 60; }
 require dirname( __DIR__ ) . '/includes/class-ai.php';
 
 $checks = 0;
@@ -108,6 +111,21 @@ $assert( is_wp_error( VKT_AI::video_status( 'коротко' ) ), 'Неверн�
 $failed = VKT_AI::video_status( 'e2871717-85bf-9bbb-83a9-e51f098efaef' );
 $assert( is_wp_error( $failed ) && ! str_contains( $failed->get_error_message(), VKT_XAI_API_KEY ), 'Ошибка xAI не раскрывает ключ' );
 $assert( ! str_contains( json_encode( VKT_Store::$entries ), VKT_XAI_API_KEY ), 'В журнал попадают только метод и статус' );
+
+// ——— Серия текстов одним запросом ———
+// Просьбу вернуть чистый JSON модель выполняет не всегда, поэтому разбор
+// проверяется на всех трёх формах ответа, которые встречались живьём.
+$parse = new ReflectionMethod( VKT_AI::class, 'parse_series' );
+$parse->setAccessible( true );
+$assert( array( 'Первый', 'Второй' ) === $parse->invoke( null, '{"posts":["Первый","Второй"]}' ), 'Чистый JSON с ключом posts' );
+$assert( array( 'Первый', 'Второй' ) === $parse->invoke( null, "```json\n{\"posts\":[\"Первый\",\"Второй\"]}\n```" ), 'JSON в тройных кавычках' );
+$assert( array( 'Первый', 'Второй' ) === $parse->invoke( null, '["Первый","Второй"]' ), 'Массив без ключа posts' );
+$assert( array( 'Первый', 'Второй' ) === $parse->invoke( null, '[{"text":"Первый"},{"text":"Второй"}]' ), 'Массив объектов с полем text' );
+$numbered = $parse->invoke( null, "1. Первый пост\n2) Второй пост\n3. Третий пост" );
+$assert( 3 === count( $numbered ) && 'Первый пост' === $numbered[0] && 'Третий пост' === $numbered[2], 'Пронумерованный список тоже разбирается' );
+$assert( array() === $parse->invoke( null, '   ' ), 'Пустой ответ даёт пустой список' );
+$assert( array() === $parse->invoke( null, '{"posts":[]}' ), 'Пустой список остаётся пустым' );
+$assert( is_wp_error( VKT_AI::generate_series( 'ок', 5 ) ), 'Слишком короткая тема серии отклоняется до запроса' );
 
 foreach ( $library as $file ) { @unlink( $file['path'] ); }
 echo "All $checks offline media and xAI checks passed.\n";

@@ -455,6 +455,10 @@ final class VKT_Plugin {
                 return VKT_API::probe_slot( sanitize_key( $data['slot'] ?? '' ) );
             case 'probe_matrix':
                 return VKT_API::probe_matrix();
+            case 'series_generate':
+                return VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0 );
+            case 'series_queue':
+                return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
             case 'vkid_start':
                 return VKT_VKID::start( $data['return_to'] ?? '' );
             case 'ai_text':

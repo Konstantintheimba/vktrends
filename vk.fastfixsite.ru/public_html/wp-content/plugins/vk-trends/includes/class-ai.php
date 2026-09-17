@@ -89,18 +89,94 @@ final class VKT_AI {
         if ( is_wp_error( $result ) ) {
             return $result;
         }
+        $text = trim( wp_strip_all_tags( self::output_text( $result ) ) );
+        return '' === $text ? self::error( 'xAI не вернул текст.', 502 ) : array( 'text' => mb_substr( $text, 0, 16000 ) );
+    }
+
+    /** Текст ответа: xAI кладёт его либо в output_text, либо по частям в output[].content[]. */
+    private static function output_text( $result ) {
         $text = is_string( $result['output_text'] ?? null ) ? trim( $result['output_text'] ) : '';
-        if ( '' === $text ) {
-            foreach ( (array) ( $result['output'] ?? array() ) as $output ) {
-                foreach ( (array) ( $output['content'] ?? array() ) as $content ) {
-                    if ( 'output_text' === ( $content['type'] ?? '' ) && is_string( $content['text'] ?? null ) ) {
-                        $text .= ( $text ? "\n" : '' ) . trim( $content['text'] );
-                    }
+        if ( '' !== $text ) {
+            return $text;
+        }
+        foreach ( (array) ( $result['output'] ?? array() ) as $output ) {
+            foreach ( (array) ( $output['content'] ?? array() ) as $content ) {
+                if ( 'output_text' === ( $content['type'] ?? '' ) && is_string( $content['text'] ?? null ) ) {
+                    $text .= ( $text ? "\n" : '' ) . trim( $content['text'] );
                 }
             }
         }
-        $text = trim( wp_strip_all_tags( $text ) );
-        return '' === $text ? self::error( 'xAI не вернул текст.', 502 ) : array( 'text' => mb_substr( $text, 0, 16000 ) );
+        return $text;
+    }
+
+    /**
+     * Серия текстов одним запросом. По одному было бы и дороже, и хуже: модель
+     * не знает, о чём уже написала, и посты повторяли бы друг друга. Поэтому
+     * просим сразу список и разбираем ответ.
+     */
+    public static function generate_series( $prompt, $count ) {
+        $prompt = self::prompt( $prompt );
+        if ( is_wp_error( $prompt ) ) {
+            return $prompt;
+        }
+        $count = max( 1, min( VKT_Publisher::MAX_SERIES_SLOTS, (int) $count ) );
+        $input = 'Подготовь ' . $count . ' готовых текстов для постов сообщества VK на русском языке. Это серия на период: посты не должны повторять друг друга и должны раскрывать тему с разных сторон.'
+            . ' Верни строго JSON вида {"posts":["текст 1","текст 2"]} — без пояснений, без Markdown и без тройных кавычек.'
+            . ' Ровно ' . $count . ' элементов, каждый не длиннее 3000 символов. Не выдумывай факты, цены, ссылки и обещания.'
+            . "\n\nТема серии: " . $prompt;
+        // Серия из десятков текстов пишется дольше одиночного поста.
+        $result = self::request( 'POST', '/v1/responses', array(
+            'model' => self::TEXT_MODEL,
+            'input' => $input,
+            'store' => false,
+            'reasoning' => array( 'effort' => 'low' ),
+        ), 180 );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $posts = self::parse_series( self::output_text( $result ) );
+        if ( ! $posts ) {
+            return self::error( 'xAI ответил, но собрать из ответа список текстов не удалось. Повторите запрос или уточните тему.', 502, true );
+        }
+        return array( 'posts' => array_slice( $posts, 0, $count ), 'requested' => $count );
+    }
+
+    /**
+     * Ответ модели в список текстов. Просьбу вернуть чистый JSON она выполняет
+     * не всегда: бывает обёртка в тройные кавычки, массив без ключа posts и
+     * обычный пронумерованный список. Разбираем все три случая.
+     */
+    private static function parse_series( $raw ) {
+        $raw = trim( (string) $raw );
+        if ( '' === $raw ) {
+            return array();
+        }
+        if ( preg_match( '/```(?:json)?\s*(.+?)```/s', $raw, $fenced ) ) {
+            $raw = trim( $fenced[1] );
+        }
+        $decoded = json_decode( $raw, true );
+        $items = array();
+        if ( is_array( $decoded ) ) {
+            $items = isset( $decoded['posts'] ) && is_array( $decoded['posts'] ) ? $decoded['posts'] : $decoded;
+        }
+        if ( ! $items && preg_match_all( '/^\s*\d{1,2}[.)]\s*(.+?)(?=\n\s*\d{1,2}[.)]|\z)/ms', $raw, $matches ) ) {
+            $items = $matches[1];
+        }
+        $texts = array();
+        foreach ( (array) $items as $item ) {
+            if ( is_string( $item ) ) {
+                $text = $item;
+            } elseif ( is_array( $item ) ) {
+                $text = (string) ( $item['text'] ?? $item['message'] ?? $item['post'] ?? '' );
+            } else {
+                $text = '';
+            }
+            $text = trim( wp_strip_all_tags( $text ) );
+            if ( '' !== $text ) {
+                $texts[] = mb_substr( $text, 0, 16000 );
+            }
+        }
+        return $texts;
     }
 
     public static function generate_image( $prompt, $ratio = 'portrait' ) {

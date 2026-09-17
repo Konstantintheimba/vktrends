@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, setPublishing(value) {publishingData=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -104,7 +104,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
         community: {configured: false}, ai: {configured: true, text_model: 't', image_model: 'i', video_model: 'v'},
         vkid: {configured: true, client_id: 54770323, locked: false, redirect_uri: 'https://example.test/wp-admin/admin-post.php?action=vkt_vkid', scope: 'wall photos groups video', has_secret: false, blocked_by_constant: true},
     });
-    const blocked = api.settings();
+    const blocked = api.posting();
     check(blocked.includes('name="vkid_client_id"') && blocked.includes('value="54770323"'), 'Поле ID приложения показывает сохранённое значение');
     // Слово disabled встречается в подсказке про выключенное приложение,
     // поэтому смотрим именно на тег кнопки.
@@ -114,7 +114,64 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(!vkidForm.slice(0, vkidForm.indexOf('</form>')).includes('input') || !/<input[^>]*\sdisabled/.test(vkidForm.slice(0, vkidForm.indexOf('</form>'))), 'Поле ID приложения остаётся доступным для ввода');
     check(blocked.includes('Сохранить ID приложения'), 'Пока константа на месте, кнопка честно называется сохранением');
     state.settings.vkid.blocked_by_constant = false;
-    check(api.settings().includes('Подключить VK ID'), 'Без константы кнопка запускает подключение');
+    check(api.posting().includes('Подключить VK ID'), 'Без константы кнопка запускает подключение');
+
+    // Подключения разведены по страницам: ключ чтения не должен появляться
+    // среди ключей публикации, иначе разделение теряет смысл.
+    state.settings.tokens = [
+        {slot: 'service', title: 'Сервисный ключ приложения', hint: 'Читает стены', has_token: true, preview: 'vk1.a.TU2Z…JJufS', length: 220},
+        {slot: 'user', title: 'Пользовательский токен', hint: 'Грузит файлы', has_token: false},
+        {slot: 'community', title: 'Ключ сообщества', hint: 'Публикует', has_token: true, preview: 'vk1.a.7dZ2…9Wpks', length: 220},
+    ];
+    const readingView = api.reading();
+    check(readingView.includes('Сервисный ключ приложения') && readingView.includes('name="source_hours"'), 'Чтение собрано в одном месте: ключ и расписание обхода');
+    check(!readingView.includes('name="publishing_review"') && !readingView.includes('data-form="oauth"'), 'Настроек публикации на странице чтения нет');
+    const postingView = api.posting();
+    check(postingView.includes('Пользовательский токен') && postingView.includes('data-form="oauth"'), 'Публикация собрана в одном месте: ключи и обмен кода');
+    check(!postingView.includes('Сервисный ключ приложения</h3>') && !postingView.includes('name="source_hours"'), 'Расписание обхода на страницу публикации не попадает');
+    check(postingView.includes('data-command="probe-matrix"'), 'Стенд постинга доступен со страницы публикации');
+    const attachmentsView = api.attachments();
+    for (const word of ['Музыка', 'Документ', 'Опрос', 'Товар', 'Ссылка']) {
+        check(attachmentsView.includes(word), `Справка вложений описывает: ${word}`);
+    }
+    check(attachmentsView.includes('link_photo_sizing_rule'), 'Справка предупреждает про прямую ссылку на файл');
+    // ——— Серия постов ———
+    // 21 сентября 2026 — понедельник; «сейчас» на день раньше, чтобы ни один
+    // слот не отсеялся как прошедший.
+    const monday = '2026-09-21';
+    const now = new Date('2026-09-20T12:00').getTime();
+    const week = api.seriesPlan({span: 'week', start: monday, weekdays: ['1','2','3','4','5'], times: '10:00, 19:00'}, now);
+    check(week.length === 10, 'Неделя по будням и двум временам даёт десять слотов');
+    check(week[0].at === '2026-09-21T10:00' && week[1].at === '2026-09-21T19:00', 'Слоты идут по возрастанию времени');
+    check(week.every(slot => !['2026-09-26', '2026-09-27'].includes(slot.at.slice(0, 10))), 'Суббота и воскресенье пропущены');
+    const month = api.seriesPlan({span: 'month', start: monday, weekdays: ['1','2','3','4','5'], times: '10:00, 19:00'}, now);
+    check(month.length === 44, 'Месяц по будням даёт 44 слота: 22 рабочих дня на два времени');
+    const capped = api.seriesPlan({span: 'month', start: monday, weekdays: ['1','2','3','4','5'], times: '09:00, 13:00, 19:00'}, now);
+    check(capped.length === 60, 'Сетка обрезается на шестидесяти слотах — столько же принимает сервер');
+    check(api.seriesPlan({span: 'week', start: monday, weekdays: [], times: '10:00'}, now).length === 0, 'Без дней недели сетки нет');
+    check(api.seriesPlan({span: 'week', start: monday, weekdays: ['1'], times: 'в обед'}, now).length === 0, 'Время не по формату отбрасывается');
+    // Прошедшее время не попадает в сетку: сервер такой слот всё равно
+    // отклонит, чтобы пакет не ушёл в VK залпом вместо расписания.
+    const sameDay = api.seriesPlan({span: 'week', start: '2026-09-20', weekdays: ['0'], times: '08:00, 23:00'}, now);
+    check(sameDay.length === 1 && sameDay[0].at === '2026-09-20T23:00', 'Утренний слот сегодняшнего дня пропущен, вечерний остался');
+
+    api.setSeries(week);
+    const calendar = api.seriesCalendar();
+    check(calendar.includes('21 сен') && calendar.includes('data-command="series-slot"'), 'Календарь рисует дни и слоты кнопками');
+    check(calendar.indexOf('21 сен') < calendar.indexOf('22 сен'), 'Дни идут по порядку');
+    check((calendar.match(/vkt-cal-day/g) || []).length % 7 === 0, 'Сетка кратна семи колонкам, поэтому дни не разъезжаются');
+    week[0].message = 'Готовый текст';
+    check(api.seriesCalendar().includes('is-filled'), 'Заполненный слот отмечен');
+    state.settings.ai = {configured: true};
+    api.setPublishing({groups: [{id: 3, group_id: 241464933, name: 'Своя группа', enabled: 1, can_post: 1}], posts: [], status: {}});
+    const seriesView = api.series();
+    check(seriesView.includes('data-form="series-setup"') && seriesView.includes('data-form="series-prompt"'), 'Вкладка содержит настройку периода и промпт на серию');
+    check(seriesView.includes('data-command="series-queue"'), 'Есть кнопка отправки всей серии');
+    check(seriesView.includes('name="weekdays"') && seriesView.includes('name="times"'), 'Дни недели и время выбираются в форме');
+    state.settings.ai = {configured: false};
+    check(!api.series().includes('data-form="series-prompt"'), 'Без ключа xAI промпт не показывается');
+    api.setSeries([]);
+
     // Каждой команде в разметке должен отвечать обработчик: вырезав соседний
     // блок кода, легко осиротить кнопку, и она молча перестаёт работать.
     const commands = new Set();

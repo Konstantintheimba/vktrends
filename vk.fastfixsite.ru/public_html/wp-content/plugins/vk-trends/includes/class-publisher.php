@@ -9,6 +9,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class VKT_Publisher {
     const MAX_GROUPS_PER_POST = 50;
+    const MAX_SERIES_SLOTS = 60;
     const MAX_ATTEMPTS = 4;
 
     public static function schema() {
@@ -377,7 +378,10 @@ final class VKT_Publisher {
         $approval_required = ! empty( VKT_Plugin::settings()['publishing_review'] );
         $status = $approval_required ? 'draft' : ( strtotime( $scheduled_at . ' UTC' ) > time() + 30 ? 'scheduled' : 'queued' );
         $delivery_status = $approval_required ? 'waiting_approval' : 'pending';
-        $origin = in_array( $data['origin'] ?? 'manual', array( 'manual', 'agents' ), true ) ? $data['origin'] : 'manual';
+        // Прежняя запись читала $data['origin'] даже когда ключа нет: PHP
+        // ругался, а в базу уходил null вместо 'manual'. Происхождение бывает
+        // только двух видов, и всё, что не агент, — ручная запись.
+        $origin = 'agents' === ( $data['origin'] ?? '' ) ? 'agents' : 'manual';
         $wpdb->query( 'START TRANSACTION' );
         try {
             $ok = $wpdb->insert( VKT_Store::table( 'outbound_posts' ), array(
@@ -552,6 +556,56 @@ final class VKT_Publisher {
         }
         $current = (string) $wpdb->get_var( $wpdb->prepare( "SELECT status FROM $posts WHERE id=%d", $post_id ) );
         return array( 'id' => $post_id, 'status' => $current ?: $status, 'processed' => $run['processed'] );
+    }
+
+    /**
+     * Серия записей одним действием. Каждый слот проходит через create(): это
+     * единственная точка, где запись попадает в очередь, и обходить её ради
+     * пакета нельзя — там и проверки вложений, и лимиты, и транзакция.
+     *
+     * Слот в прошлом отклоняется: create() отправляет такую запись сразу, а
+     * пакет из десятков слотов ушёл бы в VK залпом вместо расписания.
+     */
+    public static function create_series( $data ) {
+        $slots = is_array( $data['slots'] ?? null ) ? array_values( $data['slots'] ) : array();
+        if ( ! $slots ) {
+            return self::error( 'Серия пустая: постройте сетку и заполните хотя бы один слот.' );
+        }
+        if ( count( $slots ) > self::MAX_SERIES_SLOTS ) {
+            return self::error( 'За один раз в серию можно поставить не больше ' . self::MAX_SERIES_SLOTS . ' записей.' );
+        }
+        $created = array();
+        $failed = array();
+        foreach ( $slots as $index => $slot ) {
+            $when = is_array( $slot ) ? (string) ( $slot['scheduled_at'] ?? '' ) : '';
+            $timestamp = '' === $when ? false : strtotime( $when );
+            if ( ! is_array( $slot ) || false === $timestamp ) {
+                $failed[] = array( 'index' => (int) $index, 'scheduled_at' => $when, 'error' => 'У слота нет корректной даты публикации.' );
+                continue;
+            }
+            if ( $timestamp < time() + 60 ) {
+                $failed[] = array( 'index' => (int) $index, 'scheduled_at' => $when, 'error' => 'Время уже прошло: серия ставится только на будущее.' );
+                continue;
+            }
+            $result = self::create( array(
+                'message' => $slot['message'] ?? '',
+                'attachments' => $slot['attachments'] ?? '',
+                'media' => $slot['media'] ?? array(),
+                'groups' => $data['groups'] ?? array(),
+                'scheduled_at' => $when,
+                'signed' => $data['signed'] ?? false,
+                'close_comments' => $data['close_comments'] ?? false,
+            ) );
+            if ( is_wp_error( $result ) ) {
+                $failed[] = array( 'index' => (int) $index, 'scheduled_at' => $when, 'error' => $result->get_error_message() );
+                continue;
+            }
+            $created[] = array( 'id' => absint( $result['id'] ?? 0 ), 'scheduled_at' => $when );
+        }
+        if ( ! $created ) {
+            return self::error( 'Ни одна запись серии не создана. Первая причина: ' . ( $failed[0]['error'] ?? 'неизвестна' ), 422 );
+        }
+        return array( 'created' => count( $created ), 'posts' => $created, 'failed' => $failed );
     }
 
     public static function retry( $post_id ) {

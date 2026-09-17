@@ -6,7 +6,7 @@
     const $ = (selector, parent = root) => parent.querySelector(selector);
     const content = $('#vkt-content');
     const dialog = $('#vkt-dialog');
-    const names = {overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
+    const names = {overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', posting: 'Публикация', attachments: 'Что можно прикрепить', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
     const paths = {
         grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
         search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
@@ -82,6 +82,8 @@
     let postsData = null, postsPage = 1, postsSearch = '', postsSort = 'velocity', postsSource = 0, postsMode = 'grid', postsFiltersOpen = false, postsFilters = {}, communitiesData = null, communitiesSort = 'views', publishingData = null;
     // Файлы, выбранные в конструкторе записи: ID вложений WordPress, не VK.
     let composerMedia = [], mediaLibraryItems = [], aiPrompt = '';
+    // Серия постов: сетка слотов живёт в памяти до нажатия «Поставить в очередь».
+    let seriesSetup = {span: 'week', start: '', weekdays: ['1','2','3','4','5'], times: '10:00, 19:00'}, seriesSlots = [], seriesSlotTarget = null, seriesPrompt = '';
     function toast(message, error = false) {
         const el = $('#vkt-toast');
         el.textContent = message;
@@ -232,37 +234,180 @@
                 </form>`}
         </section>`;
     }
-    function settings() {
+    // ——— Серия постов: календарь слотов и один промпт на весь период ———
+    const monthShort = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    const weekdayNames = [['1', 'Пн'], ['2', 'Вт'], ['3', 'Ср'], ['4', 'Чт'], ['5', 'Пт'], ['6', 'Сб'], ['0', 'Вс']];
+    const pad = value => String(value).padStart(2, '0');
+    // Метка без часового пояса: в VK время уходит через toISOString, как и у
+    // одиночной записи, а здесь она нужна только для сетки и подписей.
+    const localStamp = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+    /** Сетка серии из настроек. Чистая функция: её проверяет offline-тест. */
+    function seriesPlan(setup, now = Date.now()) {
+        const times = String(setup.times || '').split(/[,;\n]+/).map(value => value.trim()).filter(value => /^\d{1,2}:\d{2}$/.test(value));
+        const weekdays = (setup.weekdays || []).map(String);
+        const days = 'month' === setup.span ? 30 : 7;
+        const start = setup.start ? new Date(`${setup.start}T00:00`) : new Date(now);
+        if (!times.length || !weekdays.length || Number.isNaN(start.getTime())) return [];
+        const slots = [];
+        for (let shift = 0; shift < days; ++shift) {
+            const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + shift);
+            if (!weekdays.includes(String(day.getDay()))) continue;
+            for (const time of times) {
+                const [hour, minute] = time.split(':').map(Number);
+                if (hour > 23 || minute > 59) continue;
+                const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
+                // Прошедшее время серии не нужно: сервер такой слот всё равно
+                // отклонит, чтобы пакет не ушёл в VK залпом вместо расписания.
+                if (at.getTime() < now + 60000) continue;
+                slots.push({at: localStamp(at), message: '', attachments: '', media: []});
+            }
+        }
+        return slots.sort((a, b) => a.at < b.at ? -1 : 1).slice(0, 60);
+    }
+
+    const seriesFilled = () => seriesSlots.filter(slot => slot.message.trim() || slot.media.length || slot.attachments.trim());
+
+    function seriesCalendar() {
+        if (!seriesSlots.length) return `<div class="vkt-info">Сетки пока нет. Выберите период, дни и время — и нажмите «Построить сетку».</div>`;
+        const byDay = new Map();
+        seriesSlots.forEach((slot, index) => {
+            const key = slot.at.slice(0, 10);
+            if (!byDay.has(key)) byDay.set(key, []);
+            byDay.get(key).push({slot, index});
+        });
+        const keys = [...byDay.keys()].sort();
+        const first = new Date(`${keys[0]}T00:00`);
+        const last = new Date(`${keys[keys.length - 1]}T00:00`);
+        // Сетка начинается с понедельника недели первого слота, иначе дни
+        // разъезжаются по колонкам и календарь перестаёт читаться.
+        const gridStart = new Date(first.getFullYear(), first.getMonth(), first.getDate() - ((first.getDay() + 6) % 7));
+        const span = Math.round((last - gridStart) / 86400000) + 1;
+        const total = Math.min(70, Math.max(7, Math.ceil(span / 7) * 7));
+        const cells = [];
+        for (let i = 0; i < total; ++i) {
+            const cursor = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+            const items = byDay.get(localStamp(cursor).slice(0, 10)) || [];
+            cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index}) => {
+                const filled = slot.message.trim() || slot.media.length || slot.attachments.trim();
+                return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${slot.media.length ? `<small>${icon('layers')} ${slot.media.length}</small>` : ''}</button>`;
+            }).join('')}</div>`);
+        }
+        return `<div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
+    }
+
+    function series() {
+        if (!publishingData) return heading('Серия постов', 'Загружаем свои сообщества…') + '<div class="vkt-loading">Загружаем…</div>';
+        const groups = (publishingData.groups || []).filter(group => Number(group.enabled) && Number(group.can_post));
+        const aiReady = !!state.settings.ai?.configured;
+        const filled = seriesFilled().length;
+        const today = localStamp(new Date()).slice(0, 10);
+        if (!groups.length) {
+            return heading('Серия постов', 'График на неделю или месяц: даты, время, текст и файлы — и всё сразу в очередь.') +
+                empty('Нет доступных сообществ', 'Включите хотя бы одно сообщество в «Автопостинге»: серия отправляется туда же, куда и одиночная запись.', 'publishing', 'Открыть автопостинг');
+        }
+        return heading('Серия постов', 'График на неделю или месяц: даты, время, текст и файлы — и всё сразу в очередь.', (seriesSlots.length ? button(`${icon('send')} Поставить в очередь · ${filled}`, 'series-queue', '', true) + button('Очистить сетку', 'series-clear') : '')) +
+            `<div class="vkt-series-layout"><section class="vkt-panel">
+                <div class="vkt-panel-heading"><div><h2>Период и время</h2><p>Слоты создаются на выбранные дни недели в указанные часы. Прошедшее время пропускается.</p></div></div>
+                <form data-form="series-setup" class="vkt-form">
+                    <div class="vkt-form-row">
+                        <label>Период<select name="span"><option value="week" ${'month' === seriesSetup.span ? '' : 'selected'}>Неделя — 7 дней</option><option value="month" ${'month' === seriesSetup.span ? 'selected' : ''}>Месяц — 30 дней</option></select></label>
+                        <label>Начать с<input type="date" name="start" value="${esc(seriesSetup.start || today)}" min="${esc(today)}"></label>
+                    </div>
+                    <fieldset class="vkt-weekdays"><legend>Дни недели</legend>${weekdayNames.map(([value, label]) => `<label class="vkt-check"><input type="checkbox" name="weekdays" value="${value}" ${seriesSetup.weekdays.includes(value) ? 'checked' : ''}>${label}</label>`).join('')}</fieldset>
+                    <label>Время публикации<input name="times" value="${esc(seriesSetup.times)}" placeholder="10:00, 19:00"><small class="vkt-help">Через запятую. Каждое время даёт по слоту в каждый выбранный день, всего не больше 60 слотов.</small></label>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('clock')} Построить сетку</button></div>
+                </form>
+                ${aiReady ? `<hr class="vkt-settings-sep">
+                <h2>Промпт на всю серию</h2>
+                <p class="vkt-muted">Один запрос на весь период: модель видит, сколько нужно текстов, и не повторяет себя. Тексты разложатся по пустым слотам по порядку.</p>
+                <form data-form="series-prompt" class="vkt-form">
+                    <label>Тема серии<textarea name="prompt" rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
+                    <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
+                    <p class="vkt-help">${seriesSlots.length ? 'Заполнятся только пустые слоты — написанное руками останется.' : 'Сначала постройте сетку: модели нужно знать количество.'}</p>
+                </form>` : '<hr class="vkt-settings-sep"><div class="vkt-info">Константа <code>VKT_XAI_API_KEY</code> не задана, поэтому промпта на серию нет. Текст можно вписать в каждый слот руками.</div>'}
+                <hr class="vkt-settings-sep">
+                <h2>Куда публикуем</h2>
+                <form data-form="series-groups" class="vkt-form"><fieldset class="vkt-publishing-groups"><legend>Сообщества серии</legend>${groups.map(group => `<label class="vkt-check"><input type="checkbox" name="groups" value="${Number(group.id)}" ${1 === groups.length ? 'checked' : ''}>${esc(group.name || `club${group.group_id}`)}</label>`).join('')}</fieldset>
+                <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="signed">Подписать записи моим именем</label><label class="vkt-check"><input type="checkbox" name="close_comments">Закрыть комментарии</label></div>
+                <p class="vkt-help">${state.settings.publishing_review ? 'Включена ручная проверка: записи серии сохранятся черновиками и будут ждать подтверждения.' : 'Каждая запись уйдёт в своё время. Слоты в прошлом сервер отклонит.'}</p></form>
+            </section>
+            <section class="vkt-panel">
+                <div class="vkt-panel-heading"><div><h2>Календарь</h2><p>${seriesSlots.length ? `${seriesSlots.length} слотов, заполнено ${filled}. Нажмите на слот, чтобы вписать текст или приложить файлы.` : 'Слотов пока нет.'}</p></div></div>
+                ${seriesCalendar()}
+            </section></div>`;
+    }
+
+    function seriesSlotDialog(index) {
+        const slot = seriesSlots[index];
+        if (!slot) return;
+        seriesSlotTarget = index;
+        const [day, time] = slot.at.split('T');
+        modal(`<h2>Слот · ${esc(day)} в ${esc(time)}</h2>
+            <form data-form="series-slot" class="vkt-form">
+                <input type="hidden" name="index" value="${Number(index)}">
+                <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(slot.message)}</textarea></label>
+                <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
+                <div class="vkt-media-chips">${slot.media.length ? slot.media.map(mediaChip).join('') : '<p class="vkt-muted">Файлы не выбраны.</p>'}</div>
+                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}</div>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить слот</button></div>
+            </form>`);
+    }
+
+    // ——— Подключения: чтение и публикация разведены по разным страницам ———
+    const slotCard = (slots, name) => { const found = (slots || []).find(item => item.slot === name); return found ? tokenCard(found) : ''; };
+    const hasSlot = (s, name) => (s.tokens || []).some(item => item.slot === name && item.has_token);
+    const readyReading = s => hasSlot(s, 'service');
+    const readyPosting = s => hasSlot(s, 'user') && !!(s.community || {}).configured;
+
+    function reading() {
+        const s = state.settings;
+        return heading('Чтение постов', 'Всё, чем плагин собирает чужие стены: посты, ролики, счётчики и товары по ссылкам.') +
+            `<div class="vkt-settings-grid"><section class="vkt-panel">
+                <h2>Сервисный ключ приложения</h2>
+                <p class="vkt-muted">Единственный ключ, который нужен для сбора. Он читает стены через <code>wall.get</code> и по замыслу VK больше ничего не умеет: на загрузку файлов и публикацию отвечает кодом 28. Это нормально и ни на что не влияет.</p>
+                <div class="vkt-token-cards">${slotCard(s.tokens, 'service')}</div>
+                <hr class="vkt-settings-sep">
+                <h2>Расписание и разбор страниц</h2>
+                <form data-form="settings" class="vkt-form">
+                    <div class="vkt-form-row"><label>Версия API<input name="api_version" value="${esc(s.api_version)}" required pattern="5\.[0-9]{1,3}"></label></div>
+                    <div class="vkt-form-row"><label>Обход сообществ<select name="source_hours">${hourOptions(s.source_hours)}</select><small class="vkt-help">Посты и видео со стены.</small></label><label>Замеры роликов<select name="video_hours">${hourOptions(s.video_hours)}</select><small class="vkt-help">Точечное обновление счётчиков.</small></label></div>
+                    <label class="vkt-check"><input type="checkbox" name="paused" ${s.paused?'checked':''}>Пауза автоматического сбора</label>
+                    <label class="vkt-check"><input type="checkbox" name="posts" ${s.posts?'checked':''}>Сохранять посты сообществ при обходе стены</label>
+                    <label class="vkt-check"><input type="checkbox" name="links" ${s.links?'checked':''}>Читать страницы товаров по ссылкам известных магазинов</label>
+                    <label>Сервис рендеринга страниц<input name="proxy" autocomplete="off" maxlength="500" placeholder="${s.proxy_host?`Сейчас: ${esc(s.proxy_host)} · впишите новый адрес или очистите поле`:'https://api.example.com/?api_key=КЛЮЧ&url={url}'}"><small class="vkt-help">Пустое поле ничего не меняет, дефис очищает сохранённый адрес. Нужен там, где магазин отвечает роботу проверкой вместо карточки товара.</small></label>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
+                </form>
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('eye')}</span><h2>Что даёт чтение</h2><p>Посты и ролики наблюдаемых сообществ, динамику просмотров, сводку по сообществам и товары, узнанные по ссылкам из постов.</p><hr><h3>Откуда берутся сообщества</h3><p>Список наблюдения — в разделе «Источники». Обход идёт по расписанию cron, вручную запускается в «Сборе данных».</p><hr><h3>Публикация тут ни при чём</h3><p>Для отправки записей нужны другие ключи, они живут в разделе «Публикация». Сервисный ключ публиковать не умеет и не должен.</p></aside></div>`;
+    }
+
+    function posting() {
         const s = state.settings;
         const community = s.community || {};
         const ai = s.ai || {};
         const vkid = s.vkid || {};
-        const tokenSlots = s.tokens || [];
         const oauth = s.oauth || {};
         const constantToken = s.token_source === 'wp-config.php';
         const currentKind = s.token_mode || 'service';
-        const minutes = minutesLeft(s.token_expires_in);
-        const expiryNote = minutes === null ? '' : s.token_refreshable ? ` · автообновление, осталось ~${minutes} мин.` : ` · без автообновления, осталось ~${minutes} мин.`;
-        const modeNote = s.has_token ? `${modeLabel(s.token_mode)}${expiryNote}` : '';
-        return heading('Настройки', 'Подключение к VK и параметры рабочего пространства.') +
-            `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Доступ к VK API</h2><form data-form="settings" id="vkt-settings-form" class="vkt-form">
-                <div class="vkt-field-status">${badge(s.has_token?'Токен сохранён':'Не подключён',s.has_token?'green':'')}<span class="vkt-muted">${constantToken?'Задан в wp-config.php':'Хранится на сервере в зашифрованном виде'}${modeNote?` · ${modeNote}`:''}</span></div>
-                
-                <label>Тип токена<select name="token_kind" ${constantToken?'disabled':''}><option value="service" ${currentKind==='service'?'selected':''}>Сервисный ключ приложения</option><option value="user" ${currentKind==='user'?'selected':''}>Пользовательский токен</option></select></label>
-                <label>Access token<input type="password" name="token" autocomplete="new-password" placeholder="${s.has_token?'Оставьте пустым, чтобы сохранить текущий':'Токен или весь адрес из браузера'}" ${constantToken?'disabled':''} maxlength="2048"></label><small class="vkt-help">Можно вставить целиком адрес вида <code>https://oauth.vk.com/blank.html#access_token=…&amp;expires_in=86400</code> — токен, срок жизни и тип определятся сами.</small>
-                <fieldset id="vkt-user-token-fields" class="vkt-form-row" ${constantToken || currentKind!=='user'?'hidden':''}><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="86400" placeholder="Например, 86400"></label></fieldset>
-                <p class="vkt-help">Для автообновления укажите refresh_token, device_id и client_id полным комплектом. Токен Standalone/Implicit можно сохранить без них, но после истечения его придётся заменить вручную. Пользовательский токен с wall и groups нужен для управления несколькими группами. Ключ отдельного сообщества подключается серверной константой и публикует только на стене своей группы. Секреты не возвращаются в браузер.</p>
-                <div class="vkt-form-row"><label>Версия API<input name="api_version" value="${esc(s.api_version)}" required pattern="5\\.[0-9]{1,3}"></label></div>
-                <div class="vkt-form-row"><label>Обход сообществ<select name="source_hours">${hourOptions(s.source_hours)}</select><small class="vkt-help">Посты и видео со стены.</small></label><label>Замеры роликов<select name="video_hours">${hourOptions(s.video_hours)}</select><small class="vkt-help">Точечное обновление счётчиков.</small></label></div>
-                <label class="vkt-check"><input type="checkbox" name="homepage" ${s.homepage?'checked':''}>Показывать дашборд на главной</label><label class="vkt-check"><input type="checkbox" name="paused" ${s.paused?'checked':''}>Пауза автоматического сбора</label><label class="vkt-check"><input type="checkbox" name="posts" ${s.posts?'checked':''}>Сохранять посты сообществ при обходе стены</label><label class="vkt-check"><input type="checkbox" name="links" ${s.links?'checked':''}>Читать страницы товаров по ссылкам известных магазинов</label><label class="vkt-check"><input type="checkbox" name="publishing_review" ${s.publishing_review?'checked':''}>Требовать ручную проверку публикаций</label>
-                <label>Сервис рендеринга страниц<input name="proxy" autocomplete="off" maxlength="500" placeholder="${s.proxy_host?`Сейчас: ${esc(s.proxy_host)} · впишите новый адрес или очистите поле`:'https://api.example.com/?api_key=КЛЮЧ&url={url}'}"><small class="vkt-help">Пустое поле ничего не меняет, дефис очищает сохранённый адрес.</small></label>
-                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить настройки</button>${s.has_token && !constantToken?button('Удалить токен','delete-token'):''}</div>
-                </form>
+        const steps = [
+            {ok: hasSlot(s, 'user'), title: 'Пользовательский токен', text: 'Грузит файлы в сообщество. Другого способа приложить фото или видео VK не даёт.'},
+            {ok: hasSlot(s, 'app_secret'), title: 'Защищённый ключ приложения', text: 'Нужен, чтобы токен получал сервер, а не браузер: иначе VK привяжет токен к чужому адресу.'},
+            {ok: !!community.configured, title: 'Ключ сообщества', text: 'Публикует запись на стене своей группы. Пользовательскому токену wall.post закрыт.'},
+        ];
+        return heading('Публикация', 'Ключи и настройки для отправки записей. Файл грузит один ключ, публикует другой — так устроен VK.', button('Стенд постинга', 'probe-matrix')) +
+            `<div class="vkt-settings-grid"><section class="vkt-panel">
+                <h2>Что должно быть на месте</h2>
+                <ol class="vkt-steps">${steps.map(step => `<li>${badge(step.ok ? 'готово' : 'нет', step.ok ? 'green' : '')}<div><strong>${esc(step.title)}</strong><span class="vkt-muted">${esc(step.text)}</span></div></li>`).join('')}</ol>
+                <p class="vkt-help">Проверить всё разом — кнопка «Стенд постинга» наверху: она спрашивает каждый ключ только о его работе и подводит итог по каждому сообществу.</p>
                 <hr class="vkt-settings-sep">
-                <h2>Ключи VK</h2>
-                <p class="vkt-muted">Каждый ключ живёт в своём слоте и используется для своей задачи. Ключи не заменяют друг друга: можно и нужно держать их одновременно.</p>
-                <div class="vkt-token-cards">${tokenSlots.map(tokenCard).join('')}</div>
-                <label>ID своего сообщества<input type="number" name="community_id" value="${Number(s.community?.group_id) || ''}" min="0" placeholder="Например, 241464933" form="vkt-settings-form"></label>
+                <h2>Ключи публикации</h2>
+                <div class="vkt-token-cards">${(s.tokens || []).filter(slot => slot.slot !== 'service').map(tokenCard).join('')}</div>
+                <form data-form="settings" id="vkt-posting-form" class="vkt-form">
+                    <label>ID своего сообщества<input type="number" name="community_id" value="${Number(community.group_id) || ''}" min="0" placeholder="Например, 241464933"></label>
+                    <label class="vkt-check"><input type="checkbox" name="publishing_review" ${s.publishing_review?'checked':''}>Требовать ручную проверку публикаций</label>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
+                </form>
                 <hr class="vkt-settings-sep">
                 <h2>Получить пользовательский токен · обмен кода</h2>
                 <p class="vkt-muted">Единственный способ, который работает с сервера: браузер получает одноразовый код, а меняет его на токен сам сервер защищённым ключом. Поэтому права классические (<code>${esc(oauth.scope || '')}</code>), а привязка к IP приходится на сервер, а не на ваш браузер.</p>
@@ -279,20 +424,75 @@
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">3. Обменять код на токен</button></div>
                 </form>
                 <hr class="vkt-settings-sep">
-                <h2>Пользовательский токен · прочие способы</h2>
-                <p class="vkt-muted">Единственный способ прикладывать фото и видео: ключ сообщества этого не умеет. Есть два пути — быстрый и с автообновлением.</p>
+                <details class="vkt-details"><summary>Запасные способы получить токен</summary>
+                <p class="vkt-muted">Нужны, только если обмен кода почему-то не идёт. Оба дают токен на сутки и без автообновления.</p>
                 <h3>Способ 1 · вставить токен вручную</h3>
-                <p class="vkt-muted">Работает с любым приложением, токен живёт около суток. Нажмите кнопку, разрешите доступ, затем скопируйте из браузера <strong>весь адрес целиком</strong> и вставьте его в поле «Access token» выше — плагин сам достанет токен и срок жизни и выберет нужный тип.</p>
+                <p class="vkt-muted">Нажмите кнопку, разрешите доступ, затем скопируйте из браузера <strong>весь адрес целиком</strong> и вставьте его в поле ниже — плагин сам достанет токен и срок жизни и выберет нужный тип. Токен из браузера привязан к вашему адресу, поэтому для автопостинга с сервера он не годится: им можно только проверить доступность методов.</p>
                 <div class="vkt-form-actions">${button(`${icon('arrow')} Открыть страницу VK`, 'vkid-implicit')}</div>
-                <h3>Способ 2 · VK ID с автообновлением</h3>
-                ${vkid.blocked_by_constant ? '<div class="vkt-info vkt-info-warning">В <code>wp-config.php</code> задан <code>VKT_ACCESS_TOKEN</code>. Эта константа всегда трактуется как сервисный ключ и имеет приоритет над настройками, поэтому пользовательский токен сохранить не получится. Удалите или закомментируйте строку и обновите страницу.</div>' : ''}
+                <form data-form="settings" class="vkt-form">
+                    <div class="vkt-field-status">${badge(s.has_token?'Токен сохранён':'Не подключён',s.has_token?'green':'')}<span class="vkt-muted">${constantToken?'Задан в wp-config.php':'Хранится на сервере в зашифрованном виде'}</span></div>
+                    <label>Тип токена<select name="token_kind" ${constantToken?'disabled':''}><option value="service" ${currentKind==='service'?'selected':''}>Сервисный ключ приложения</option><option value="user" ${currentKind==='user'?'selected':''}>Пользовательский токен</option></select></label>
+                    <label>Access token<input type="password" name="token" autocomplete="new-password" placeholder="${s.has_token?'Оставьте пустым, чтобы сохранить текущий':'Токен или весь адрес из браузера'}" ${constantToken?'disabled':''} maxlength="2048"></label>
+                    <small class="vkt-help">Принимается целиком адрес вида <code>https://oauth.vk.com/blank.html#access_token=…&amp;expires_in=86400</code>.</small>
+                    <div class="vkt-form-actions"><button class="vkt-button">Сохранить токен</button>${s.has_token && !constantToken?button('Удалить токен','delete-token'):''}</div>
+                </form>
+                <h3>Способ 2 · VK ID</h3>
+                ${vkid.blocked_by_constant ? '<div class="vkt-info vkt-info-warning">В <code>wp-config.php</code> задан <code>VKT_ACCESS_TOKEN</code>. Эта константа всегда трактуется как сервисный ключ и имеет приоритет над настройками, поэтому пользовательский токен сохранить не получится.</div>' : ''}
+                <p class="vkt-muted">Проверено живыми запросами: токен VK ID несёт только права VK ID, а классические методы отвечают <code>1051</code>. Для загрузки файлов он не подходит — оставлен на случай, если VK вернёт эти права.</p>
                 <form data-form="vkid" class="vkt-form">
-                <label>ID приложения VK ID<input type="number" name="vkid_client_id" value="${Number(vkid.client_id) || ''}" min="1" step="1" placeholder="Например, 54770323" ${vkid.locked ? 'disabled' : ''}></label>
-                <label>Доверенный redirect URI<input class="vkt-code-input" name="vkid_redirect" value="${esc(vkid.redirect_uri || '')}" spellcheck="false"></label>
-                <p class="vkt-help">Адрес должен быть заранее прописан в приложении как доверенный. <strong>У приложений типа VK Mini App такого раздела нет</strong> — VK отвечает <code>redirect_uri is incorrect</code>, и тогда подходит только способ 1. Возврат плагин опознаёт по своему <code>state</code>, поэтому годится любая страница сайта. Запрашиваемые права: <code>${esc(vkid.scope || '')}</code>.</p>
-                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('lock')} ${vkid.blocked_by_constant ? 'Сохранить ID приложения' : 'Подключить VK ID'}</button></div>
-                </form></section><aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Доступ только для вас</h2><p>Главная и API-страница открываются после входа в WordPress с правами администратора.</p><hr><h3>Тестовое сообщество</h3>${community.configured ? `<p>Настроен отдельный ключ сообщества <strong>#${Number(community.group_id)}</strong>. Он не возвращается в браузер.</p>${community.callback_configured ? `<label>Адрес Callback API<input class="vkt-code-input" value="${esc(community.callback_url)}" readonly></label><p class="vkt-help">Укажите этот адрес в настройках Callback API и нажмите «Подтвердить» в VK.</p>` : '<p class="vkt-muted">Данные Callback API не настроены.</p>'}${button('Проверить ключ и права', 'community-check')}` : '<p class="vkt-muted">Отдельный ключ сообщества не настроен.</p>'}<hr><h3>Генерация xAI</h3>${ai.configured ? `<p>Ключ задан в wp-config.php и в браузер не возвращается. Модели: <code>${esc(ai.text_model)}</code>, <code>${esc(ai.image_model)}</code>, <code>${esc(ai.video_model)}</code>. Кнопки генерации доступны в конструкторе записи.</p>` : '<p class="vkt-muted">Константа <code>VKT_XAI_API_KEY</code> не задана — кнопки генерации скрыты.</p>'}<hr><h3>Публикация</h3><p>Проверено живым API: ключ сообщества с правом wall публикует только на стене этой же группы. Для нескольких управляемых групп нужен пользовательский токен. Загрузку фото и видео VK разрешает только пользовательскому токену — ключ сообщества отвечает ошибкой 27, поэтому файл уходит публичной ссылкой. По умолчанию запись без даты отправляется сразу; ручную проверку можно отдельно включить слева.</p><a href="https://dev.vk.com/ru/method/wall.post" target="_blank" rel="noopener noreferrer">wall.post в документации VK ↗</a><hr><p>Для роликов добавьте право video, для списка своих групп — groups.</p></aside></div>`;
+                    <label>ID приложения VK ID<input type="number" name="vkid_client_id" value="${Number(vkid.client_id) || ''}" min="1" step="1" placeholder="Например, 54755819" ${vkid.locked ? 'disabled' : ''}></label>
+                    <label>Доверенный redirect URI<input class="vkt-code-input" name="vkid_redirect" value="${esc(vkid.redirect_uri || '')}" spellcheck="false"></label>
+                    <p class="vkt-help">Адрес должен быть заранее прописан в приложении как доверенный. <strong>У приложений типа VK Mini App такого раздела нет</strong> — VK отвечает <code>redirect_uri is incorrect</code>. Запрашиваемые права: <code>${esc(vkid.scope || '')}</code>.</p>
+                    <div class="vkt-form-actions"><button class="vkt-button">${icon('lock')} ${vkid.blocked_by_constant ? 'Сохранить ID приложения' : 'Подключить VK ID'}</button></div>
+                </form>
+                </details>
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('post')}</span><h2>Кто что делает</h2><p>Файл в сообщество грузит <strong>пользовательский токен</strong>: <code>photos.getWallUploadServer</code> ключу сообщества закрыт кодом 27. Саму запись публикует <strong>ключ сообщества</strong>: пользовательскому токену <code>wall.post</code> отвечает кодом 15 для приложений не типа Standalone. Фотография при этом попадает в альбом стены той же группы, поэтому вложение принимается.</p><hr><h3>Callback API</h3>${community.configured ? (community.callback_configured ? `<label>Адрес Callback API<input class="vkt-code-input" value="${esc(community.callback_url)}" readonly></label><p class="vkt-help">Укажите этот адрес в настройках Callback API и нажмите «Подтвердить» в VK.</p>${button('Проверить ключ и права', 'community-check')}` : `<p class="vkt-muted">Данные Callback API не настроены.</p>${button('Проверить ключ и права', 'community-check')}`) : '<p class="vkt-muted">Ключ сообщества не настроен — задайте <code>VKT_COMMUNITY_ACCESS_TOKEN</code> в wp-config.php.</p>'}<hr><h3>Генерация xAI</h3>${ai.configured ? `<p>Ключ задан в wp-config.php и в браузер не возвращается. Модели: <code>${esc(ai.text_model)}</code>, <code>${esc(ai.image_model)}</code>, <code>${esc(ai.video_model)}</code>. Кнопки генерации доступны в конструкторе записи.</p>` : '<p class="vkt-muted">Константа <code>VKT_XAI_API_KEY</code> не задана — кнопки генерации скрыты.</p>'}<hr><a href="https://dev.vk.com/ru/method/wall.post" target="_blank" rel="noopener noreferrer">wall.post в документации VK ↗</a></aside></div>`;
     }
+
+    // Справочник вложений: что VK позволяет приложить к записи и чего это стоит.
+    const attachmentKinds = [
+        {name: 'Фото', id: 'photo-123_456', now: 'Файлом из медиатеки, загрузкой с компьютера или генерацией', need: 'Пользовательский токен с правом photos', state: 'работает'},
+        {name: 'Видео', id: 'video-123_456', now: 'Файлом MP4 до 100 МБ', need: 'Пользовательский токен и включённый раздел «Видеозаписи» в сообществе — иначе VK отвечает ошибкой 7', state: 'работает'},
+        {name: 'Музыка', id: 'audio-123_456', now: 'Отклоняется при создании записи', need: 'VK разрешает audio только вместе с фото или видео в режиме карусели — нужен отдельный режим в конструкторе', state: 'впереди'},
+        {name: 'Документ, GIF', id: 'doc-123_456', now: 'Только готовым ID, один на запись', need: 'Загрузку docs.getWallUploadServer ключу сообщества VK закрывает ошибкой 15 — нужен пользовательский токен, как у фото', state: 'частично'},
+        {name: 'Опрос', id: 'poll-123_456', now: 'Готовым ID; единственным вложением быть не может', need: 'Создание опроса через polls.create — пока не подключено', state: 'частично'},
+        {name: 'Товар', id: 'market-123_456', now: 'Готовым ID', need: 'Товар должен существовать в магазине сообщества', state: 'работает'},
+        {name: 'Подборка товаров', id: 'market_album-123_456', now: 'Готовым ID', need: 'Подборка создаётся в сообществе', state: 'работает'},
+        {name: 'Альбом', id: 'album-123_456', now: 'Готовым ID', need: 'Альбом сообщества', state: 'работает'},
+        {name: 'Заметка, страница', id: 'note-123_456, page-123_456', now: 'Готовым ID', need: 'Заметка или вики-страница сообщества', state: 'работает'},
+        {name: 'Ссылка', id: 'https://…', now: 'Одна на запись, в поле вложений', need: 'Страница с превью: прямой адрес файла VK отклоняет — link_photo_sizing_rule', state: 'работает'},
+    ];
+    function attachments() {
+        const tone = {'работает': 'green', 'частично': '', 'впереди': ''};
+        const rows = attachmentKinds.map(kind => `<tr><td><strong>${esc(kind.name)}</strong><small class="vkt-muted"><code>${esc(kind.id)}</code></small></td><td>${badge(kind.state, tone[kind.state])}</td><td>${esc(kind.now)}</td><td class="vkt-muted">${esc(kind.need)}</td></tr>`).join('');
+        return heading('Что можно прикрепить', 'Чем VK разрешает дополнить запись, что из этого плагин умеет сегодня и чего не хватает остальному.') +
+            `<div class="vkt-settings-grid"><section class="vkt-panel vkt-table-wrap">
+                <table><thead><tr><th>Вложение</th><th>Состояние</th><th>Как добавить сейчас</th><th>Что для этого нужно</th></tr></thead><tbody>${rows}</tbody></table>
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('plus')}</span><h2>Общие правила</h2><p>В одной записи не больше <strong>десяти</strong> вложений и не больше <strong>одной</strong> ссылки. Документ — один на запись. Опрос не может быть единственным вложением.</p><hr><h3>Готовый ID</h3><p>Если вложение уже существует в VK, его ID берётся из адреса записи и вставляется в поле «Вложения ID или ссылка» в конструкторе. Вид — <code>тип</code><code>владелец</code>_<code>номер</code>, у сообщества владелец со знаком минус: <code>photo-241464933_457239017</code>.</p><hr><h3>Что даёт загрузка файлом</h3><p>Плагин хранит ID вложения WordPress, а ID для VK получает сам при отправке — отдельно для каждого сообщества, потому что фотография привязывается к конкретной группе. Полученный ID запоминается в задании, поэтому повтор после сетевой ошибки не грузит тот же файл дважды.</p></aside></div>`;
+    }
+
+    function settings() {
+        const s = state.settings;
+        return heading('Настройки', 'Общие параметры рабочего пространства. Ключи VK живут в разделе «Подключения».') +
+            `<div class="vkt-settings-grid"><section class="vkt-panel">
+                <h2>Рабочее пространство</h2>
+                <form data-form="settings" class="vkt-form">
+                    <label class="vkt-check"><input type="checkbox" name="homepage" ${s.homepage?'checked':''}>Показывать дашборд на главной странице сайта</label>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
+                </form>
+                <hr class="vkt-settings-sep">
+                <h2>Куда что переехало</h2>
+                <ul class="vkt-steps">
+                    <li>${badge('чтение', 'green')}<div><strong>Сервисный ключ, расписание обхода, сервис рендеринга</strong><span class="vkt-muted">Раздел «Чтение постов».</span></div></li>
+                    <li>${badge('публикация', 'green')}<div><strong>Пользовательский токен, защищённый ключ, ключ сообщества, обмен кода, Callback API</strong><span class="vkt-muted">Раздел «Публикация».</span></div></li>
+                    <li>${badge('справка', '')}<div><strong>Фото, видео, музыка, документы, опросы, товары</strong><span class="vkt-muted">Раздел «Что можно прикрепить».</span></div></li>
+                </ul>
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Доступ только для вас</h2><p>Главная и страницы дашборда открываются после входа в WordPress с правами администратора. Секреты не возвращаются в браузер: в интерфейсе виден только огрызок ключа и его длина.</p><hr><h3>Версия</h3><p>Плагин обновляет схему базы сам при первом запросе после замены файлов. Накопленные данные сохраняются.</p></aside></div>`;
+    }
+
     // ——— Посты сообществ ———
     const postUrl = post => `https://vk.com/wall${Number(post.owner_id)}_${Number(post.post_id)}`;
     const mediaLabels = {photo: 'Фото', video: 'Видео', market: 'Товар', link: 'Ссылка', doc: 'Документ', audio: 'Аудио', poll: 'Опрос', album: 'Альбом'};
@@ -417,6 +617,41 @@
         renderComposerMedia();
         return true;
     }
+    function addSeriesMedia(index, item) {
+        const slot = seriesSlots[index];
+        if (!slot || !item || !item.id) return false;
+        if (slot.media.some(media => Number(media.id) === Number(item.id))) { toast('Этот файл в слоте уже есть.'); return false; }
+        if (slot.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return false; }
+        slot.media.push(item);
+        return true;
+    }
+    async function seriesQueue(trigger) {
+        const form = $('[data-form="series-groups"]');
+        const groups = [...(form ? form.querySelectorAll('input[name="groups"]:checked') : [])].map(input => Number(input.value));
+        if (!groups.length) { toast('Выберите хотя бы одно сообщество серии.', true); return; }
+        const slots = seriesFilled();
+        if (!slots.length) { toast('Заполните хотя бы один слот: текст, файл или вложение.', true); return; }
+        if (!confirm(`Поставить в очередь ${slots.length} записей?`)) return;
+        trigger.disabled = true;
+        try {
+            const result = await act('series_queue', {
+                groups,
+                signed: !!form.querySelector('input[name="signed"]')?.checked,
+                close_comments: !!form.querySelector('input[name="close_comments"]')?.checked,
+                slots: slots.map(slot => ({scheduled_at: new Date(slot.at).toISOString(), message: slot.message, attachments: slot.attachments, media: slot.media.map(item => Number(item.id))})),
+            });
+            const failed = result.failed || [];
+            // Поставленные слоты убираем из сетки, отклонённые оставляем вместе
+            // с текстами: иначе работа пропадёт, а причину уже не увидеть.
+            const queued = new Set((result.posts || []).map(post => String(post.scheduled_at)));
+            seriesSlots = seriesSlots.filter(slot => !queued.has(new Date(slot.at).toISOString()));
+            toast(failed.length
+                ? `В очередь встало ${result.created}, отклонено ${failed.length}. Первая причина: ${failed[0].error}`
+                : `Серия в очереди: ${result.created} записей.`, failed.length > 0);
+            await load();
+        } catch (error) { toast(error.message, true); }
+        finally { trigger.disabled = false; }
+    }
     async function mediaLibrary(search = '') {
         modal(`<h2>Медиатека</h2><p class="vkt-muted">Загружаем файлы…</p>`);
         const items = (await request(`media?limit=48&search=${encodeURIComponent(search)}`)).items || [];
@@ -486,7 +721,12 @@
         if (!state) return;
         root.querySelectorAll('[data-nav]').forEach(el=> { const active = el.dataset.nav===view; el.classList.toggle('is-active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
         $('#vkt-breadcrumb').textContent = names[view];
-        content.innerHTML = ({overview,discover,posts,communities,publishing,videos,products,sources,api,collector,logs,settings})[view]();
+        // Точка у пункта меню: ключи этого раздела на месте или нет.
+        [['reading', readyReading(state.settings)], ['posting', readyPosting(state.settings)]].forEach(([name, ready]) => {
+            const dot = $(`#vkt-${name}-dot`);
+            if (dot) { dot.classList.toggle('is-ready', ready); dot.title = ready ? 'Ключи на месте' : 'Ключи ещё не настроены'; }
+        });
+        content.innerHTML = ({overview,discover,posts,communities,publishing,series,videos,products,sources,reading,posting,attachments,api,collector,logs,settings})[view]();
     }
     function modal(html) {
         $('#vkt-dialog-content').innerHTML = html;
@@ -652,12 +892,56 @@
             toast('Разрешите доступ, затем скопируйте адрес из браузера целиком в поле «Access token».');
             return;
         }
-        if (command==='media-remove') { composerMedia = composerMedia.filter(item => Number(item.id) !== Number(el.dataset.id)); renderComposerMedia(); return; }
+        if (command==='media-remove') {
+            // Медиатека одна на конструктор и на слоты серии, поэтому цель
+            // выбора хранится отдельно: иначе файл уходит не туда.
+            if (null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) {
+                const slot = seriesSlots[seriesSlotTarget];
+                slot.media = slot.media.filter(item => Number(item.id) !== Number(el.dataset.id));
+                seriesSlotDialog(seriesSlotTarget);
+                return;
+            }
+            composerMedia = composerMedia.filter(item => Number(item.id) !== Number(el.dataset.id));
+            renderComposerMedia();
+            return;
+        }
         if (command==='media-pick') {
             const item = mediaLibraryItems.find(media => Number(media.id) === Number(el.dataset.id));
+            if (null !== seriesSlotTarget) {
+                if (addSeriesMedia(seriesSlotTarget, item)) seriesSlotDialog(seriesSlotTarget);
+                return;
+            }
             if (addComposerMedia(item)) dialog.close();
             return;
         }
+        if (command==='series-slot') { seriesSlotDialog(Number(el.dataset.index)); return; }
+        if (command==='series-media') { seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
+        if (command==='series-apply-media') {
+            const source = seriesSlots[Number(el.dataset.index)];
+            if (!source) return;
+            seriesSlots.forEach(slot => { slot.media = source.media.slice(); });
+            seriesSlotTarget = null;
+            dialog.close();
+            render();
+            toast(`Файлы применены ко всем слотам: ${seriesSlots.length}.`);
+            return;
+        }
+        if (command==='series-slot-clear') {
+            const slot = seriesSlots[Number(el.dataset.index)];
+            if (!slot) return;
+            slot.message = ''; slot.attachments = ''; slot.media = [];
+            seriesSlotTarget = null;
+            dialog.close();
+            render();
+            return;
+        }
+        if (command==='series-clear') {
+            if (!confirm('Убрать всю сетку вместе с написанными текстами?')) return;
+            seriesSlots = [];
+            render();
+            return;
+        }
+        if (command==='series-queue') { await seriesQueue(el); return; }
         if (command==='ai-text' || command==='ai-image' || command==='ai-video') { aiDialog(command.slice(3)); return; }
         if (command==='video-detail') { videoDetail(el.dataset.id); return; }
         if (command==='post-detail') { postDetail(el.dataset.id); return; }
@@ -667,7 +951,7 @@
         if (command==='communities-sort') { communitiesSort = el.dataset.value; render(); return; }
         el.disabled = true;
         try {
-            if (command==='media-library') { await mediaLibrary(); return; }
+            if (command==='media-library') { seriesSlotTarget = null; await mediaLibrary(); return; }
             if (command==='history') { await history(el.dataset.id); return; }
             if (command==='post-history') { await postHistory(el.dataset.id); return; }
             if (command==='community-posts') {
@@ -763,8 +1047,18 @@
                 }
                 case 'settings': {
                     const hadToken = String(values.token || '').trim() !== '';
-                    await act('settings',{...values,homepage:!!values.homepage,paused:!!values.paused,posts:!!values.posts,links:!!values.links,publishing_review:!!values.publishing_review,source_hours:Number(values.source_hours),video_hours:Number(values.video_hours)});
-                    form.elements.token.value='';
+                    // Страницы подключений разделены, и в каждой форме лежит
+                    // своя часть настроек. Флажок, которого в этой форме нет,
+                    // не трогаем: отправка false стёрла бы чужую настройку.
+                    const extra = {};
+                    for (const name of ['homepage','paused','posts','links','publishing_review']) {
+                        if (form.elements[name]) extra[name] = !!values[name];
+                    }
+                    for (const name of ['source_hours','video_hours']) {
+                        if (form.elements[name]) extra[name] = Number(values[name]);
+                    }
+                    await act('settings',{...values,...extra});
+                    if (form.elements.token) form.elements.token.value='';
                     // Сразу спрашиваем VK, принят ли токен: иначе о проблеме
                     // становится известно только из записей прошлых попыток.
                     if (hadToken) {
@@ -779,6 +1073,48 @@
                     }
                     break;
                 }
+                case 'series-setup': {
+                    seriesSetup = {
+                        span: 'month' === values.span ? 'month' : 'week',
+                        start: values.start || '',
+                        times: values.times || '',
+                        weekdays: [...form.querySelectorAll('input[name="weekdays"]:checked')].map(input => input.value),
+                    };
+                    const planned = seriesPlan(seriesSetup);
+                    if (!planned.length) throw new Error('Ни одного слота не вышло: проверьте дни недели, время и дату начала.');
+                    // Написанное руками не теряется: слот с той же датой и
+                    // временем переносится в новую сетку как есть.
+                    const kept = new Map(seriesSlots.map(slot => [slot.at, slot]));
+                    seriesSlots = planned.map(slot => kept.get(slot.at) || slot);
+                    render();
+                    toast(`Сетка построена: ${seriesSlots.length} слотов.`);
+                    return;
+                }
+                case 'series-prompt': {
+                    if (!seriesSlots.length) throw new Error('Сначала постройте сетку: модели нужно знать количество текстов.');
+                    seriesPrompt = values.prompt || '';
+                    const empties = seriesSlots.filter(slot => !slot.message.trim());
+                    const targets = empties.length ? empties : seriesSlots;
+                    const result = await act('series_generate', {prompt: seriesPrompt, count: targets.length});
+                    const texts = result.posts || [];
+                    targets.forEach((slot, index) => { if (texts[index]) slot.message = String(texts[index]); });
+                    render();
+                    toast(texts.length < targets.length
+                        ? `Модель вернула ${texts.length} текстов из ${targets.length}: остальные слоты остались пустыми.`
+                        : `Готово: ${texts.length} текстов разложены по слотам.`, texts.length < targets.length);
+                    return;
+                }
+                case 'series-slot': {
+                    const slot = seriesSlots[Number(values.index)];
+                    if (!slot) throw new Error('Слот не найден.');
+                    slot.message = values.message || '';
+                    slot.attachments = values.attachments || '';
+                    seriesSlotTarget = null;
+                    dialog.close();
+                    render();
+                    return;
+                }
+                case 'series-groups': return;
                 case 'video': await act('save_video',values); dialog.close(); toast('Ролик добавлен, замер сохранён.'); break;
                 case 'product': await act('product',values); dialog.close(); toast('Товар добавлен. Привяжите его к ролику через меню ролика.'); break;
                 case 'source': await act('source',values); dialog.close(); toast('Источник сохранён.'); break;

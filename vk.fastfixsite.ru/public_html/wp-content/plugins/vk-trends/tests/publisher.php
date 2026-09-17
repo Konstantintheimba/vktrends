@@ -48,7 +48,17 @@ class VKT_Tokens {
 }
 class VKT_Media {
     public static function prepare_for_vk( $ids, $group_id ) { return ''; }
+    public static function validate_ids( $ids ) { return array_values( array_filter( array_map( 'absint', (array) $ids ) ) ); }
 }
+class VKT_Plugin {
+    public static function settings() { return array( 'publishing_review' => false ); }
+}
+const DAY_IN_SECONDS = 86400;
+const YEAR_IN_SECONDS = 31536000;
+function apply_filters( $name, $value ) { return $value; }
+function do_action() {}
+function wp_generate_uuid4() { return '11111111-2222-3333-4444-555555555555'; }
+function wp_strip_all_tags( $value ) { return strip_tags( (string) $value ); }
 // Ни один тест очереди не должен дойти до сети: вызов записывается и виден в проверке.
 $GLOBALS['vkt_http'] = 0;
 function wp_remote_post( $url, $args ) { ++$GLOBALS['vkt_http']; return new WP_Error( 'blocked', 'Сеть в тесте недоступна' ); }
@@ -63,12 +73,25 @@ class VKT_Test_WPDB {
         return $sql;
     }
     public function query( $sql ) { $this->queries[] = $sql; return 1; }
+    // Сообщества отдаются на каждый запрос: create() спрашивает их отдельно
+    // для каждой записи серии. Строки доставок — одноразовые.
+    public array $groups = array();
+    public int $insert_id = 0;
+    public array $inserts = array();
     public function get_results( $sql, $mode = null ) {
         $this->queries[] = $sql;
+        // Именно запрос сообществ из create(). Выборка очереди тоже упоминает
+        // эту таблицу в JOIN, поэтому сверяем начало запроса, а не вхождение.
+        if ( str_starts_with( ltrim( $sql ), 'SELECT id,group_id FROM' ) ) { return $this->groups; }
         if ( str_contains( $sql, 'GROUP BY status' ) ) { return array(); }
         $rows = $this->rows;
         $this->rows = array();
         return $rows;
+    }
+    public function insert( $table, $data ) {
+        $this->inserts[] = array( 'table' => $table, 'data' => $data );
+        $this->insert_id = count( $this->inserts );
+        return 1;
     }
     public function get_var( $sql ) { return ''; }
     public function get_col( $sql ) { return array(); }
@@ -205,5 +228,41 @@ $assert( 1 === count( $link_failed ), 'Отказ по ссылке записа
 $assert( str_contains( $link_failed[0]['data']['error'], 'VK не собрал карточку из ссылки' ), 'Причина объяснена словами' );
 $assert( ! str_contains( $link_failed[0]['data']['error'], 'link_photo_sizing_rule' ), 'Внутренний код VK в сообщение не попадает' );
 VKT_Community::$fail_with = '';
+
+// ——— Серия постов ———
+$wpdb->groups = array( array( 'id' => 3, 'group_id' => 241464933 ) );
+$future = static fn( $hours ) => gmdate( 'c', time() + $hours * 3600 );
+
+$assert( is_wp_error( VKT_Publisher::create_series( array() ) ), 'Серия без слотов отклоняется' );
+$many = array_map( static fn( $i ) => array( 'scheduled_at' => gmdate( 'c', time() + 3600 + $i * 60 ), 'message' => 'Пост ' . $i ), range( 1, VKT_Publisher::MAX_SERIES_SLOTS + 1 ) );
+$over = VKT_Publisher::create_series( array( 'slots' => $many, 'groups' => array( 3 ) ) );
+$assert( is_wp_error( $over ) && str_contains( $over->get_error_message(), (string) VKT_Publisher::MAX_SERIES_SLOTS ), 'Предел серии назван числом' );
+
+// Слот в прошлом отклоняется до create(): иначе пакет ушёл бы в VK залпом.
+$wpdb->inserts = array();
+$past = VKT_Publisher::create_series( array( 'slots' => array( array( 'scheduled_at' => gmdate( 'c', time() - 600 ), 'message' => 'Вчерашний' ) ), 'groups' => array( 3 ) ) );
+$assert( is_wp_error( $past ) && str_contains( $past->get_error_message(), 'Время уже прошло' ), 'Прошедший слот объясняется словами' );
+$assert( array() === $wpdb->inserts, 'Прошедший слот в базу не пишется' );
+
+// Смешанный результат: годные слоты уходят, негодные объясняются.
+$wpdb->inserts = array();
+$mixed = VKT_Publisher::create_series( array(
+    'slots' => array(
+        array( 'scheduled_at' => $future( 2 ), 'message' => 'Первый пост серии' ),
+        array( 'scheduled_at' => gmdate( 'c', time() - 60 ), 'message' => 'Опоздавший' ),
+        array( 'scheduled_at' => $future( 26 ), 'message' => 'Второй пост серии' ),
+        array( 'scheduled_at' => $future( 50 ), 'message' => '' ),
+    ),
+    'groups' => array( 3 ),
+) );
+$assert( ! is_wp_error( $mixed ) && 2 === $mixed['created'], 'Годные слоты серии поставлены в очередь' );
+$assert( 2 === count( $mixed['failed'] ), 'Негодные слоты перечислены отдельно' );
+$assert( str_contains( $mixed['failed'][0]['error'], 'Время уже прошло' ), 'Причина опоздавшего слота названа' );
+$assert( str_contains( $mixed['failed'][1]['error'], 'Добавьте текст' ), 'Пустой слот отклонён теми же проверками, что и одиночная запись' );
+$assert( 1 === $mixed['failed'][1]['index'] || 3 === $mixed['failed'][1]['index'], 'У отказа виден номер слота' );
+$posts = array_values( array_filter( $wpdb->inserts, static fn( $insert ) => str_contains( $insert['table'], 'outbound_posts' ) ) );
+$assert( 2 === count( $posts ), 'В базу ушли ровно две записи' );
+$assert( 'scheduled' === $posts[0]['data']['status'], 'Записи серии ждут своего времени, а не публикуются сразу' );
+$assert( 'manual' === $posts[0]['data']['origin'], 'Серия создаётся вручную, а не агентом' );
 
 echo "All $checks offline publisher checks passed.\n";

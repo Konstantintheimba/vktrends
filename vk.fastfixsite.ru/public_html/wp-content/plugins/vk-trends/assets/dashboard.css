@@ -28,6 +28,18 @@
 .vkt-sidebar nav a.is-active { color: var(--vkt-blue); background: #edf4ff; font-weight: 600; }
 .vkt-nav-count { font-size: 10px; padding: 1px 6px; background: #f0f3f8; color: #77859a; border-radius: 4px; margin-left: auto; }
 .vkt-nav-dot { width: 5px; height: 5px; background: #6b9fff; border-radius: 50%; margin-left: auto; }
+/* Точка у раздела подключений: серая, пока ключи не на месте. */
+.vkt-nav-dot { background: #c3ccda; }
+.vkt-nav-dot.is-ready { background: #3fae6a; }
+.vkt-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.vkt-steps li { display: flex; align-items: flex-start; gap: 11px; }
+.vkt-steps li > div { display: grid; gap: 2px; }
+.vkt-steps strong { font-size: 13px; }
+.vkt-steps span { font-size: 12px; line-height: 1.7; }
+.vkt-details { border: 1px solid #e6ecf5; border-radius: 10px; padding: 14px 16px; }
+.vkt-details[open] { padding-bottom: 18px; }
+.vkt-details > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.vkt-details > summary::marker { color: #9aa8bd; }
 .vkt-sidebar-bottom { margin-top: auto; padding-top: 18px; }
 .vkt-connection { padding: 14px 12px; background: #f8fafc; border: 1px solid #edf1f6; border-radius: 9px; font-size: 11px; }
 .vkt-connection small { font-size: 10px; color: var(--vkt-muted); margin: 5px 0 0 14px; }
@@ -359,3 +371,28 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-review-copy { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; border: 1px solid var(--vkt-line); background: #f8fafc; border-radius: 9px; padding: 14px; color: #46556e; font-size: 13px; line-height: 1.7; }
 @media (max-width: 1050px) { .vkt-publishing-layout { grid-template-columns: minmax(0,1fr); } }
 @media (max-width: 760px) { .vkt-publishing-groups { grid-template-columns: minmax(0,1fr); }.vkt-own-groups > div { align-items: flex-start; flex-direction: column; } }
+
+/* ——— Серия постов ——— */
+.vkt-series-layout { display: grid; grid-template-columns: minmax(0, 370px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.vkt-weekdays { display: flex; flex-wrap: wrap; gap: 9px 14px; border: 0; padding: 0; margin: 0; }
+.vkt-weekdays legend { font-size: 11px; color: #6780a3; margin-bottom: 7px; }
+.vkt-cal-head { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-bottom: 6px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: #9aa8bd; }
+.vkt-cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.vkt-cal-day { min-height: 94px; border: 1px solid #e6ecf5; border-radius: 9px; padding: 7px 6px; display: grid; gap: 5px; align-content: start; }
+.vkt-cal-day.is-empty { background: #fafbfd; }
+.vkt-cal-date { font-size: 10px; color: #9aa8bd; }
+.vkt-cal-slot { font: inherit; color: inherit; text-align: left; cursor: pointer; border: 1px solid #dfeafb; background: #eff5ff; border-radius: 7px; padding: 5px 6px; display: grid; gap: 2px; }
+.vkt-cal-slot:hover { border-color: #b9d3ff; }
+.vkt-cal-slot.is-filled { border-color: #bfe3cc; background: #eefaf1; }
+.vkt-cal-slot strong { font-size: 11px; }
+.vkt-cal-slot span { font-size: 10px; line-height: 1.5; color: #6780a3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.vkt-cal-slot small { display: flex; align-items: center; gap: 3px; font-size: 9px; color: #6780a3; }
+.vkt-cal-slot small svg { width: 11px; height: 11px; }
+@media (max-width: 760px) {
+    /* Семь колонок на телефоне нечитаемы: календарь становится списком дней. */
+    .vkt-series-layout { grid-template-columns: minmax(0, 1fr); }
+    .vkt-cal-head { display: none; }
+    .vkt-cal-grid { grid-template-columns: minmax(0, 1fr); }
+    .vkt-cal-day { min-height: 0; }
+    .vkt-cal-day.is-empty { display: none; }
+}
