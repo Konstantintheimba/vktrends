@@ -11,7 +11,7 @@ const state = {sources: communities, stats: {videos: 0, posts: 0}, settings: {ha
 const data = {posts: [], communities, summary: {recognized_posts: 0}, total: 0, pages: 1};
 const uploaded = {id: 42, type: 'image', name: 'promo.jpg', title: 'promo', size: 204800, url: 'https://example.test/promo.jpg', thumbnail: 'https://example.test/promo-medium.jpg'};
 const context = {
-    window: {vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/'}, addEventListener() {}},
+    window: {vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/', account: {id: 1, name: 'Админ', is_admin: true, status: 'active'}}, addEventListener() {}},
     document: {getElementById: () => root}, location: {hash: '#posts'}, URL, URLSearchParams, Intl, Date,
     setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { if (form) return Object.entries(form.values); this.append = () => {}; },
     fetch: async url => {
@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -171,6 +171,41 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     state.settings.ai = {configured: false};
     check(!api.series().includes('data-form="series-prompt"'), 'Без ключа xAI промпт не показывается');
     api.setSeries([]);
+
+    // Личный кабинет участника: ключей сайта и запасных способов у него нет.
+    Object.assign(state.settings, {
+        oauth: {app_id: 54770323, configured: true, scope: 'wall,photos,groups,video'},
+        tokens: [{slot: 'user', area: 'user', title: 'Пользовательский токен', hint: '', has_token: false}, {slot: 'community', area: 'user', title: 'Ключ сообщества', hint: '', has_token: false}],
+        ai: {configured: true, quota: {text: {limit: 30, used: 28, left: 2}, media: {limit: 5, used: 5, left: 0}}},
+        limits: {sources: 100, sources_used: 3},
+    });
+    api.setAccount({id: 7, name: 'Участник', is_admin: false, status: 'active'});
+    const memberPosting = api.posting();
+    check(!memberPosting.includes('name="app_id"'), 'Участник не меняет ID приложения сайта');
+    check(memberPosting.includes('54770323') && memberPosting.includes('data-command="oauth-open"'), 'Участник получает токен через приложение сайта');
+    check(!memberPosting.includes('Запасные способы') && !memberPosting.includes('data-form="vkid"'), 'Запасные способы и VK ID-токен — только администратору');
+    check(!memberPosting.includes('Защищённый ключ приложения'), 'Защищённого ключа участник не видит');
+    check(memberPosting.includes('текстов 2 из 30') && memberPosting.includes('картинок и видео 0 из 5'), 'Остаток лимита xAI виден в кабинете');
+    context.location.hash = '#logs';
+    check(api.initial() === 'overview', 'Журнал участнику не открывается даже по прямой ссылке');
+    context.location.hash = '#users';
+    check(api.initial() === 'overview', 'Раздел «Пользователи» участнику не открывается');
+    context.location.hash = '#posting';
+    check(api.initial() === 'posting', 'Свою публикацию участник открывает');
+    state.videos = []; state.products = [];
+    check(api.overview().includes('href="#posting"') && !api.overview().includes('href="#reading"'), 'Первый шаг участника — своя публикация, а не ключ сбора');
+    api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
+    context.location.hash = '#users';
+    check(api.initial() === 'users', 'Администратор открывает раздел «Пользователи»');
+    api.setUsers([
+        {id: 7, name: 'Иван <b>', avatar: '', vk_id: 38975563, status: 'pending', registered: '2026-09-18 10:00:00', last_login: '', sources: 0, groups: 0, posts: 0},
+        {id: 8, name: 'Мария', avatar: 'https://sun.userapi.com/a.jpg', vk_id: 1, status: 'active', registered: '2026-09-17 10:00:00', last_login: '2026-09-18 09:00:00', sources: 12, groups: 2, posts: 5},
+    ]);
+    const usersView = api.users();
+    check(usersView.includes('Иван &lt;b&gt;') && !usersView.includes('Иван <b>'), 'Имя из VK экранируется');
+    check(usersView.includes('data-status="active"') && usersView.includes('Одобрить') && usersView.includes('Заблокировать'), 'Заявку можно одобрить, активного — заблокировать');
+    check(usersView.includes('vk.com/id38975563') && usersView.includes('name="member_sources"'), 'Ссылка на профиль VK и форма лимитов на месте');
+    context.location.hash = '#posts';
 
     // Каждой команде в разметке должен отвечать обработчик: вырезав соседний
     // блок кода, легко осиротить кнопку, и она молча перестаёт работать.

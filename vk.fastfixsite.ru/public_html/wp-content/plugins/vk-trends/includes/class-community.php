@@ -3,12 +3,15 @@ defined( 'ABSPATH' ) || exit;
 
 /** Управление тестовым сообществом и приём событий Callback API. */
 final class VKT_Community {
-    /** ID сообщества: константа важнее, иначе берём из настроек. */
+    /**
+     * ID своего сообщества. У каждого кабинета оно своё; константа из
+     * wp-config.php действует только для хозяина сайта — вместе с его ключом.
+     */
     public static function group_id() {
-        if ( defined( 'VKT_COMMUNITY_ID' ) && absint( VKT_COMMUNITY_ID ) ) {
+        if ( VKT_Account::is_owner() && defined( 'VKT_COMMUNITY_ID' ) && absint( VKT_COMMUNITY_ID ) ) {
             return absint( VKT_COMMUNITY_ID );
         }
-        return absint( VKT_Plugin::settings()['community_id'] ?? 0 );
+        return absint( VKT_Account::get( 'community_id' ) );
     }
 
     public static function token() {
@@ -19,8 +22,10 @@ final class VKT_Community {
         return self::group_id() > 0 && '' !== self::token();
     }
 
+    /** Callback API настраивается константами, поэтому он только у хозяина сайта. */
     public static function callback_configured() {
-        return self::configured()
+        return VKT_Account::is_owner()
+            && self::configured()
             && defined( 'VKT_CALLBACK_CONFIRMATION' )
             && '' !== trim( (string) VKT_CALLBACK_CONFIRMATION )
             && defined( 'VKT_CALLBACK_SECRET' )
@@ -138,6 +143,11 @@ final class VKT_Community {
 
     /** Публичная точка Callback API. Сырые события и секреты не сохраняются. */
     public static function callback() {
+        // Запрос приходит от VK без пользователя: сверяемся с сообществом хозяина.
+        VKT_Account::act_as( VKT_Account::owner(), array( self::class, 'receive' ) );
+    }
+
+    public static function receive() {
         $raw = file_get_contents( 'php://input' );
         if ( ! self::callback_configured() || ! is_string( $raw ) || strlen( $raw ) > 262144 ) {
             self::respond( 'forbidden', 403 );

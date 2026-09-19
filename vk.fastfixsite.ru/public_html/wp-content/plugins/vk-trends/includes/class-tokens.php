@@ -8,11 +8,18 @@ defined( 'ABSPATH' ) || exit;
  * может ключ сообщества, а фото и видео принимает только пользовательский токен.
  * Раньше плагин держал один ключ, и подключение нового ломало предыдущую задачу.
  * Теперь каждый живёт в своём слоте, а вызов сам выбирает подходящий.
+ *
+ * Слоты бывают общими и личными. Сервисный ключ и защищённый ключ приложения
+ * принадлежат сайту — это «тот же ключ приложения» для всех кабинетов.
+ * Пользовательский токен и ключ сообщества у каждого свои и лежат в его
+ * usermeta: чужой кабинет не должен публиковать чужим ключом.
  */
 final class VKT_Tokens {
     const OPTION = 'vkt_tokens';
     const ERRORS = 'vkt_token_errors';
     const LEGACY = 'vkt_token';
+    const META = 'vkt_tokens';
+    const META_ERRORS = 'vkt_token_errors';
 
     /** Описание слотов для интерфейса и проверок. */
     public static function definitions() {
@@ -23,6 +30,7 @@ final class VKT_Tokens {
                 'constant' => 'VKT_ACCESS_TOKEN',
                 'kind' => 'service',
                 'probe' => 'wall.get',
+                'scope' => 'site',
             ),
             'user' => array(
                 'title' => 'Пользовательский токен',
@@ -30,6 +38,7 @@ final class VKT_Tokens {
                 'constant' => '',
                 'kind' => 'user',
                 'probe' => 'users.get',
+                'scope' => 'user',
             ),
             'app_secret' => array(
                 'title' => 'Защищённый ключ приложения',
@@ -37,6 +46,7 @@ final class VKT_Tokens {
                 'constant' => 'VKT_APP_SECRET',
                 'kind' => 'secret',
                 'probe' => '',
+                'scope' => 'site',
             ),
             'community' => array(
                 'title' => 'Ключ сообщества',
@@ -44,6 +54,7 @@ final class VKT_Tokens {
                 'constant' => 'VKT_COMMUNITY_ACCESS_TOKEN',
                 'kind' => 'community',
                 'probe' => 'groups.getTokenPermissions',
+                'scope' => 'user',
             ),
         );
     }
@@ -81,18 +92,108 @@ final class VKT_Tokens {
         return wp_json_encode( array( 'iv' => base64_encode( $iv ), 'tag' => base64_encode( $tag ), 'value' => base64_encode( $value ) ) );
     }
 
-    /** Сохранённые слоты без учёта констант. */
-    private static function stored() {
+    public static function scope( $slot ) {
+        return self::definitions()[ $slot ]['scope'] ?? 'site';
+    }
+
+    /** Общие слоты сайта из опции. */
+    private static function read_site() {
         $plain = self::decrypt( get_option( self::OPTION, '' ) );
         $map = null === $plain ? null : json_decode( $plain, true );
-        if ( ! is_array( $map ) ) {
-            $map = self::migrate_legacy();
+        return is_array( $map ) ? $map : self::migrate_legacy();
+    }
+
+    /** Личные слоты пользователя из его usermeta. */
+    private static function read_user( $user_id ) {
+        if ( ! $user_id ) {
+            return array();
         }
+        $plain = self::decrypt( get_user_meta( $user_id, self::META, true ) );
+        $map = null === $plain ? null : json_decode( $plain, true );
+        return is_array( $map ) ? $map : array();
+    }
+
+    /** Сохранённые слоты без учёта констант: общие — сайта, личные — текущего пользователя. */
+    private static function stored() {
+        $site = self::read_site();
+        $user = self::read_user( VKT_Account::id() );
         $clean = array();
         foreach ( array_keys( self::definitions() ) as $slot ) {
-            $clean[ $slot ] = wp_parse_args( is_array( $map[ $slot ] ?? null ) ? $map[ $slot ] : array(), self::blank() );
+            $source = 'user' === self::scope( $slot ) ? $user : $site;
+            $clean[ $slot ] = wp_parse_args( is_array( $source[ $slot ] ?? null ) ? $source[ $slot ] : array(), self::blank() );
         }
         return $clean;
+    }
+
+    /** Записывает слот туда, где он живёт. */
+    private static function write( $slot, $entry ) {
+        if ( 'user' === self::scope( $slot ) ) {
+            $user_id = VKT_Account::id();
+            if ( ! $user_id ) {
+                return new WP_Error( 'no_user', 'Личный ключ сохраняется только вошедшему пользователю.', array( 'status' => 401 ) );
+            }
+            $map = self::read_user( $user_id );
+            $map[ $slot ] = $entry;
+            $encrypted = self::encrypt( wp_json_encode( $map ) );
+            if ( is_wp_error( $encrypted ) ) {
+                return $encrypted;
+            }
+            update_user_meta( $user_id, self::META, $encrypted );
+            return true;
+        }
+        $map = self::read_site();
+        $map[ $slot ] = $entry;
+        $encrypted = self::encrypt( wp_json_encode( $map ) );
+        if ( is_wp_error( $encrypted ) ) {
+            return $encrypted;
+        }
+        update_option( self::OPTION, $encrypted, false );
+        return true;
+    }
+
+    /**
+     * 0.22.0: личные слоты из общей опции переезжают к хозяину сайта. До
+     * личных кабинетов пользовательский токен и ключ сообщества были одни на
+     * сайт — теперь это ключи хозяина, остальные подключают свои.
+     */
+    public static function migrate_to_owner( $owner ) {
+        $owner = absint( $owner );
+        $map = self::read_site();
+        $personal = array();
+        foreach ( self::definitions() as $slot => $definition ) {
+            if ( 'user' !== $definition['scope'] || ! isset( $map[ $slot ] ) ) {
+                continue;
+            }
+            if ( is_array( $map[ $slot ] ) && ! empty( $map[ $slot ]['access_token'] ) ) {
+                $personal[ $slot ] = $map[ $slot ];
+            }
+            unset( $map[ $slot ] );
+        }
+        if ( $owner && $personal && ! self::read_user( $owner ) ) {
+            $encrypted = self::encrypt( wp_json_encode( $personal ) );
+            if ( is_wp_error( $encrypted ) ) {
+                return;
+            }
+            update_user_meta( $owner, self::META, $encrypted );
+        }
+        $encrypted = self::encrypt( wp_json_encode( $map ) );
+        if ( ! is_wp_error( $encrypted ) ) {
+            update_option( self::OPTION, $encrypted, false );
+        }
+        $errors = (array) get_option( self::ERRORS, array() );
+        $moved = array();
+        foreach ( self::definitions() as $slot => $definition ) {
+            if ( 'user' === $definition['scope'] && isset( $errors[ $slot ] ) ) {
+                $moved[ $slot ] = $errors[ $slot ];
+                unset( $errors[ $slot ] );
+            }
+        }
+        if ( $moved ) {
+            update_option( self::ERRORS, $errors, false );
+            if ( $owner ) {
+                update_user_meta( $owner, self::META_ERRORS, $moved );
+            }
+        }
     }
 
     /** Разовый перенос единственного ключа старого формата в его слот. */
@@ -116,15 +217,31 @@ final class VKT_Tokens {
         return $map;
     }
 
+    /**
+     * Значение константы слота, если она действует для текущего пользователя.
+     * Личные константы (ключ сообщества из wp-config.php) принадлежат хозяину
+     * сайта: иначе запись любого кабинета ушла бы его ключом.
+     */
+    private static function constant_value( $slot ) {
+        $definition = self::definitions()[ $slot ] ?? null;
+        $constant = (string) ( $definition['constant'] ?? '' );
+        if ( '' === $constant || ! defined( $constant ) || '' === trim( (string) constant( $constant ) ) ) {
+            return '';
+        }
+        if ( 'user' === $definition['scope'] && ! VKT_Account::is_owner() ) {
+            return '';
+        }
+        return trim( (string) constant( $constant ) );
+    }
+
     /** Значение слота с учётом константы: она всегда важнее сохранённого. */
     public static function get( $slot ) {
-        $definitions = self::definitions();
-        if ( ! isset( $definitions[ $slot ] ) ) {
+        if ( ! isset( self::definitions()[ $slot ] ) ) {
             return self::blank();
         }
-        $constant = $definitions[ $slot ]['constant'];
-        if ( '' !== $constant && defined( $constant ) && '' !== trim( (string) constant( $constant ) ) ) {
-            return array_merge( self::blank(), array( 'access_token' => trim( (string) constant( $constant ) ) ) );
+        $constant = self::constant_value( $slot );
+        if ( '' !== $constant ) {
+            return array_merge( self::blank(), array( 'access_token' => $constant ) );
         }
         $stored = self::stored();
         return $stored[ $slot ] ?? self::blank();
@@ -139,8 +256,7 @@ final class VKT_Tokens {
     }
 
     public static function locked( $slot ) {
-        $constant = self::definitions()[ $slot ]['constant'] ?? '';
-        return '' !== $constant && defined( $constant ) && '' !== trim( (string) constant( $constant ) );
+        return '' !== self::constant_value( $slot );
     }
 
     public static function save( $slot, $token, $extra = array() ) {
@@ -167,45 +283,61 @@ final class VKT_Tokens {
         if ( $refresh && 3 !== count( $refresh ) ) {
             return new WP_Error( 'incomplete', 'Данные автообновления указываются комплектом: refresh_token, device_id и client_id.', array( 'status' => 400 ) );
         }
-        $map = self::stored();
-        $map[ $slot ] = $entry;
-        $encrypted = self::encrypt( wp_json_encode( $map ) );
-        if ( is_wp_error( $encrypted ) ) {
-            return $encrypted;
+        $written = self::write( $slot, $entry );
+        if ( is_wp_error( $written ) ) {
+            return $written;
         }
-        update_option( self::OPTION, $encrypted, false );
         self::note( $slot, '' );
         return true;
     }
 
     public static function forget( $slot ) {
+        if ( ! isset( self::definitions()[ $slot ] ) ) {
+            return new WP_Error( 'slot', 'Неизвестный слот ключа.', array( 'status' => 400 ) );
+        }
         if ( self::locked( $slot ) ) {
             return new WP_Error( 'constant_token', 'Ключ задан в wp-config.php — удалите его там.', array( 'status' => 400 ) );
         }
-        $map = self::stored();
-        $map[ $slot ] = self::blank();
-        $encrypted = self::encrypt( wp_json_encode( $map ) );
-        if ( is_wp_error( $encrypted ) ) {
-            return $encrypted;
+        $written = self::write( $slot, self::blank() );
+        if ( is_wp_error( $written ) ) {
+            return $written;
         }
-        update_option( self::OPTION, $encrypted, false );
         self::note( $slot, '' );
         return true;
     }
 
+    /** Ошибки общего слота видны администратору, личного — только владельцу ключа. */
+    private static function errors( $slot ) {
+        if ( 'user' === self::scope( $slot ) ) {
+            $user_id = VKT_Account::id();
+            return $user_id ? (array) get_user_meta( $user_id, self::META_ERRORS, true ) : array();
+        }
+        return (array) get_option( self::ERRORS, array() );
+    }
+
     /** Последняя ошибка слота остаётся на виду, пока её не сменит новая. */
     public static function note( $slot, $message ) {
-        $errors = (array) get_option( self::ERRORS, array() );
+        $errors = self::errors( $slot );
         if ( '' === $message ) {
+            if ( ! isset( $errors[ $slot ] ) ) {
+                return;
+            }
             unset( $errors[ $slot ] );
         } else {
             $errors[ $slot ] = array( 'message' => mb_substr( (string) $message, 0, 255 ), 'at' => gmdate( 'Y-m-d H:i:s' ) );
+        }
+        if ( 'user' === self::scope( $slot ) ) {
+            $user_id = VKT_Account::id();
+            if ( $user_id ) {
+                update_user_meta( $user_id, self::META_ERRORS, $errors );
+            }
+            return;
         }
         update_option( self::ERRORS, $errors, false );
     }
 
     public static function error( $slot ) {
-        $errors = (array) get_option( self::ERRORS, array() );
+        $errors = self::errors( $slot );
         return is_array( $errors[ $slot ] ?? null ) ? $errors[ $slot ] : null;
     }
 
@@ -221,6 +353,8 @@ final class VKT_Tokens {
             $token = (string) $entry['access_token'];
             $out[] = array(
                 'slot' => $slot,
+                // Чей слот: site — общий ключ сайта, user — личный ключ кабинета.
+                'area' => $definition['scope'],
                 'title' => $definition['title'],
                 'hint' => $definition['hint'],
                 'constant' => $definition['constant'],

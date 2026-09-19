@@ -6,6 +6,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Наблюдаемые источники и собственные сообщества намеренно хранятся отдельно:
  * наличие стены в мониторинге не означает права записи в неё.
+ *
+ * Группы и записи принадлежат кабинету (user_id). Очередь общая, но каждое
+ * задание выполняется от имени автора записи — его токеном и его ключом
+ * сообщества.
  */
 final class VKT_Publisher {
     const MAX_GROUPS_PER_POST = 50;
@@ -15,6 +19,7 @@ final class VKT_Publisher {
     public static function schema() {
         return array(
             'publishing_groups' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
+                user_id bigint unsigned NOT NULL DEFAULT 0,
                 group_id bigint unsigned NOT NULL,
                 screen_name varchar(100) NOT NULL DEFAULT '',
                 name varchar(255) NOT NULL DEFAULT '',
@@ -25,9 +30,10 @@ final class VKT_Publisher {
                 synced_at datetime NOT NULL,
                 created_at datetime NOT NULL,
                 PRIMARY KEY  (id),
-                UNIQUE KEY vk_group (group_id),
+                UNIQUE KEY user_group (user_id,group_id),
                 KEY available (enabled,can_post)",
             'outbound_posts' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
+                user_id bigint unsigned NOT NULL DEFAULT 0,
                 message longtext NOT NULL,
                 attachments text NOT NULL,
                 media text NOT NULL,
@@ -41,7 +47,8 @@ final class VKT_Publisher {
                 created_at datetime NOT NULL,
                 updated_at datetime NOT NULL,
                 PRIMARY KEY  (id),
-                KEY schedule (status,scheduled_at)",
+                KEY schedule (status,scheduled_at),
+                KEY author (user_id,id)",
             'outbound_deliveries' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
                 outbound_post_id bigint unsigned NOT NULL,
                 group_id bigint unsigned NOT NULL,
@@ -144,6 +151,10 @@ final class VKT_Publisher {
     /** Загружает все сообщества, где пользователь — администратор или редактор. */
     public static function sync_groups() {
         global $wpdb;
+        $user_id = VKT_Account::id();
+        if ( ! $user_id ) {
+            return self::error( 'Список групп обновляется только вошедшему пользователю.', 401 );
+        }
         $items = array();
         $total = 0;
         if ( VKT_Tokens::has( 'user' ) ) {
@@ -189,7 +200,7 @@ final class VKT_Publisher {
         $wpdb->query( 'START TRANSACTION' );
         try {
             // После успешного полного ответа права считаем отозванными у отсутствующих групп.
-            $wpdb->query( "UPDATE $table SET can_post=0" );
+            $wpdb->query( $wpdb->prepare( "UPDATE $table SET can_post=0 WHERE user_id=%d", $user_id ) );
             $synced = 0;
             foreach ( array_slice( $items, 0, 1000 ) as $group ) {
                 $group_id = absint( $group['id'] ?? 0 );
@@ -203,9 +214,10 @@ final class VKT_Publisher {
                     $can_post = 1;
                 }
                 $ok = $wpdb->query( $wpdb->prepare(
-                    "INSERT INTO $table (group_id,screen_name,name,photo,admin_level,can_post,enabled,synced_at,created_at)
-                     VALUES (%d,%s,%s,%s,%d,%d,1,%s,%s)
+                    "INSERT INTO $table (user_id,group_id,screen_name,name,photo,admin_level,can_post,enabled,synced_at,created_at)
+                     VALUES (%d,%d,%s,%s,%s,%d,%d,1,%s,%s)
                      ON DUPLICATE KEY UPDATE screen_name=VALUES(screen_name),name=VALUES(name),photo=VALUES(photo),admin_level=VALUES(admin_level),can_post=VALUES(can_post),synced_at=VALUES(synced_at)",
+                    $user_id,
                     $group_id,
                     sanitize_key( (string) ( $group['screen_name'] ?? '' ) ),
                     sanitize_text_field( (string) ( $group['name'] ?? '' ) ),
@@ -230,10 +242,14 @@ final class VKT_Publisher {
 
     public static function toggle_group( $id, $enabled ) {
         global $wpdb;
+        $table = VKT_Store::table( 'publishing_groups' );
+        if ( ! $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $table WHERE id=%d AND user_id=%d", absint( $id ), VKT_Account::id() ) ) ) {
+            return self::error( 'Сообщество не найдено в вашем кабинете.', 404 );
+        }
         $result = $wpdb->update(
-            VKT_Store::table( 'publishing_groups' ),
+            $table,
             array( 'enabled' => $enabled ? 1 : 0 ),
-            array( 'id' => absint( $id ) )
+            array( 'id' => absint( $id ), 'user_id' => VKT_Account::id() )
         );
         return false === $result ? self::error( 'Не удалось изменить сообщество.', 500 ) : array( 'ok' => true );
     }
@@ -250,14 +266,14 @@ final class VKT_Publisher {
         $table = VKT_Store::table( 'publishing_groups' );
         $limit = max( 1, min( 50, (int) $limit ) );
         $rows = (array) $wpdb->get_results( $wpdb->prepare(
-            "SELECT group_id,name FROM $table WHERE enabled=1 AND can_post=1 ORDER BY name,id LIMIT %d",
-            $limit
+            "SELECT group_id,name FROM $table WHERE user_id=%d AND enabled=1 AND can_post=1 ORDER BY name,id LIMIT %d",
+            VKT_Account::id(), $limit
         ), ARRAY_A );
         $community = VKT_Community::group_id();
         if ( ! $community || in_array( $community, array_map( static fn( $row ) => absint( $row['group_id'] ), $rows ), true ) ) {
             return $rows;
         }
-        $name = (string) $wpdb->get_var( $wpdb->prepare( "SELECT name FROM $table WHERE group_id=%d", $community ) );
+        $name = (string) $wpdb->get_var( $wpdb->prepare( "SELECT name FROM $table WHERE group_id=%d AND user_id=%d", $community, VKT_Account::id() ) );
         array_unshift( $rows, array( 'group_id' => $community, 'name' => '' !== $name ? $name : 'своё сообщество ' . $community ) );
         return array_slice( $rows, 0, $limit );
     }
@@ -317,6 +333,10 @@ final class VKT_Publisher {
 
     public static function create( $data ) {
         global $wpdb;
+        $user_id = VKT_Account::id();
+        if ( ! $user_id ) {
+            return self::error( 'Запись создаётся только вошедшему пользователю.', 401 );
+        }
         if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
             return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
@@ -358,9 +378,10 @@ final class VKT_Publisher {
             return self::error( 'Выберите от 1 до ' . self::MAX_GROUPS_PER_POST . ' сообществ.' );
         }
         $placeholders = implode( ',', array_fill( 0, count( $group_ids ), '%d' ) );
+        // Чужая группа в списке не найдётся — как выключенная.
         $query = $wpdb->prepare(
-            'SELECT id,group_id FROM ' . VKT_Store::table( 'publishing_groups' ) . " WHERE id IN ($placeholders) AND enabled=1 AND can_post=1",
-            ...$group_ids
+            'SELECT id,group_id FROM ' . VKT_Store::table( 'publishing_groups' ) . " WHERE id IN ($placeholders) AND user_id=%d AND enabled=1 AND can_post=1",
+            ...array_merge( $group_ids, array( $user_id ) )
         );
         $groups = (array) $wpdb->get_results( $query, ARRAY_A );
         if ( count( $groups ) !== count( $group_ids ) ) {
@@ -375,7 +396,8 @@ final class VKT_Publisher {
             $scheduled_at = gmdate( 'Y-m-d H:i:s', max( time(), $timestamp ) );
         }
         $now = gmdate( 'Y-m-d H:i:s' );
-        $approval_required = ! empty( VKT_Plugin::settings()['publishing_review'] );
+        // Ручная проверка — личная настройка кабинета.
+        $approval_required = ! empty( VKT_Account::get( 'publishing_review' ) );
         $status = $approval_required ? 'draft' : ( strtotime( $scheduled_at . ' UTC' ) > time() + 30 ? 'scheduled' : 'queued' );
         $delivery_status = $approval_required ? 'waiting_approval' : 'pending';
         // Прежняя запись читала $data['origin'] даже когда ключа нет: PHP
@@ -385,6 +407,7 @@ final class VKT_Publisher {
         $wpdb->query( 'START TRANSACTION' );
         try {
             $ok = $wpdb->insert( VKT_Store::table( 'outbound_posts' ), array(
+                'user_id' => $user_id,
                 'message' => $message,
                 'attachments' => $attachments,
                 'media' => implode( ',', $media ),
@@ -451,15 +474,16 @@ final class VKT_Publisher {
 
     public static function state() {
         global $wpdb;
-        $groups = (array) $wpdb->get_results( 'SELECT * FROM ' . VKT_Store::table( 'publishing_groups' ) . ' ORDER BY enabled DESC,can_post DESC,name,id LIMIT 1000', ARRAY_A );
-        $posts = (array) $wpdb->get_results( 'SELECT * FROM ' . VKT_Store::table( 'outbound_posts' ) . ' ORDER BY id DESC LIMIT 100', ARRAY_A );
+        $user_id = VKT_Account::id();
+        $groups = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY enabled DESC,can_post DESC,name,id LIMIT 1000', $user_id ), ARRAY_A );
+        $posts = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE user_id=%d ORDER BY id DESC LIMIT 100', $user_id ), ARRAY_A );
         $deliveries_table = VKT_Store::table( 'outbound_deliveries' );
         $groups_table = VKT_Store::table( 'publishing_groups' );
         foreach ( $posts as &$post ) {
             $post['deliveries'] = $wpdb->get_results( $wpdb->prepare(
                 "SELECT d.id,d.outbound_post_id,d.group_id,d.status,d.attempts,d.available_at,d.vk_post_id,d.error,d.published_at,d.updated_at,g.name,g.screen_name,g.photo
-                 FROM $deliveries_table d LEFT JOIN $groups_table g ON g.group_id=d.group_id WHERE d.outbound_post_id=%d ORDER BY d.id",
-                $post['id']
+                 FROM $deliveries_table d LEFT JOIN $groups_table g ON g.group_id=d.group_id AND g.user_id=%d WHERE d.outbound_post_id=%d ORDER BY d.id",
+                $user_id, $post['id']
             ), ARRAY_A );
             // Показываем сами файлы, а не их ID: удалённые из медиатеки отпадают.
             $media = '' === (string) $post['media'] ? array() : VKT_Media::public_items( explode( ',', (string) $post['media'] ) );
@@ -511,9 +535,18 @@ final class VKT_Publisher {
         $wpdb->update( $posts, $data, array( 'id' => $post_id ) );
     }
 
+    /** Запись своего кабинета: чужую нельзя ни отменить, ни подтвердить, ни повторить. */
+    private static function owns( $post_id ) {
+        global $wpdb;
+        return (bool) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE id=%d AND user_id=%d', absint( $post_id ), VKT_Account::id() ) );
+    }
+
     public static function cancel( $post_id ) {
         global $wpdb;
         $post_id = absint( $post_id );
+        if ( ! self::owns( $post_id ) ) {
+            return self::error( 'Запись не найдена в вашем кабинете.', 404 );
+        }
         $deliveries = VKT_Store::table( 'outbound_deliveries' );
         $posts = VKT_Store::table( 'outbound_posts' );
         $now = gmdate( 'Y-m-d H:i:s' );
@@ -528,7 +561,7 @@ final class VKT_Publisher {
         global $wpdb;
         $post_id = absint( $post_id );
         $posts = VKT_Store::table( 'outbound_posts' );
-        $post = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $posts WHERE id=%d AND status='draft'", $post_id ), ARRAY_A );
+        $post = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $posts WHERE id=%d AND user_id=%d AND status='draft'", $post_id, VKT_Account::id() ), ARRAY_A );
         if ( ! $post ) {
             return self::error( 'Черновик не найден или уже был подтверждён.', 404 );
         }
@@ -611,6 +644,9 @@ final class VKT_Publisher {
     public static function retry( $post_id ) {
         global $wpdb;
         $post_id = absint( $post_id );
+        if ( ! self::owns( $post_id ) ) {
+            return self::error( 'Запись не найдена в вашем кабинете.', 404 );
+        }
         $now = gmdate( 'Y-m-d H:i:s' );
         // Кэш вложений VK сбрасывается. Он нужен, чтобы автоматический повтор
         // после сетевой ошибки не загрузил те же файлы дважды, но эта кнопка
@@ -624,11 +660,14 @@ final class VKT_Publisher {
         return array( 'ok' => true, 'deliveries' => (int) $result );
     }
 
-    public static function run_due( $limit = 2, $post_id = 0 ) {
+    /**
+     * Отправляет готовые задания. Cron обходит очередь всех кабинетов, кнопка
+     * «Запустить очередь» — только свою ($user_id). Каждое задание выполняется
+     * от имени автора записи: у cron нет своего пользователя, а токен и ключ
+     * сообщества у каждого кабинета свои.
+     */
+    public static function run_due( $limit = 2, $post_id = 0, $user_id = 0 ) {
         global $wpdb;
-        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
-            return self::error( 'Автопостинг ожидает ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
-        }
         if ( ! VKT_Store::lock( 'publisher', 120 ) ) {
             return self::error( 'Публикация уже выполняется.', 409 );
         }
@@ -637,14 +676,16 @@ final class VKT_Publisher {
         $posts = VKT_Store::table( 'outbound_posts' );
         $groups = VKT_Store::table( 'publishing_groups' );
         $post_id = absint( $post_id );
-        $post_filter = $post_id ? $wpdb->prepare( ' AND d.outbound_post_id=%d', $post_id ) : '';
+        $filter = $post_id ? $wpdb->prepare( ' AND d.outbound_post_id=%d', $post_id ) : '';
+        $filter .= $user_id ? $wpdb->prepare( ' AND p.user_id=%d', absint( $user_id ) ) : '';
         try {
             update_option( 'vkt_last_publish_run', gmdate( 'Y-m-d H:i:s' ), false );
             $wpdb->query( $wpdb->prepare( "UPDATE $deliveries SET status='pending' WHERE status='publishing' AND updated_at<%s", gmdate( 'Y-m-d H:i:s', time() - 180 ) ) );
+            // Группа ищется в кабинете автора: одну и ту же группу VK могут вести разные люди.
             $rows = (array) $wpdb->get_results( $wpdb->prepare(
-                "SELECT d.*,p.message,p.attachments,p.media,p.signed,p.close_comments,g.id AS local_group_id,g.name,g.enabled,g.can_post
-                 FROM $deliveries d JOIN $posts p ON p.id=d.outbound_post_id LEFT JOIN $groups g ON g.group_id=d.group_id
-                 WHERE d.status='pending' AND d.available_at<=%s$post_filter ORDER BY d.available_at,d.id LIMIT %d",
+                "SELECT d.*,p.user_id,p.message,p.attachments,p.media,p.signed,p.close_comments,g.id AS local_group_id,g.name,g.enabled,g.can_post
+                 FROM $deliveries d JOIN $posts p ON p.id=d.outbound_post_id LEFT JOIN $groups g ON g.group_id=d.group_id AND g.user_id=p.user_id
+                 WHERE d.status='pending' AND d.available_at<=%s$filter ORDER BY d.available_at,d.id LIMIT %d",
                 gmdate( 'Y-m-d H:i:s' ), max( 1, min( 10, absint( $limit ) ) )
             ), ARRAY_A );
             foreach ( $rows as $index => $delivery ) {
@@ -653,43 +694,7 @@ final class VKT_Publisher {
                     continue;
                 }
                 $attempts = (int) $delivery['attempts'] + 1;
-                $attachments = $delivery['attachments'];
-                $result = null;
-                if ( ! $delivery['local_group_id'] || ! $delivery['enabled'] || ! $delivery['can_post'] ) {
-                    $result = self::error( 'Сообщество выключено или право публикации отозвано.' );
-                } else {
-                    // Записи прежних версий проходят текущие проверки: иначе
-                    // разрешённое тогда уходит в VK и возвращается кодом 100.
-                    $manual = self::sanitize_attachments( $delivery['attachments'] );
-                    // ID вложения VK зависит от сообщества, поэтому файлы
-                    // загружаются на каждого адресата и кэшируются в задании.
-                    $media = is_wp_error( $manual ) ? $manual : self::resolve_media( $delivery );
-                    $attachments = is_wp_error( $media ) ? $media : self::merge_attachments( $media, $manual );
-                    if ( is_wp_error( $attachments ) ) {
-                        $result = $attachments;
-                    }
-                }
-                if ( null === $result ) {
-                    $params = array(
-                        'owner_id' => -absint( $delivery['group_id'] ),
-                        'from_group' => 1,
-                        'signed' => (int) $delivery['signed'],
-                        'close_comments' => (int) $delivery['close_comments'],
-                        'guid' => $delivery['guid'],
-                    );
-                    if ( '' !== $delivery['message'] ) {
-                        $params['message'] = $delivery['message'];
-                    }
-                    if ( '' !== $attachments ) {
-                        $params['attachments'] = $attachments;
-                    }
-                    $result = self::use_community_key( $delivery['group_id'], $delivery['media'] )
-                        ? VKT_Community::publish( $params )
-                        : VKT_API::publishing_request( 'wall.post', $params );
-                    if ( ! is_wp_error( $result ) && ! absint( $result['response']['post_id'] ?? 0 ) ) {
-                        $result = self::error( 'VK не вернул ID опубликованной записи.', 502 );
-                    }
-                }
+                $result = VKT_Account::act_as( absint( $delivery['user_id'] ), static fn() => self::attempt( $delivery ) );
                 $changes = array( 'attempts' => $attempts, 'updated_at' => gmdate( 'Y-m-d H:i:s' ) );
                 if ( is_wp_error( $result ) ) {
                     $error_data = (array) $result->get_error_data();
@@ -723,5 +728,49 @@ final class VKT_Publisher {
         } finally {
             VKT_Store::unlock( 'publisher' );
         }
+    }
+
+    /** Одна попытка отправки. Вызывается уже от имени автора записи. */
+    private static function attempt( $delivery ) {
+        // Заблокированный кабинет перестаёт публиковать сразу, а не после разбора очереди.
+        if ( ! VKT_Account::can_use() ) {
+            return self::error( 'Кабинет автора записи закрыт администратором.' );
+        }
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
+            return self::error( 'В кабинете автора нет ни пользовательского токена, ни ключа сообщества. Подключите их в разделе «Публикация» и повторите запись.' );
+        }
+        if ( ! $delivery['local_group_id'] || ! $delivery['enabled'] || ! $delivery['can_post'] ) {
+            return self::error( 'Сообщество выключено или право публикации отозвано.' );
+        }
+        // Записи прежних версий проходят текущие проверки: иначе
+        // разрешённое тогда уходит в VK и возвращается кодом 100.
+        $manual = self::sanitize_attachments( $delivery['attachments'] );
+        // ID вложения VK зависит от сообщества, поэтому файлы
+        // загружаются на каждого адресата и кэшируются в задании.
+        $media = is_wp_error( $manual ) ? $manual : self::resolve_media( $delivery );
+        $attachments = is_wp_error( $media ) ? $media : self::merge_attachments( $media, $manual );
+        if ( is_wp_error( $attachments ) ) {
+            return $attachments;
+        }
+        $params = array(
+            'owner_id' => -absint( $delivery['group_id'] ),
+            'from_group' => 1,
+            'signed' => (int) $delivery['signed'],
+            'close_comments' => (int) $delivery['close_comments'],
+            'guid' => $delivery['guid'],
+        );
+        if ( '' !== $delivery['message'] ) {
+            $params['message'] = $delivery['message'];
+        }
+        if ( '' !== $attachments ) {
+            $params['attachments'] = $attachments;
+        }
+        $result = self::use_community_key( $delivery['group_id'], $delivery['media'] )
+            ? VKT_Community::publish( $params )
+            : VKT_API::publishing_request( 'wall.post', $params );
+        if ( ! is_wp_error( $result ) && ! absint( $result['response']['post_id'] ?? 0 ) ) {
+            return self::error( 'VK не вернул ID опубликованной записи.', 502 );
+        }
+        return $result;
     }
 }

@@ -12,6 +12,9 @@ function esc_url_raw( $value, $protocols = array() ) { return preg_match( '~^htt
 function wp_parse_url( $value, $component = -1 ) { return parse_url( $value, $component ); }
 function wp_json_encode( $value ) { return json_encode( $value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ); }
 class VKT_Plugin { public static function settings() { return array( 'links' => true ); } }
+// Посты видны только из своих источников.
+class VKT_Account { public static int $id = 1; public static function id() { return self::$id; } }
+class VKT_Subscriptions { public static function sources_sql() { return 'SELECT source_id FROM test_vkt_subscriptions WHERE user_id=' . (int) VKT_Account::id(); } }
 // Follow the 0.8.0 bootstrap: callers must load their new parser dependencies.
 require_once __DIR__ . '/../includes/class-store.php';
 require_once __DIR__ . '/../includes/class-posts.php';
@@ -149,6 +152,9 @@ foreach ( array_merge( VKT_Posts::schema(), VKT_Links::schema() ) as $name => $s
 }
 $wpdb->query( "CREATE TABLE test_vkt_sources (id INTEGER PRIMARY KEY,kind TEXT,title TEXT,value TEXT,members INTEGER,photo TEXT)" );
 $wpdb->query( "INSERT INTO test_vkt_sources VALUES (1,'domain','Первое сообщество','first',5000,''),(2,'owner','Второе сообщество','-2',10000,'')" );
+// Кабинет 1 следит за обоими сообществами, кабинет 2 — только за вторым.
+$wpdb->query( "CREATE TABLE test_vkt_subscriptions (user_id INTEGER,source_id INTEGER,enabled INTEGER)" );
+$wpdb->query( "INSERT INTO test_vkt_subscriptions VALUES (1,1,1),(1,2,1),(2,2,1)" );
 function seed_post( $id, $source, $text, $extra = array() ) {
     global $wpdb;
     $data = array_merge( array( 'id' => $id, 'owner_id' => -$source, 'post_id' => $id, 'source_id' => $source, 'text' => $text, 'thumbnail' => '', 'link_url' => '', 'cards' => '', 'views' => 100 * $id, 'g1' => 10 * $id, 'err' => 2, 'measured_at' => '2026-09-09 01:00:00' ), $extra );
@@ -181,6 +187,12 @@ $saved_id = VKT_Posts::save( $post, 1, 5000 );
 check( is_int( $saved_id ) && $saved_id > 0, 'Actual post save path writes commerce and measurements atomically' );
 check( 'Лампа настольная' === $wpdb->get_var( 'SELECT title FROM test_vkt_post_products WHERE post_id=' . $saved_id ), 'Saved repost attachment is indexed' );
 check( 1 === VKT_Posts::query( array( 'source' => 1, 'filters' => array( 'shop' => 'VK Маркет', 'recognized' => true ) ) )['total'], 'Native VK product recognized without a store page' );
+// Чужой кабинет не видит постов из источника, на который не подписан.
+VKT_Account::$id = 2;
+check( 0 === VKT_Posts::query( array( 'source' => 1 ) )['total'], 'Посты чужого источника в кабинете не видны' );
+check( VKT_Posts::query()['total'] === VKT_Posts::query( array( 'source' => 2 ) )['total'], 'В ленте кабинета только его источники' );
+check( array( '2' ) === array_map( 'strval', array_column( VKT_Posts::query()['communities'], 'id' ) ), 'В фильтре сообществ только свои' );
+VKT_Account::$id = 1;
 unset( $post['copy_history'] );
 VKT_Posts::save( $post, 1, 5000 );
 check( 0 === (int) $wpdb->get_var( 'SELECT COUNT(*) FROM test_vkt_post_products WHERE post_id=' . $saved_id ), 'Refreshing a post removes obsolete product associations' );

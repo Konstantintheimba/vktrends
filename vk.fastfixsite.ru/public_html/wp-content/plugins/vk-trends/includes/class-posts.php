@@ -400,7 +400,9 @@ final class VKT_Posts {
         $per_page = 24;
         $page = max( 1, (int) ( $args['page'] ?? 1 ) );
         $filters = is_array( $args['filters'] ?? null ) ? $args['filters'] : array();
-        $where = array( '1=1' );
+        // Посты общие, а видны только из своих источников.
+        $mine = VKT_Subscriptions::sources_sql();
+        $where = array( "p.source_id IN ($mine)" );
         $search = trim( (string) ( $args['search'] ?? '' ) );
         if ( '' !== $search ) {
             $like = '%' . $wpdb->esc_like( $search ) . '%';
@@ -462,10 +464,11 @@ final class VKT_Posts {
         return array(
             'posts' => $rows,
             'reextract_pending' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM $posts WHERE commerce_version<%d", VKT_Commerce::VERSION ) ),
-            'communities' => (array) $wpdb->get_results( "SELECT id,title,value FROM $sources WHERE kind IN ('owner','domain') ORDER BY title,value LIMIT 500", ARRAY_A ),
+            'communities' => (array) $wpdb->get_results( "SELECT id,title,value FROM $sources WHERE kind IN ('owner','domain') AND id IN ($mine) ORDER BY title,value LIMIT 500", ARRAY_A ),
             // Магазины, встречающиеся в собранных ссылках, — для выпадающего фильтра витрины.
-            'shops' => (array) $wpdb->get_results( "SELECT COALESCE(NULLIF(l.shop,''),pp.shop) AS shop,COUNT(DISTINCT pp.post_id) AS posts FROM $products pp JOIN $posts p ON p.id=pp.post_id LEFT JOIN $links l ON l.id=pp.link_id WHERE COALESCE(NULLIF(l.shop,''),pp.shop)<>'' GROUP BY COALESCE(NULLIF(l.shop,''),pp.shop) ORDER BY posts DESC LIMIT 30", ARRAY_A ),
-            'links' => (array) $wpdb->get_row( "SELECT COUNT(*) AS total,SUM(status='ok') AS recognized,SUM(status IN ('pending','manual')) AS waiting,SUM(status IN ('blocked','error','empty')) AS failed FROM $links", ARRAY_A ),
+            'shops' => (array) $wpdb->get_results( "SELECT COALESCE(NULLIF(l.shop,''),pp.shop) AS shop,COUNT(DISTINCT pp.post_id) AS posts FROM $products pp JOIN $posts p ON p.id=pp.post_id LEFT JOIN $links l ON l.id=pp.link_id WHERE p.source_id IN ($mine) AND COALESCE(NULLIF(l.shop,''),pp.shop)<>'' GROUP BY COALESCE(NULLIF(l.shop,''),pp.shop) ORDER BY posts DESC LIMIT 30", ARRAY_A ),
+            // Страницы магазинов из своих постов: справочник ссылок общий на весь сайт.
+            'links' => (array) $wpdb->get_row( "SELECT COUNT(*) AS total,SUM(status='ok') AS recognized,SUM(status IN ('pending','manual')) AS waiting,SUM(status IN ('blocked','error','empty')) AS failed FROM $links WHERE id IN (SELECT pp.link_id FROM $products pp JOIN $posts p ON p.id=pp.post_id WHERE p.source_id IN ($mine))", ARRAY_A ),
             'total' => (int) ( $totals['total'] ?? 0 ),
             'summary' => $totals,
             'page' => $page,
@@ -474,12 +477,14 @@ final class VKT_Posts {
     }
 
     // Сводка по сообществам для отдельной вкладки: агрегаты считаются по колонкам постов.
+    // Только свои источники; пауза — своя, из подписки.
     public static function communities() {
         global $wpdb;
         $posts = VKT_Store::table( 'posts' );
         $sources = VKT_Store::table( 'sources' );
-        return (array) $wpdb->get_results(
-            "SELECT s.id,s.kind,s.value,s.title,s.enabled,s.members,s.photo,s.next_run,s.synced_at,
+        $subscriptions = VKT_Store::table( 'subscriptions' );
+        return (array) $wpdb->get_results( $wpdb->prepare(
+            "SELECT s.id,s.kind,s.value,s.title,MAX(sub.enabled) AS enabled,s.members,s.photo,s.next_run,s.synced_at,
                 COUNT(p.id) AS posts,
                 COALESCE(SUM(p.views),0) AS views,
                 COALESCE(SUM(p.likes),0) AS likes,
@@ -489,10 +494,11 @@ final class VKT_Posts {
                 SUM(p.g1) AS g1,SUM(p.g3) AS g3,SUM(p.g7) AS g7,SUM(p.g30) AS g30,
                 AVG(p.err) AS err,AVG(p.viral) AS viral,
                 MAX(p.published_at) AS last_post,MAX(p.measured_at) AS last_measurement
-            FROM $sources s LEFT JOIN $posts p ON p.source_id=s.id
+            FROM $subscriptions sub JOIN $sources s ON s.id=sub.source_id LEFT JOIN $posts p ON p.source_id=s.id
+            WHERE sub.user_id=%d
             GROUP BY s.id ORDER BY views DESC,s.id DESC LIMIT 500",
-            ARRAY_A
-        );
+            VKT_Account::id()
+        ), ARRAY_A );
     }
 
     public static function history( $id, $limit = 300 ) {

@@ -15,6 +15,15 @@ class VKT_Plugin {
 class VKT_Store {
     public static function log() {}
 }
+// Константы wp-config.php принадлежат хозяину сайта.
+class VKT_Account {
+    public static bool $owner = true;
+    public static array $meta = array();
+    public static function is_owner() { return self::$owner; }
+    public static function get( $key ) { return self::$meta[ $key ] ?? ''; }
+    public static function owner() { return 1; }
+    public static function act_as( $user_id, callable $callback ) { return $callback(); }
+}
 class VKT_Tokens {
     public static function token( $slot ) { return 'community' === $slot ? VKT_COMMUNITY_ACCESS_TOKEN : ''; }
 }
@@ -60,4 +69,10 @@ $published = VKT_Community::publish( array( 'owner_id' => -VKT_COMMUNITY_ID, 'fr
 $assert( ! is_wp_error( $published ) && 42 === $published['response']['post_id'], 'Community key publishes to its own wall' );
 $assert( is_wp_error( VKT_Community::publish( array( 'owner_id' => -999, 'from_group' => 1, 'message' => 'Чужая группа' ) ) ), 'Community key cannot target another wall' );
 
+VKT_Account::$owner = false;
+$assert( 0 === VKT_Community::group_id(), 'Чужой кабинет не получает сообщество из wp-config.php' );
+VKT_Account::$meta['community_id'] = '777';
+$assert( 777 === VKT_Community::group_id(), 'У кабинета своё сообщество из личных настроек' );
+$assert( ! VKT_Community::callback_configured(), 'Callback API — только у хозяина сайта' );
+VKT_Account::$owner = true;
 echo "All $checks offline community checks passed.\n";

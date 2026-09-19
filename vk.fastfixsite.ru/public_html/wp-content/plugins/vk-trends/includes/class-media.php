@@ -50,9 +50,18 @@ final class VKT_Media {
         return $item;
     }
 
+    /**
+     * Файл принадлежит тому, кто его прикладывает. Администратор, как и
+     * раньше, работает со всей медиатекой сайта, участник — только со своими
+     * загрузками и генерациями.
+     */
+    public static function owned( $attachment_id ) {
+        return VKT_Account::is_admin() || (int) get_post_field( 'post_author', absint( $attachment_id ) ) === VKT_Account::id();
+    }
+
     /** Недавние файлы медиатеки: выбор кликом вместо ручного поиска ID вложения. */
     public static function library( $limit = 24, $search = '' ) {
-        $posts = get_posts( array(
+        $args = array(
             'post_type' => 'attachment',
             'post_status' => 'inherit',
             'post_mime_type' => array( 'image', 'video/mp4' ),
@@ -62,7 +71,11 @@ final class VKT_Media {
             'order' => 'DESC',
             'suppress_filters' => false,
             'fields' => 'ids',
-        ) );
+        );
+        if ( ! VKT_Account::is_admin() ) {
+            $args['author'] = max( 1, VKT_Account::id() );
+        }
+        $posts = get_posts( $args );
         $items = array();
         foreach ( $posts as $id ) {
             $item = self::public_item( $id );
@@ -96,7 +109,8 @@ final class VKT_Media {
             return self::error( 'Можно прикрепить не больше 10 локальных файлов.' );
         }
         foreach ( $ids as $id ) {
-            if ( is_wp_error( self::item( $id ) ) ) {
+            // Чужой файл выглядит так же, как удалённый: его ID ничего не должен выдавать.
+            if ( is_wp_error( self::item( $id ) ) || ! self::owned( $id ) ) {
                 return self::error( 'Один из выбранных файлов удалён или недоступен.' );
             }
         }

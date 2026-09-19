@@ -53,6 +53,21 @@ class VKT_Media {
 class VKT_Plugin {
     public static function settings() { return array( 'publishing_review' => false ); }
 }
+// Кабинет автора: очередь выполняется от его имени, а cron переключается на него.
+class VKT_Account {
+    public static int $id = 5;
+    public static array $switched = array();
+    public static bool $active = true;
+    public static function id() { return self::$id; }
+    public static function get( $key ) { return ''; }
+    public static function can_use() { return self::$active; }
+    public static function act_as( $user_id, callable $callback ) {
+        self::$switched[] = $user_id;
+        $previous = self::$id;
+        self::$id = $user_id;
+        try { return $callback(); } finally { self::$id = $previous; }
+    }
+}
 const DAY_IN_SECONDS = 86400;
 const YEAR_IN_SECONDS = 31536000;
 function apply_filters( $name, $value ) { return $value; }
@@ -93,7 +108,8 @@ class VKT_Test_WPDB {
         $this->insert_id = count( $this->inserts );
         return 1;
     }
-    public function get_var( $sql ) { return ''; }
+    // Своя запись находится, чужая — нет: проверка владельца идёт по user_id.
+    public function get_var( $sql ) { return str_contains( $sql, 'outbound_posts WHERE id=' ) && str_contains( $sql, 'user_id=5' ) ? '1' : ''; }
     public function get_col( $sql ) { return array(); }
     public function update( $table, $data, $where ) { $this->updates[] = array( 'table' => $table, 'data' => $data, 'where' => $where ); return 1; }
 }
@@ -118,7 +134,9 @@ $assert( 3 === count( $schema ), 'Publisher owns three tables' );
 $assert( str_contains( $schema['outbound_posts'], 'origin varchar(20)' ), 'Drafts store manual or agent origin' );
 $assert( str_contains( $schema['outbound_posts'], 'editor_status varchar(20)' ), 'Drafts store editor state' );
 $assert( str_contains( $schema['outbound_deliveries'], "status varchar(20) NOT NULL DEFAULT 'pending'" ), 'Deliveries have an explicit queue state' );
-$assert( 2 === $run_due->getNumberOfParameters(), 'Immediate publishing can target the newly created post instead of an older queue item' );
+$assert( 3 === $run_due->getNumberOfParameters(), 'Immediate publishing can target the newly created post, and the queue button only its own cabinet' );
+$assert( str_contains( $schema['publishing_groups'], 'UNIQUE KEY user_group (user_id,group_id)' ), 'Одну группу VK могут вести разные кабинеты' );
+$assert( str_contains( $schema['outbound_posts'], 'user_id bigint' ), 'Запись принадлежит кабинету' );
 $assert( '' === $method->invoke( null, '' ), 'Empty attachments allowed when text exists' );
 $assert( 'photo-123_456,video987_654' === $method->invoke( null, "photo-123_456\nvideo987_654" ), 'VK attachment IDs normalized' );
 $assert( 'photo-123_456_ab-CD_9' === $method->invoke( null, 'photo-123_456_ab-CD_9' ), 'Attachment access key accepted' );
@@ -167,6 +185,12 @@ VKT_Community::$on = true;
 
 // Повтор вручную: кэш вложений VK сбрасывается, иначе отклонённая строка
 // отправляется снова и снова.
+$assert( is_wp_error( VKT_Publisher::retry( 7 ) ) === false, 'Свою запись можно повторить' );
+VKT_Account::$id = 6;
+$assert( is_wp_error( VKT_Publisher::retry( 7 ) ), 'Чужую запись повторить нельзя' );
+$assert( is_wp_error( VKT_Publisher::cancel( 7 ) ), 'Чужую запись отменить нельзя' );
+VKT_Account::$id = 5;
+$wpdb->queries = array();
 VKT_Publisher::retry( 7 );
 $retry_sql = $wpdb->queries[0];
 $assert( str_contains( $retry_sql, "media_attachments=''" ), 'Кнопка «Повторить» сбрасывает кэш вложений VK' );
@@ -189,6 +213,7 @@ $wpdb->rows = array( array(
     'signed' => 0,
     'close_comments' => 0,
     'guid' => 'guid-3',
+    'user_id' => 9,
     'local_group_id' => 1,
     'name' => 'Своя группа',
     'enabled' => 1,
@@ -200,6 +225,9 @@ $assert( 1 === count( $failed ), 'Запись прежней версии от�
 $assert( str_contains( $failed[0]['data']['error'], 'Прямая ссылка на файл' ), 'Причина отказа объяснена словами, а не кодом VK' );
 $assert( 0 === $GLOBALS['vkt_http'], 'До VK дело не дошло: ни одного сетевого запроса' );
 $assert( array() === VKT_Community::$published, 'Ключ сообщества такую запись не публикует' );
+$assert( in_array( 9, VKT_Account::$switched, true ) && 5 === VKT_Account::$id, 'Задание выполнено от имени автора, контекст потом вернулся' );
+$queue_sql = implode( "\n", $wpdb->queries );
+$assert( str_contains( $queue_sql, 'g.user_id=p.user_id' ), 'Группа ищется в кабинете автора записи' );
 
 // Дословный отказ VK про ссылку читается как поломка плагина, поэтому причина
 // в очереди объясняется словами.
@@ -217,6 +245,7 @@ $wpdb->rows = array( array(
     'signed' => 0,
     'close_comments' => 0,
     'guid' => 'guid-4',
+    'user_id' => 5,
     'local_group_id' => 1,
     'name' => 'Своя группа',
     'enabled' => 1,
@@ -228,6 +257,20 @@ $assert( 1 === count( $link_failed ), 'Отказ по ссылке записа
 $assert( str_contains( $link_failed[0]['data']['error'], 'VK не собрал карточку из ссылки' ), 'Причина объяснена словами' );
 $assert( ! str_contains( $link_failed[0]['data']['error'], 'link_photo_sizing_rule' ), 'Внутренний код VK в сообщение не попадает' );
 VKT_Community::$fail_with = '';
+
+// Заблокированный кабинет перестаёт публиковать сразу.
+$wpdb->updates = array();
+VKT_Account::$active = false;
+$wpdb->rows = array( array( 'id' => 5, 'outbound_post_id' => 9, 'group_id' => 241464933, 'attempts' => 0, 'media' => '', 'media_attachments' => '', 'attachments' => '', 'message' => 'Текст', 'signed' => 0, 'close_comments' => 0, 'guid' => 'guid-5', 'user_id' => 5, 'local_group_id' => 1, 'name' => 'Своя группа', 'enabled' => 1, 'can_post' => 1 ) );
+VKT_Publisher::run_due( 1 );
+$blocked = array_values( array_filter( $wpdb->updates, static fn( $update ) => 'failed' === ( $update['data']['status'] ?? '' ) ) );
+$assert( 1 === count( $blocked ) && str_contains( $blocked[0]['data']['error'], 'закрыт администратором' ), 'Запись заблокированного кабинета не уходит в VK' );
+VKT_Account::$active = true;
+
+// Кнопка «Запустить очередь» разбирает только свой кабинет.
+$wpdb->queries = array();
+VKT_Publisher::run_due( 3, 0, 5 );
+$assert( str_contains( implode( "\n", $wpdb->queries ), 'p.user_id=5' ), 'Ручной запуск ограничен своими записями' );
 
 // ——— Серия постов ———
 $wpdb->groups = array( array( 'id' => 3, 'group_id' => 241464933 ) );
@@ -264,5 +307,8 @@ $posts = array_values( array_filter( $wpdb->inserts, static fn( $insert ) => str
 $assert( 2 === count( $posts ), 'В базу ушли ровно две записи' );
 $assert( 'scheduled' === $posts[0]['data']['status'], 'Записи серии ждут своего времени, а не публикуются сразу' );
 $assert( 'manual' === $posts[0]['data']['origin'], 'Серия создаётся вручную, а не агентом' );
+$assert( 5 === $posts[0]['data']['user_id'], 'Запись серии принадлежит кабинету автора' );
+$group_sql = implode( "\n", array_filter( $wpdb->queries, static fn( $sql ) => str_starts_with( ltrim( $sql ), 'SELECT id,group_id FROM' ) ) );
+$assert( str_contains( $group_sql, 'user_id=5' ), 'Чужую группу выбрать нельзя: она ищется только в своём кабинете' );
 
 echo "All $checks offline publisher checks passed.\n";

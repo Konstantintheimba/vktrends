@@ -45,10 +45,12 @@ final class VKT_Store {
                 PRIMARY KEY  (id),
                 UNIQUE KEY video_time (video_id,measured_at)",
             'products' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
+                user_id bigint unsigned NOT NULL DEFAULT 0,
                 title varchar(255) NOT NULL,
                 url text NOT NULL,
                 created_at datetime NOT NULL,
-                PRIMARY KEY  (id)",
+                PRIMARY KEY  (id),
+                KEY owner (user_id)",
             'links' => "video_id bigint unsigned NOT NULL,
                 product_id bigint unsigned NOT NULL,
                 PRIMARY KEY  (video_id,product_id),
@@ -89,7 +91,7 @@ final class VKT_Store {
                 KEY created (created_at)",
         );
         // Таблицы постов описаны в VKT_Posts: dbDelta обновит их вместе с остальными.
-        $schemas = array_merge( $schemas, VKT_Posts::schema(), VKT_Links::schema(), VKT_Publisher::schema() );
+        $schemas = array_merge( $schemas, VKT_Posts::schema(), VKT_Links::schema(), VKT_Publisher::schema(), VKT_Subscriptions::schema() );
         foreach ( $schemas as $name => $columns ) {
             dbDelta( 'CREATE TABLE ' . self::table( $name ) . " ($columns) ENGINE=InnoDB $collate;" );
         }
@@ -142,7 +144,43 @@ final class VKT_Store {
                 $now
             ) );
         }
+        VKT_Account::ensure_role();
+        // 0.22.0: личные кабинеты. Всё накопленное раньше принадлежало одному
+        // хозяину — переносим это в его кабинет. Шаги повторяемы: WHERE
+        // user_id=0 и INSERT IGNORE не тронут то, что уже перенесено.
+        if ( '' === $installed_version || version_compare( $installed_version, '0.22.0', '<' ) ) {
+            self::migrate_accounts();
+        }
         update_option( 'vkt_db_version', VKT_VERSION, false );
+    }
+
+    private static function migrate_accounts() {
+        global $wpdb;
+        $groups = self::table( 'publishing_groups' );
+        // Прежний уникальный ключ не давал двум кабинетам вести одну и ту же
+        // группу VK. dbDelta старые индексы не удаляет — снимаем сами.
+        if ( $wpdb->get_var( "SHOW INDEX FROM $groups WHERE Key_name='vk_group'" ) ) {
+            $wpdb->query( "ALTER TABLE $groups DROP INDEX vk_group" );
+        }
+        $owner = VKT_Account::owner();
+        if ( ! $owner ) {
+            return;
+        }
+        $now = gmdate( 'Y-m-d H:i:s' );
+        foreach ( array( 'publishing_groups', 'outbound_posts', 'products' ) as $name ) {
+            $wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table( $name ) . ' SET user_id=%d WHERE user_id=0', $owner ) );
+        }
+        $wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO ' . self::table( 'subscriptions' ) . ' (user_id,source_id,enabled,created_at) SELECT %d,id,enabled,%s FROM ' . self::table( 'sources' ), $owner, $now ) );
+        $wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO ' . self::table( 'user_videos' ) . ' (user_id,video_id,created_at) SELECT %d,id,%s FROM ' . self::table( 'videos' ), $owner, $now ) );
+        VKT_Tokens::migrate_to_owner( $owner );
+        // ID своего сообщества и ручная проверка стали личными настройками.
+        $settings = (array) get_option( 'vkt_settings', array() );
+        if ( ! empty( $settings['community_id'] ) && ! get_user_meta( $owner, 'vkt_community_id', true ) ) {
+            update_user_meta( $owner, 'vkt_community_id', absint( $settings['community_id'] ) );
+        }
+        if ( ! empty( $settings['publishing_review'] ) && '' === get_user_meta( $owner, 'vkt_publishing_review', true ) ) {
+            update_user_meta( $owner, 'vkt_publishing_review', 1 );
+        }
     }
 
     // Atomic, expiring locks work across PHP workers and persistent object caches.
@@ -256,6 +294,8 @@ final class VKT_Store {
             $wpdb->query( 'ROLLBACK' );
             return new WP_Error( 'db_write', 'Не удалось сохранить ролик.', array( 'status' => 500 ) );
         }
+        // 1 — новая строка, 0 — ролик уже был в базе.
+        $created = 1 === $result;
         // Compare samples at least one minute apart; a missing counter stays unknown.
         $previous = $wpdb->get_row( $wpdb->prepare( "SELECT views,measured_at FROM $snapshots WHERE video_id=%d AND measured_at<=%s ORDER BY measured_at DESC LIMIT 1", $id, gmdate( 'Y-m-d H:i:s', time() - 60 ) ), ARRAY_A );
         $data['growth'] = null;
@@ -274,45 +314,64 @@ final class VKT_Store {
             return new WP_Error( 'db_write', 'Не удалось сохранить замер.', array( 'status' => 500 ) );
         }
         $wpdb->query( 'COMMIT' );
+        // Новый ролик источника сразу попадает в подборки всех его подписчиков.
+        // Только новый: удалённый из подборки не должен возвращаться с каждым замером.
+        if ( $created && $source_id ) {
+            VKT_Subscriptions::share_video( $id, (int) $source_id );
+        }
         return $id;
     }
 
+    /**
+     * Данные кабинета: ролики из своей подборки, свои товары и источники.
+     * Очередь сборщика, журнал и cron общие для сайта — их видит только
+     * администратор.
+     */
     public static function state( $page = 1, $search = '', $sort = 'velocity' ) {
         global $wpdb;
+        $user_id = VKT_Account::id();
+        $admin = VKT_Account::is_admin();
         $v = self::table( 'videos' );
         $p = self::table( 'products' );
         $l = self::table( 'links' );
-        $where = $search ? $wpdb->prepare( 'WHERE title LIKE %s', '%' . $wpdb->esc_like( $search ) . '%' ) : '';
+        $mine = 'id IN (' . VKT_Subscriptions::videos_sql( $user_id ) . ')';
+        $own_posts = 'source_id IN (' . VKT_Subscriptions::sources_sql( $user_id ) . ')';
+        $where = 'WHERE ' . $mine . ( $search ? $wpdb->prepare( ' AND title LIKE %s', '%' . $wpdb->esc_like( $search ) . '%' ) : '' );
         $order = in_array( $sort, array( 'velocity', 'views', 'measured_at' ), true ) ? $sort : 'velocity';
         $offset = ( max( 1, (int) $page ) - 1 ) * 24;
         // $where уже прошёл prepare — повторно его через prepare пропускать нельзя.
         $videos = (array) $wpdb->get_results( "SELECT * FROM $v $where ORDER BY $order DESC,id DESC LIMIT 24 OFFSET " . (int) $offset, ARRAY_A );
         foreach ( $videos as &$video ) {
-            $video['products'] = $wpdb->get_results( $wpdb->prepare( "SELECT p.id,p.title FROM $p p JOIN $l l ON l.product_id=p.id WHERE l.video_id=%d", $video['id'] ), ARRAY_A );
+            // Связи с товарами личные: показываем только свои товары.
+            $video['products'] = $wpdb->get_results( $wpdb->prepare( "SELECT p.id,p.title FROM $p p JOIN $l l ON l.product_id=p.id WHERE l.video_id=%d AND p.user_id=%d", $video['id'], $user_id ), ARRAY_A );
         }
         unset( $video );
         return array(
             'settings' => VKT_Plugin::public_settings(),
             'stats' => array_merge(
-                (array) $wpdb->get_row( "SELECT COUNT(*) AS videos,COALESCE(SUM(views),0) AS views,COUNT(velocity) AS measured,MAX(measured_at) AS last_measurement FROM $v", ARRAY_A ),
-                (array) $wpdb->get_row( 'SELECT COUNT(*) AS posts,COALESCE(SUM(views),0) AS post_views,COALESCE(SUM(g1),0) AS post_day_growth,AVG(err) AS post_err FROM ' . self::table( 'posts' ), ARRAY_A )
+                (array) $wpdb->get_row( "SELECT COUNT(*) AS videos,COALESCE(SUM(views),0) AS views,COUNT(velocity) AS measured,MAX(measured_at) AS last_measurement FROM $v WHERE $mine", ARRAY_A ),
+                (array) $wpdb->get_row( 'SELECT COUNT(*) AS posts,COALESCE(SUM(views),0) AS post_views,COALESCE(SUM(g1),0) AS post_day_growth,AVG(err) AS post_err FROM ' . self::table( 'posts' ) . " WHERE $own_posts", ARRAY_A )
             ),
             'videos' => $videos,
             'total' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM $v $where" ),
             'page' => max( 1, (int) $page ),
-            'products' => $wpdb->get_results( "SELECT p.*,COUNT(l.video_id) AS videos,COALESCE(SUM(v.views),0) AS views,SUM(v.velocity) AS velocity FROM $p p LEFT JOIN $l l ON l.product_id=p.id LEFT JOIN $v v ON v.id=l.video_id GROUP BY p.id ORDER BY p.id DESC LIMIT 500", ARRAY_A ),
-            'sources' => $wpdb->get_results( 'SELECT * FROM ' . self::table( 'sources' ) . ' ORDER BY id DESC LIMIT 500', ARRAY_A ),
+            'products' => $wpdb->get_results( $wpdb->prepare( "SELECT p.*,COUNT(l.video_id) AS videos,COALESCE(SUM(v.views),0) AS views,SUM(v.velocity) AS velocity FROM $p p LEFT JOIN $l l ON l.product_id=p.id LEFT JOIN $v v ON v.id=l.video_id WHERE p.user_id=%d GROUP BY p.id ORDER BY p.id DESC LIMIT 500", $user_id ), ARRAY_A ),
+            // Пауза — своя, у подписки: общий источник обходится, пока он нужен хоть кому-то.
+            'sources' => $wpdb->get_results( $wpdb->prepare(
+                'SELECT s.id,s.kind,s.value,s.title,s.photo,s.members,s.next_run,s.synced_at,sub.enabled FROM ' . self::table( 'subscriptions' ) . ' sub JOIN ' . self::table( 'sources' ) . ' s ON s.id=sub.source_id WHERE sub.user_id=%d ORDER BY s.id DESC LIMIT 500',
+                $user_id
+            ), ARRAY_A ),
             // Название источника или ролика рядом с заданием: «Источник #10» ни о чём не говорит.
-            'jobs' => $wpdb->get_results(
+            'jobs' => $admin ? $wpdb->get_results(
                 'SELECT j.*,COALESCE(NULLIF(s.title,\'\'),s.value) AS source_title,v.title AS video_title FROM ' . self::table( 'jobs' ) . ' j'
                 . ' LEFT JOIN ' . self::table( 'sources' ) . ' s ON j.kind=\'source\' AND s.id=j.entity_id'
                 . ' LEFT JOIN ' . self::table( 'videos' ) . ' v ON j.kind=\'video\' AND v.id=j.entity_id'
                 . ' ORDER BY j.updated_at DESC,j.id DESC LIMIT 50',
                 ARRAY_A
-            ),
-            'queue' => $wpdb->get_results( 'SELECT status,COUNT(*) AS count FROM ' . self::table( 'jobs' ) . ' GROUP BY status', ARRAY_A ),
-            'logs' => $wpdb->get_results( 'SELECT * FROM ' . self::table( 'logs' ) . ' ORDER BY id DESC LIMIT 100', ARRAY_A ),
-            'cron' => array( 'next' => wp_next_scheduled( 'vkt_collect' ), 'last' => get_option( 'vkt_last_run', null ) ),
+            ) : array(),
+            'queue' => $admin ? $wpdb->get_results( 'SELECT status,COUNT(*) AS count FROM ' . self::table( 'jobs' ) . ' GROUP BY status', ARRAY_A ) : array(),
+            'logs' => $admin ? $wpdb->get_results( 'SELECT * FROM ' . self::table( 'logs' ) . ' ORDER BY id DESC LIMIT 100', ARRAY_A ) : array(),
+            'cron' => $admin ? array( 'next' => wp_next_scheduled( 'vkt_collect' ), 'last' => get_option( 'vkt_last_run', null ) ) : array( 'next' => null, 'last' => null ),
         );
     }
 }

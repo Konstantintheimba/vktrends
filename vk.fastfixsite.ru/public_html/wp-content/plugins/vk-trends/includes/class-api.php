@@ -461,7 +461,9 @@ final class VKT_API {
         if ( '' === $data['refresh_token'] || '' === $data['client_id'] || '' === $data['device_id'] ) {
             return true;
         }
-        if ( ! VKT_Store::lock( 'token_refresh', 20 ) ) {
+        // Блокировка у каждого своя: токены разных кабинетов обновляются независимо.
+        $lock = 'token_refresh_' . VKT_Account::id();
+        if ( ! VKT_Store::lock( $lock, 20 ) ) {
             // Токен уже обновляет другой запрос — работаем со старым значением, пока не истёк совсем.
             return true;
         }
@@ -507,7 +509,7 @@ final class VKT_API {
             VKT_Store::log( 'oauth2.auth', 'refresh', 'ok', 0, 'Пользовательский токен обновлён', 0 );
             return true;
         } finally {
-            VKT_Store::unlock( 'token_refresh' );
+            VKT_Store::unlock( $lock );
         }
     }
 

@@ -22,6 +22,8 @@ final class VKT_AI {
             'video_model' => self::VIDEO_MODEL,
             'image_ratios' => array_keys( self::IMAGE_RATIOS ),
             'video_ratios' => array_keys( self::VIDEO_RATIOS ),
+            // Остаток на сегодня; null — без ограничений (администратор).
+            'quota' => VKT_Account::ai_quota(),
         );
     }
 

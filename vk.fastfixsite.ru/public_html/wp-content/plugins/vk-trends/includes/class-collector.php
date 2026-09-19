@@ -33,7 +33,16 @@ final class VKT_Collector {
         }
     }
 
+    /**
+     * Сбор общий для всех кабинетов и идёт от имени хозяина сайта: его
+     * пользовательский токен, если он есть, даёт точечный замер роликов через
+     * video.get — как было до личных кабинетов.
+     */
     public static function run( $manual = false ) {
+        return VKT_Account::act_as( VKT_Account::owner(), static fn() => self::collect( (bool) $manual ) );
+    }
+
+    private static function collect( $manual ) {
         global $wpdb;
         // Retention also runs while collection is paused or no token is configured.
         if ( ! get_transient( 'vkt_logs_pruned' ) ) {
