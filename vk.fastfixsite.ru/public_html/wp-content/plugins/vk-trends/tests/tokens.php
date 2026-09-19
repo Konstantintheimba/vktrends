@@ -41,7 +41,8 @@ $service = str_repeat( 'a', 40 );
 $user = 'vk1.a.' . str_repeat( 'b', 60 );
 $community = 'vk1.a.' . str_repeat( 'c', 60 );
 
-$assert( 4 === count( VKT_Tokens::definitions() ), 'Слотов четыре: сервисный, пользовательский, защищённый ключ и сообщества' );
+$assert( 5 === count( VKT_Tokens::definitions() ), 'Слоты: сервисный, пользовательский, защищённый ключ, ключ BFL и ключ сообщества' );
+$assert( 'site' === VKT_Tokens::scope( 'bfl' ), 'Ключ BFL общий для сайта' );
 $assert( isset( VKT_Tokens::definitions()['app_secret'] ), 'Защищённый ключ хранится тем же шифром, что и остальные' );
 $assert( ! VKT_Tokens::has( 'user' ), 'Пустое хранилище не выдаёт ключей' );
 

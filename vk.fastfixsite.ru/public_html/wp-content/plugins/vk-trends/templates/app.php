@@ -32,6 +32,7 @@ $vkt_pending = $vkt_admin ? VKT_Account::pending_count() : 0;
         <?php if ( $vkt_admin ) : ?>
         <div class="vkt-nav-caption">ИНСТРУМЕНТЫ</div>
         <nav aria-label="Инструменты">
+            <a href="#flux" data-nav="flux"><span data-icon="fire"></span>Генерация фото</a>
             <a href="#users" data-nav="users"><span data-icon="people"></span>Пользователи<span id="vkt-users-count" class="vkt-nav-count" <?php echo $vkt_pending ? '' : 'hidden'; ?>><?php echo (int) $vkt_pending; ?></span></a>
             <a href="#api" data-nav="api"><span data-icon="code"></span>Тест API<span class="vkt-nav-dot"></span></a>
             <a href="#collector" data-nav="collector"><span data-icon="refresh"></span>Сбор данных</a>

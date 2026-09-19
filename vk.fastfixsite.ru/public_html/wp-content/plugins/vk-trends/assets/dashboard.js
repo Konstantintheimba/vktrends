@@ -6,12 +6,12 @@
     const $ = (selector, parent = root) => parent.querySelector(selector);
     const content = $('#vkt-content');
     const dialog = $('#vkt-dialog');
-    const names = {overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
+    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
     // Кабинет пользователя: общий сбор, журнал и ключи сайта видит только администратор.
     // Сервер эти разделы участнику всё равно не отдаст — здесь их просто не рисуем.
     let account = config.account || {};
     const isAdmin = () => !!account.is_admin;
-    const adminViews = ['reading', 'users', 'api', 'collector', 'logs', 'settings'];
+    const adminViews = ['reading', 'users', 'flux', 'api', 'collector', 'logs', 'settings'];
     const paths = {
         grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
         search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
@@ -90,6 +90,8 @@
     let postsData = null, postsPage = 1, postsSearch = '', postsSort = 'velocity', postsSource = 0, postsMode = 'grid', postsFiltersOpen = false, postsFilters = {}, communitiesData = null, communitiesSort = 'views', publishingData = null, usersData = null;
     // Файлы, выбранные в конструкторе записи: ID вложений WordPress, не VK.
     let composerMedia = [], mediaLibraryItems = [], aiPrompt = '';
+    // Медиатека одна на всех, поэтому у выбора есть цель: конструктор, слот серии или стенд.
+    let mediaTarget = 'composer', fluxMedia = [], fluxRuns = [], fluxBusy = false;
     // Серия постов: сетка слотов живёт в памяти до нажатия «Поставить в очередь».
     let seriesSetup = {span: 'week', start: '', weekdays: ['1','2','3','4','5'], times: '10:00, 19:00'}, seriesSlots = [], seriesSlotTarget = null, seriesPrompt = '';
     function toast(message, error = false) {
@@ -426,7 +428,7 @@
                 <p class="vkt-help">Проверить всё разом — кнопка «Стенд постинга» наверху: она спрашивает каждый ключ только о его работе и подводит итог по каждому сообществу.</p>
                 <hr class="vkt-settings-sep">
                 <h2>Ключи публикации</h2>
-                <div class="vkt-token-cards">${(s.tokens || []).filter(slot => slot.slot !== 'service').map(tokenCard).join('')}</div>
+                <div class="vkt-token-cards">${(s.tokens || []).filter(slot => ['app_secret', 'user', 'community'].includes(slot.slot)).map(tokenCard).join('')}</div>
                 <form data-form="settings" id="vkt-posting-form" class="vkt-form">
                     <label>ID своего сообщества<input type="number" name="community_id" value="${Number(community.group_id) || ''}" min="0" placeholder="Например, 241464933"></label>
                     <label class="vkt-check"><input type="checkbox" name="publishing_review" ${s.publishing_review?'checked':''}>Требовать ручную проверку публикаций</label>
@@ -518,6 +520,57 @@
                 </ul>
             </section>
             <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Кто что видит</h2><p>Пользователи входят через VK ID и после вашего одобрения получают личный кабинет: свои источники, подборки, группы и очередь публикаций. Сбор, журнал и ключи сайта видите только вы. Секреты не возвращаются в браузер: в интерфейсе виден только огрызок ключа и его длина.</p><hr><h3>Версия</h3><p>Плагин обновляет схему базы сам при первом запросе после замены файлов. Накопленные данные сохраняются.</p></aside></div>`;
+    }
+
+    // ——— Стенд генерации фото: FLUX через api.bfl.ai ———
+    const fluxStatuses = {pending: ['Выполняется', ''], done: ['Готово', 'green'], error: ['Отказ', 'red']};
+    const fluxRunRow = run => `<tr><td>${date(run.at)}<small class="vkt-muted">${esc(run.model || '')}</small></td><td>${badge(...(fluxStatuses[run.status] || [esc(run.status), '']))}</td><td>${run.media ? `<span class="vkt-media-mini">${safeUrl(run.media.thumbnail || run.media.url) ? `<img src="${safeUrl(run.media.thumbnail || run.media.url)}" alt="" loading="lazy">` : ''}</span>` : ''}${esc(run.message || '')}${run.cost ? `<small class="vkt-muted">Списано кредитов: ${decimal(run.cost, 3)}</small>` : ''}</td></tr>`;
+    function flux() {
+        const s = state.settings;
+        const cfg = s.flux || {};
+        const models = cfg.models || {};
+        const last = fluxRuns[0];
+        return heading('Генерация фото', 'Стенд FLUX через api.bfl.ai: правка своей фотографии по образцу товара и генерация с нуля. Ответ сервиса показывается дословно.', button(`${icon('refresh')} Баланс кредитов`, 'flux-credits')) +
+            `<div class="vkt-settings-grid"><section class="vkt-panel">
+                <h2>Ключ BFL</h2>
+                <div class="vkt-token-cards">${slotCard(s.tokens, 'bfl')}</div>
+                <hr class="vkt-settings-sep">
+                <h2>Запрос</h2>
+                ${cfg.configured ? '' : '<div class="vkt-info vkt-info-warning">Сохраните ключ BFL выше — без него стенд ничего не отправит.</div>'}
+                <form data-form="flux" class="vkt-form">
+                    <label>Модель<select name="model">${Object.entries(models).map(([id, model]) => `<option value="${esc(id)}">${esc(model.title)}</option>`).join('')}</select><small class="vkt-help">${Object.values(models).map(model => `<strong>${esc(model.title)}</strong> — ${esc(model.hint)}`).join('<br>')}</small></label>
+                    <label>Что сделать<textarea name="prompt" rows="6" required minlength="3" maxlength="5000" placeholder="Например: replace the swimsuit with the design from image 2, keep the person, pose, lighting and background unchanged, catalog product photo"></textarea></label>
+                    <fieldset class="vkt-media"><legend>Исходное фото и образцы · до ${Number(cfg.max_references) || 4}</legend>
+                        <div id="vkt-flux-media" class="vkt-media-chips">${fluxMediaHtml()}</div>
+                        <div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*" data-flux-upload hidden>${icon('plus')} Загрузить файл</label>${button(`${icon('layers')} Из медиатеки`, 'flux-media')}</div>
+                        <small class="vkt-help">Первое изображение — исходное фото, остальные идут образцами (<code>input_image_2</code> и далее). Порядок важен: на него ссылаются словами «image 1», «image 2». Без изображений запрос рисует картинку с нуля.</small>
+                    </fieldset>
+                    <div class="vkt-form-row">
+                        <label>Строгость фильтра<select name="safety_tolerance">${[0,1,2,3,4,5].map(value => `<option value="${value}" ${2 === value ? 'selected' : ''}>${value}${0 === value ? ' — строже всего' : value === (Number(cfg.max_tolerance) || 5) ? ' — мягче всего' : ''}</option>`).join('')}</select><small class="vkt-help">Выше 5 сервис не принимает.</small></label>
+                        <label>Seed · необязательно<input type="number" name="seed" min="0" max="4294967295" placeholder="Повторяемость"></label>
+                    </div>
+                    <div class="vkt-form-row">
+                        <label>Ширина<input type="number" name="width" min="0" max="2048" step="32" placeholder="как у исходного"></label>
+                        <label>Высота<input type="number" name="height" min="0" max="2048" step="32" placeholder="как у исходного"></label>
+                        <label>Формат<select name="output_format"><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option></select></label>
+                    </div>
+                    <label class="vkt-check"><input type="checkbox" name="disable_pup">Не расширять промпт автоматически</label>
+                    <div id="vkt-flux-progress" class="vkt-help" hidden></div>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary" ${cfg.configured ? '' : 'disabled'}>${icon('fire')} Отправить</button></div>
+                </form>
+                ${last && last.media ? `<hr class="vkt-settings-sep"><h2>Последний результат</h2><figure class="vkt-flux-result"><img src="${safeUrl(last.media.url)}" alt="" loading="lazy"><figcaption>Файл сохранён в медиатеку сайта: <strong>${esc(last.media.name)}</strong>. Его можно приложить к записи в «Автопостинге».</figcaption></figure>` : ''}
+                ${fluxRuns.length ? `<hr class="vkt-settings-sep"><h2>Прогоны в этой вкладке</h2><div class="vkt-table-wrap"><table><thead><tr><th>Когда</th><th>Итог</th><th>Ответ сервиса</th></tr></thead><tbody>${fluxRuns.map(fluxRunRow).join('')}</tbody></table></div>` : ''}
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('fire')}</span><h2>Что уже проверено живьём</h2><p>20.09.2026, FLUX.2 [pro], ключ из кабинета BFL:</p>
+                <ul class="vkt-steps">
+                    <li>${badge('проходит', 'green')}<div><strong>Раздельный купальник текстом</strong><span class="vkt-muted">Генерация с нуля, без исходного фото — даже на строгости по умолчанию.</span></div></li>
+                    <li>${badge('проходит', 'green')}<div><strong>Правка одежды на фото</strong><span class="vkt-muted">Смена цвета слитного купальника отдаёт результат.</span></div></li>
+                    <li>${badge('отказ', 'red')}<div><strong>Замена слитного на раздельный по фото</strong><span class="vkt-muted">Статус <code>Content Moderated</code>, причина Sexual Content. Строгость 5 и отключённое расширение промпта не помогают.</span></div></li>
+                </ul>
+                <p class="vkt-help">То есть запрос не «банится» на входе: картинка рисуется, но фильтр на выходе не отдаёт её именно на пути «правка фотографии человека → открытый купальник».</p>
+                <hr><h3>Как читать отказ</h3><p><code>Request Moderated</code> — не пропустили промпт или исходное фото, генерации не было. <code>Content Moderated</code> — картинка готова, но фильтр не отдал её. Причины сервис называет сам.</p>
+                <hr><h3>Ссылка живёт 10 минут</h3><p>Готовый файл плагин скачивает сразу и кладёт в медиатеку — адрес BFL в браузер не попадает.</p>
+            </aside></div>`;
     }
 
     // ——— Пользователи: заявки и лимиты кабинетов ———
@@ -648,6 +701,9 @@
         return n >= 1048576 ? decimal(n / 1048576, 1) + ' МБ' : Math.max(1, Math.round(n / 1024)) + ' КБ';
     };
     const mediaChip = item => `<figure class="vkt-media-chip">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<figcaption><strong>${esc(item.title || item.name)}</strong><small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></figcaption><button type="button" class="vkt-media-remove" data-command="media-remove" data-id="${Number(item.id)}" aria-label="Убрать файл">×</button></figure>`;
+    const fluxMediaHtml = () => fluxMedia.length
+        ? fluxMedia.map((item, index) => mediaChip(item).replace('<figcaption>', `<figcaption><em class="vkt-flux-index">image ${index + 1}</em>`)).join('')
+        : '<p class="vkt-muted">Изображений нет: запрос нарисует картинку с нуля.</p>';
     const composerMediaHtml = () => composerMedia.length
         ? composerMedia.map(mediaChip).join('')
         : '<p class="vkt-muted">Файлы не выбраны. Загрузите с компьютера, возьмите из медиатеки или сгенерируйте.</p>';
@@ -699,6 +755,35 @@
             await load();
         } catch (error) { toast(error.message, true); }
         finally { trigger.disabled = false; }
+    }
+    function renderFluxMedia() {
+        const box = $('#vkt-flux-media');
+        if (box) box.innerHTML = fluxMediaHtml();
+    }
+    function addFluxMedia(item) {
+        const limit = Number(state.settings.flux?.max_references) || 4;
+        if (!item || !item.id) return false;
+        if (item.type !== 'image') { toast('Стенд принимает только изображения.', true); return false; }
+        if (fluxMedia.some(media => Number(media.id) === Number(item.id))) { toast('Этот файл уже выбран.'); return false; }
+        if (fluxMedia.length >= limit) { toast(`Больше ${limit} изображений стенд не отправляет.`, true); return false; }
+        fluxMedia.push(item);
+        renderFluxMedia();
+        return true;
+    }
+    // Задача у BFL асинхронная: ставим её и опрашиваем статус до ответа.
+    async function fluxAwait(id) {
+        const progress = $('#vkt-flux-progress');
+        const stages = {Pending: 'в очереди', Reasoning: 'обдумывает', Generating: 'рисует'};
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 2000 : 3000));
+            const status = await act('flux_status', {id});
+            if (status.status === 'done') return status;
+            if (progress) {
+                progress.hidden = false;
+                progress.textContent = `Сервис ${stages[status.stage] || 'работает'}${status.progress ? `: ${status.progress}%` : ''}. Не закрывайте вкладку.`;
+            }
+        }
+        throw new Error('Задача считается дольше четырёх минут. Ответ придёт в журнал — попробуйте позже ещё раз.');
     }
     async function mediaLibrary(search = '') {
         modal(`<h2>Медиатека</h2><p class="vkt-muted">Загружаем файлы…</p>`);
@@ -776,7 +861,7 @@
         });
         if (adminViews.includes(view) && !isAdmin()) view = 'overview';
         if (view === 'users' && !usersData) { content.innerHTML = heading('Пользователи', 'Загружаем список…') + '<div class="vkt-loading">Загружаем…</div>'; return; }
-        content.innerHTML = ({overview,discover,posts,communities,publishing,series,videos,products,sources,reading,posting,attachments,users,api,collector,logs,settings})[view]();
+        content.innerHTML = ({overview,discover,posts,communities,publishing,series,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,settings})[view]();
     }
     function modal(html) {
         $('#vkt-dialog-content').innerHTML = html;
@@ -944,8 +1029,13 @@
             return;
         }
         if (command==='media-remove') {
-            // Медиатека одна на конструктор и на слоты серии, поэтому цель
+            // Медиатека одна на конструктор, слоты серии и стенд, поэтому цель
             // выбора хранится отдельно: иначе файл уходит не туда.
+            if (mediaTarget === 'flux') {
+                fluxMedia = fluxMedia.filter(item => Number(item.id) !== Number(el.dataset.id));
+                renderFluxMedia();
+                return;
+            }
             if (null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) {
                 const slot = seriesSlots[seriesSlotTarget];
                 slot.media = slot.media.filter(item => Number(item.id) !== Number(el.dataset.id));
@@ -958,6 +1048,10 @@
         }
         if (command==='media-pick') {
             const item = mediaLibraryItems.find(media => Number(media.id) === Number(el.dataset.id));
+            if (mediaTarget === 'flux') {
+                if (addFluxMedia(item)) dialog.close();
+                return;
+            }
             if (null !== seriesSlotTarget) {
                 if (addSeriesMedia(seriesSlotTarget, item)) seriesSlotDialog(seriesSlotTarget);
                 return;
@@ -966,7 +1060,8 @@
             return;
         }
         if (command==='series-slot') { seriesSlotDialog(Number(el.dataset.index)); return; }
-        if (command==='series-media') { seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
+        if (command==='series-media') { mediaTarget = 'series'; seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
+        if (command==='flux-media') { mediaTarget = 'flux'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='series-apply-media') {
             const source = seriesSlots[Number(el.dataset.index)];
             if (!source) return;
@@ -1002,7 +1097,12 @@
         if (command==='communities-sort') { communitiesSort = el.dataset.value; render(); return; }
         el.disabled = true;
         try {
-            if (command==='media-library') { seriesSlotTarget = null; await mediaLibrary(); return; }
+            if (command==='media-library') { mediaTarget = 'composer'; seriesSlotTarget = null; await mediaLibrary(); return; }
+            if (command==='flux-credits') {
+                const result = await act('flux_credits');
+                toast(`На счету BFL: ${decimal(result.credits, 2)} кредита.`);
+                return;
+            }
             if (command==='history') { await history(el.dataset.id); return; }
             if (command==='post-history') { await postHistory(el.dataset.id); return; }
             if (command==='community-posts') {
@@ -1213,6 +1313,35 @@
                     tokenReport(report);
                     return;
                 }
+                case 'flux': {
+                    if (fluxBusy) return;
+                    fluxBusy = true;
+                    const progress = $('#vkt-flux-progress');
+                    const run = {at: new Date().toISOString(), model: values.model, status: 'pending', message: 'Задача поставлена…'};
+                    try {
+                        const started = await act('flux_start', {
+                            model: values.model, prompt: values.prompt, safety_tolerance: Number(values.safety_tolerance),
+                            seed: values.seed ? Number(values.seed) : 0, width: Number(values.width) || 0, height: Number(values.height) || 0,
+                            output_format: values.output_format, disable_pup: !!values.disable_pup, images: fluxMedia.map(item => Number(item.id)),
+                        });
+                        const done = await fluxAwait(started.id);
+                        Object.assign(run, {status: 'done', message: 'Файл сохранён в медиатеку.', media: done.media, cost: done.cost});
+                        fluxRuns.unshift(run);
+                        toast('Готово: изображение в медиатеке сайта.');
+                    } catch (error) {
+                        // Дословный ответ сервиса и есть смысл стенда: по нему видно,
+                        // что именно отклонили — запрос или готовую картинку.
+                        Object.assign(run, {status: 'error', message: error.message});
+                        fluxRuns.unshift(run);
+                        toast(error.message, true);
+                    } finally {
+                        fluxBusy = false;
+                        if (progress) progress.hidden = true;
+                    }
+                    fluxRuns = fluxRuns.slice(0, 10);
+                    render();
+                    return;
+                }
                 case 'media-search': await mediaLibrary(values.search || ''); return;
                 case 'ai-text': {
                     aiPrompt = values.prompt;
@@ -1261,6 +1390,18 @@
         finally { if(submit) { submit.disabled=false; submit.removeAttribute('aria-busy'); } }
     });
     root.addEventListener('change',async event=> {
+        if (event.target.matches('[data-flux-upload]')) {
+            const input = event.target;
+            const file = input.files?.[0];
+            input.value = '';
+            if (!file) return;
+            const label = input.closest('label');
+            label?.classList.add('is-busy');
+            try { addFluxMedia(await upload(file)); toast('Файл загружен и добавлен к запросу.'); }
+            catch (error) { toast(error.message, true); }
+            finally { label?.classList.remove('is-busy'); }
+            return;
+        }
         if (event.target.matches('[data-media-upload]')) {
             const input = event.target;
             const file = input.files?.[0];

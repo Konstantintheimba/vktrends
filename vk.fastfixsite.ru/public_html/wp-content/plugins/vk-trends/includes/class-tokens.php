@@ -48,6 +48,14 @@ final class VKT_Tokens {
                 'probe' => '',
                 'scope' => 'site',
             ),
+            'bfl' => array(
+                'title' => 'Ключ BFL (FLUX)',
+                'hint' => 'Генерация и правка изображений через api.bfl.ai. Берётся в кабинете BFL и работает только на стенде «Генерация фото».',
+                'constant' => 'VKT_BFL_API_KEY',
+                'kind' => 'secret',
+                'probe' => '',
+                'scope' => 'site',
+            ),
             'community' => array(
                 'title' => 'Ключ сообщества',
                 'hint' => 'Публикует текст на стене своей группы. Медиа VK этому ключу запрещает.',

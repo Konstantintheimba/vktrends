@@ -86,7 +86,7 @@ final class VKT_Plugin {
     const SITE_KEYS = array( 'api_version', 'token', 'token_kind', 'delete_token', 'refresh_token', 'device_id', 'client_id', 'expires_in', 'proxy', 'source_hours', 'video_hours', 'paused', 'homepage', 'posts', 'links', 'vkid_client_id', 'vkid_redirect', 'app_id', 'member_sources', 'ai_text_daily', 'ai_media_daily' );
 
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'flux_start', 'flux_status', 'flux_credits' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -137,6 +137,7 @@ final class VKT_Plugin {
             'oauth' => VKT_OAuth::public_status(),
             'vkid' => $admin ? VKT_VKID::public_status() : array( 'configured' => VKT_VKID::configured() ),
             'ai' => VKT_AI::public_status(),
+            'flux' => $admin ? VKT_Flux::public_status() : array( 'configured' => false ),
             'proxy_host' => $admin ? VKT_Links::proxy_host() : '',
             'account' => VKT_Account::profile(),
             'limits' => array( 'sources' => VKT_Account::source_limit(), 'sources_used' => VKT_Subscriptions::count() ),
@@ -557,6 +558,12 @@ final class VKT_Plugin {
             }
             case 'user_status':
                 return VKT_Account::set_status( $data['id'] ?? 0, sanitize_key( $data['status'] ?? '' ) );
+            case 'flux_credits':
+                return VKT_Flux::credits();
+            case 'flux_start':
+                return VKT_Flux::start( is_array( $data ) ? $data : array() );
+            case 'flux_status':
+                return VKT_Flux::status( $data['id'] ?? '' );
             case 'publishing_group_toggle':
                 return VKT_Publisher::toggle_group( $data['id'] ?? 0, ! empty( $data['enabled'] ) );
             case 'publishing_create':

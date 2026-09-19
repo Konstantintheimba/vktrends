@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -205,6 +205,22 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(usersView.includes('Иван &lt;b&gt;') && !usersView.includes('Иван <b>'), 'Имя из VK экранируется');
     check(usersView.includes('data-status="active"') && usersView.includes('Одобрить') && usersView.includes('Заблокировать'), 'Заявку можно одобрить, активного — заблокировать');
     check(usersView.includes('vk.com/id38975563') && usersView.includes('name="member_sources"'), 'Ссылка на профиль VK и форма лимитов на месте');
+    context.location.hash = '#posts';
+
+    // Стенд генерации фото: только администратору, ключ и ответы сервиса на виду.
+    state.settings.flux = {configured: true, max_references: 4, max_tolerance: 5, models: {'flux-2-pro': {title: 'FLUX.2 [pro]', hint: 'правки и генерация'}, 'flux-2-max': {title: 'FLUX.2 [max]', hint: 'качество'}}};
+    state.settings.tokens = [{slot: 'bfl', area: 'site', title: 'Ключ BFL (FLUX)', hint: '', has_token: true, preview: 'bfl_5mIgtpGqM…seVu', length: 36}];
+    const fluxView = api.flux();
+    check(fluxView.includes('name="safety_tolerance"') && fluxView.includes('data-command="flux-media"') && fluxView.includes('data-form="flux"'), 'В стенде есть строгость, образцы и форма отправки');
+    check(fluxView.includes('Content Moderated') && fluxView.includes('Request Moderated'), 'Стенд объясняет разницу между отказом на входе и на выходе');
+    check(fluxView.includes('FLUX.2 [pro]') && fluxView.includes('bfl_5mIgtpGqM…seVu'), 'Видны модели и огрызок ключа');
+    state.settings.flux = {configured: false};
+    check(api.flux().includes('Сохраните ключ BFL'), 'Без ключа стенд предупреждает и не даёт отправить');
+    context.location.hash = '#flux';
+    check(api.initial() === 'flux', 'Администратор открывает стенд');
+    api.setAccount({id: 7, name: 'Участник', is_admin: false, status: 'active'});
+    check(api.initial() === 'overview', 'Участнику стенд не открывается');
+    api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
     context.location.hash = '#posts';
 
     // Каждой команде в разметке должен отвечать обработчик: вырезав соседний
