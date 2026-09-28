@@ -28,7 +28,17 @@ function get_transient( $key ) { return false; }
 function set_transient( $key, $value, $ttl ) { return true; }
 function delete_transient( $key ) { return true; }
 
-class VKT_Tokens { public static function has( $slot ) { return false; } }
+// Ключи моделей в тесте «шифруются» приставкой — достаточно, чтобы проверить, что наружу уходит не он.
+class VKT_Tokens {
+    public static function has( $slot ) { return false; }
+    public static function seal( $plain ) { return 'SEALED:' . $plain; }
+    public static function unseal( $sealed ) { return str_starts_with( (string) $sealed, 'SEALED:' ) ? substr( $sealed, 7 ) : ''; }
+}
+$GLOBALS['options'] = array();
+function get_option( $key, $default = false ) { return $GLOBALS['options'][ $key ] ?? $default; }
+function update_option( $key, $value, $autoload = true ) { $GLOBALS['options'][ $key ] = $value; return true; }
+if ( ! function_exists( 'wp_parse_url' ) ) { function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); } }
+function untrailingslashit( $value ) { return rtrim( (string) $value, '/\\' ); }
 class VKT_Account {
     public static function is_admin() { return true; }
     public static function id() { return 1; }
@@ -55,8 +65,20 @@ function wp_get_attachment_url( $id ) { global $library; return isset( $library[
 function wp_get_attachment_image_url( $id, $size ) { global $library; return 'image/jpeg' === ( $library[ $id ]['mime'] ?? '' ) ? 'https://example.test/files/' . $id . '-medium.jpg' : false; }
 function get_the_title( $id ) { return 'Файл ' . $id; }
 
-// Ответы xAI повторяют формат живого API: текст лежит в output[].content[].
+// Тексты идут через OpenAI-совместимый chat/completions любого поставщика.
 $GLOBALS['vkt_http'] = array();
+function wp_remote_post( $url, $args ) {
+    $GLOBALS['vkt_http'][] = array( 'url' => $url, 'args' => $args );
+    // Так отвечает шлюз, когда поставщик не обслуживает страну сервера: не JSON.
+    if ( str_contains( $url, 'blocked.test' ) ) {
+        return array( 'response' => array( 'code' => 403 ), 'body' => '<html><body><h1>403 Forbidden</h1>Access denied</body></html>' );
+    }
+    if ( str_ends_with( $url, '/chat/completions' ) ) {
+        $body = array( 'choices' => array( array( 'message' => array( 'role' => 'assistant', 'content' => 'Готовый текст поста' ) ) ) );
+        return array( 'response' => array( 'code' => 200 ), 'body' => json_encode( $body, JSON_UNESCAPED_UNICODE ) );
+    }
+    return array( 'response' => array( 'code' => 404 ), 'body' => '' );
+}
 function wp_remote_request( $url, $args ) {
     $GLOBALS['vkt_http'][] = array( 'url' => $url, 'args' => $args );
     if ( str_ends_with( $url, '/v1/responses' ) ) {
@@ -105,7 +127,8 @@ $assert( true === $status['configured'], 'Наличие ключа видно �
 $assert( ! str_contains( json_encode( $status ), VKT_XAI_API_KEY ), 'Ключ xAI наружу не отдаётся' );
 $assert( is_wp_error( VKT_AI::generate_text( 'ок' ) ), 'Слишком короткая задача отклоняется до запроса' );
 $text = VKT_AI::generate_text( 'Анонс распродажи', 'Черновик' );
-$assert( ! is_wp_error( $text ) && 'Готовый текст поста' === $text['text'], 'Текст собирается из блоков ответа, минуя размышления' );
+$assert( ! is_wp_error( $text ) && 'Готовый текст поста' === $text['text'], 'Текст берётся из ответа chat/completions' );
+$assert( 'https://api.x.ai/v1/chat/completions' === $GLOBALS['vkt_http'][0]['url'], 'Без выбора пишет модель по умолчанию — xAI из wp-config.php' );
 $assert( 'Bearer ' . VKT_XAI_API_KEY === $GLOBALS['vkt_http'][0]['args']['headers']['Authorization'], 'Ключ уходит только в заголовке сервера' );
 $assert( str_contains( $GLOBALS['vkt_http'][0]['args']['body'], 'Черновик' ), 'Текущий черновик передаётся модели' );
 $video_job = VKT_AI::start_video( 'Осенний парк', 'story' );
@@ -116,6 +139,28 @@ $assert( is_wp_error( VKT_AI::video_status( 'коротко' ) ), 'Неверн�
 $failed = VKT_AI::video_status( 'e2871717-85bf-9bbb-83a9-e51f098efaef' );
 $assert( is_wp_error( $failed ) && ! str_contains( $failed->get_error_message(), VKT_XAI_API_KEY ), 'Ошибка xAI не раскрывает ключ' );
 $assert( ! str_contains( json_encode( VKT_Store::$entries ), VKT_XAI_API_KEY ), 'В журнал попадают только метод и статус' );
+
+// ——— Несколько моделей для текстов ———
+$saved = VKT_AI::save_model( array( 'preset' => 'deepseek', 'key' => 'sk-deepseek-SECRET-1234' ) );
+$assert( ! is_wp_error( $saved ) && 'Готовый текст поста' === $saved['answer'], 'Модель сохраняется только после удачного пробного запроса' );
+$assert( 'https://api.deepseek.com/chat/completions' === end( $GLOBALS['vkt_http'] )['url'] && 'deepseek-chat' === json_decode( end( $GLOBALS['vkt_http'] )['args']['body'], true )['model'], 'Адрес и модель подставляются из готовых настроек поставщика' );
+$assert( 'SEALED:sk-deepseek-SECRET-1234' === $GLOBALS['options']['vkt_text_models']['models'][ $saved['id'] ]['key'], 'Ключ модели хранится зашифрованным' );
+$listed = VKT_AI::text_models();
+$assert( 2 === count( $listed ) && ! str_contains( json_encode( $listed ), 'sk-deepseek-SECRET-1234' ), 'Список моделей без ключей' );
+$assert( $saved['id'] === VKT_AI::default_model(), 'Первая добавленная модель сразу пишет вместо встроенной — например, вместо недоступного xAI' );
+VKT_AI::generate_text( 'Анонс распродажи', '', $saved['id'] );
+$request = end( $GLOBALS['vkt_http'] );
+$assert( 'https://api.deepseek.com/chat/completions' === $request['url'] && 'Bearer sk-deepseek-SECRET-1234' === $request['args']['headers']['Authorization'], 'Выбранная модель пишет своим ключом' );
+$assert( ! is_wp_error( VKT_AI::set_default_model( 'xai' ) ) && 'xai' === VKT_AI::default_model(), 'Модель по умолчанию меняется' );
+VKT_AI::set_default_model( $saved['id'] );
+$blocked = VKT_AI::save_model( array( 'preset' => 'custom', 'base' => 'https://blocked.test/v1', 'model' => 'grok-4.6', 'key' => 'sk-blocked-SECRET-99' ) );
+$assert( is_wp_error( $blocked ) && str_contains( $blocked->get_error_message(), 'HTTP 403' ) && str_contains( $blocked->get_error_message(), 'страну сервера' ), '403 без JSON объясняется словами, а не пустым «отклонил запрос»' );
+$assert( ! isset( $GLOBALS['options']['vkt_text_models']['models']['custom-' . substr( md5( 'https://blocked.test/v1|grok-4.6' ), 0, 8 )] ), 'Недоступная модель не сохраняется' );
+$assert( 'settings' === ( $blocked->get_error_data()['fix']['view'] ?? '' ), 'Отказ модели ведёт в «Настройки»' );
+$assert( is_wp_error( VKT_AI::save_model( array( 'preset' => 'custom', 'base' => 'http://plain.test', 'model' => 'x', 'key' => 'sk-12345678' ) ) ), 'Адрес без https не принимается' );
+$assert( ! is_wp_error( VKT_AI::delete_model( $saved['id'] ) ) && 'xai' === VKT_AI::default_model(), 'Убранная модель по умолчанию уступает место оставшейся' );
+$assert( is_wp_error( VKT_AI::delete_model( 'xai' ) ), 'Модель из wp-config.php из интерфейса не убирается' );
+$assert( ! str_contains( json_encode( VKT_Store::$entries ), 'SECRET' ), 'Ключи моделей не попадают в журнал' );
 
 // ——— Серия текстов одним запросом ———
 // Просьбу вернуть чистый JSON модель выполняет не всегда, поэтому разбор

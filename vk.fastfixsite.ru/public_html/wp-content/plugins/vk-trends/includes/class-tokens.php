@@ -20,6 +20,8 @@ final class VKT_Tokens {
     const LEGACY = 'vkt_token';
     const META = 'vkt_tokens';
     const META_ERRORS = 'vkt_token_errors';
+    // Ключи сообществ кабинета: по одному на группу, ключ массива — ID группы.
+    const META_GROUP_KEYS = 'vkt_group_keys';
 
     /** Описание слотов для интерфейса и проверок. */
     public static function definitions() {
@@ -100,8 +102,81 @@ final class VKT_Tokens {
         return wp_json_encode( array( 'iv' => base64_encode( $iv ), 'tag' => base64_encode( $tag ), 'value' => base64_encode( $value ) ) );
     }
 
+    /** Шифрует секрет вне слотов — например, ключ модели для текстов. */
+    public static function seal( $plain ) {
+        return self::encrypt( (string) $plain );
+    }
+
+    public static function unseal( $sealed ) {
+        return (string) self::decrypt( (string) $sealed );
+    }
+
     public static function scope( $slot ) {
+        // Ошибки ключей групп («group:ID») личные, как и сами ключи.
+        if ( str_starts_with( (string) $slot, 'group:' ) ) {
+            return 'user';
+        }
         return self::definitions()[ $slot ]['scope'] ?? 'site';
+    }
+
+    /**
+     * Ключи сообществ кабинета: ID группы => ключ и когда сохранён. Ключ
+     * сообщества не истекает, поэтому группа с ним работает без суточного
+     * пользовательского токена.
+     */
+    public static function group_keys( $user_id = null ) {
+        $user_id = null === $user_id ? VKT_Account::id() : absint( $user_id );
+        if ( ! $user_id ) {
+            return array();
+        }
+        $plain = self::decrypt( get_user_meta( $user_id, self::META_GROUP_KEYS, true ) );
+        $map = null === $plain ? null : json_decode( $plain, true );
+        $clean = array();
+        foreach ( is_array( $map ) ? $map : array() as $group_id => $entry ) {
+            if ( absint( $group_id ) && is_array( $entry ) && '' !== (string) ( $entry['access_token'] ?? '' ) ) {
+                $clean[ absint( $group_id ) ] = array( 'access_token' => (string) $entry['access_token'], 'saved_at' => (int) ( $entry['saved_at'] ?? 0 ) );
+            }
+        }
+        return $clean;
+    }
+
+    private static function write_group_keys( $map ) {
+        $user_id = VKT_Account::id();
+        if ( ! $user_id ) {
+            return new WP_Error( 'no_user', 'Ключ сообщества сохраняется только вошедшему пользователю.', array( 'status' => 401 ) );
+        }
+        if ( ! $map ) {
+            delete_user_meta( $user_id, self::META_GROUP_KEYS );
+            return true;
+        }
+        $encrypted = self::encrypt( wp_json_encode( $map ) );
+        if ( is_wp_error( $encrypted ) ) {
+            return $encrypted;
+        }
+        update_user_meta( $user_id, self::META_GROUP_KEYS, $encrypted );
+        return true;
+    }
+
+    public static function save_group_key( $group_id, $token ) {
+        $group_id = absint( $group_id );
+        $token = trim( (string) $token );
+        if ( ! $group_id || ! preg_match( '/^[a-zA-Z0-9._\-]{20,2048}$/', $token ) ) {
+            return new WP_Error( 'token', 'Ключ сообщества содержит недопустимые символы или слишком короткий.', array( 'status' => 400 ) );
+        }
+        $map = self::group_keys();
+        $map[ $group_id ] = array( 'access_token' => $token, 'saved_at' => time() );
+        $written = self::write_group_keys( $map );
+        if ( ! is_wp_error( $written ) ) {
+            self::note( 'group:' . $group_id, '' );
+        }
+        return $written;
+    }
+
+    public static function forget_group_key( $group_id ) {
+        $map = self::group_keys();
+        unset( $map[ absint( $group_id ) ] );
+        self::note( 'group:' . absint( $group_id ), '' );
+        return self::write_group_keys( $map );
     }
 
     /** Общие слоты сайта из опции. */
@@ -263,6 +338,24 @@ final class VKT_Tokens {
         return '' !== self::token( $slot );
     }
 
+    /**
+     * Ключ сохранён и ещё работает. Классический токен VK живёт около суток
+     * без пары обновления (право offline отменено), и после истечения его
+     * нельзя считать подключённым: иначе сборщик и публикация продолжают
+     * ходить с ним и падают кодом 5, вместо того чтобы обойтись без него.
+     */
+    public static function alive( $slot ) {
+        if ( ! self::has( $slot ) ) {
+            return false;
+        }
+        $entry = self::get( $slot );
+        $refreshable = '' !== $entry['refresh_token'] && '' !== $entry['device_id'] && '' !== $entry['client_id'];
+        if ( $entry['expires_at'] && $entry['expires_at'] <= time() && ! $refreshable ) {
+            return false;
+        }
+        return empty( self::error( $slot )['dead'] );
+    }
+
     public static function locked( $slot ) {
         return '' !== self::constant_value( $slot );
     }
@@ -323,8 +416,12 @@ final class VKT_Tokens {
         return (array) get_option( self::ERRORS, array() );
     }
 
-    /** Последняя ошибка слота остаётся на виду, пока её не сменит новая. */
-    public static function note( $slot, $message ) {
+    /**
+     * Последняя ошибка слота остаётся на виду, пока её не сменит новая.
+     * $dead — VK отверг сам ключ (коды 5, 1117): до повторного сохранения
+     * ключ считается нерабочим.
+     */
+    public static function note( $slot, $message, $dead = false ) {
         $errors = self::errors( $slot );
         if ( '' === $message ) {
             if ( ! isset( $errors[ $slot ] ) ) {
@@ -332,7 +429,7 @@ final class VKT_Tokens {
             }
             unset( $errors[ $slot ] );
         } else {
-            $errors[ $slot ] = array( 'message' => mb_substr( (string) $message, 0, 255 ), 'at' => gmdate( 'Y-m-d H:i:s' ) );
+            $errors[ $slot ] = array( 'message' => mb_substr( (string) $message, 0, 255 ), 'at' => gmdate( 'Y-m-d H:i:s' ), 'dead' => (bool) $dead );
         }
         if ( 'user' === self::scope( $slot ) ) {
             $user_id = VKT_Account::id();
@@ -375,6 +472,7 @@ final class VKT_Tokens {
                 'refreshable' => '' !== $entry['refresh_token'] && '' !== $entry['device_id'] && '' !== $entry['client_id'],
                 'saved_at' => $entry['saved_at'] ? gmdate( 'Y-m-d H:i:s', (int) $entry['saved_at'] ) : null,
                 'error' => self::error( $slot ),
+                'alive' => self::alive( $slot ),
             );
         }
         return $out;

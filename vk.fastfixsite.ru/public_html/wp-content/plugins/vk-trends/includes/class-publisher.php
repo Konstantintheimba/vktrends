@@ -15,6 +15,8 @@ final class VKT_Publisher {
     const MAX_GROUPS_PER_POST = 50;
     const MAX_SERIES_SLOTS = 60;
     const MAX_ATTEMPTS = 4;
+    const AUTH_WAIT = 15 * MINUTE_IN_SECONDS;
+    const AUTH_GRACE = DAY_IN_SECONDS;
 
     public static function schema() {
         return array(
@@ -116,7 +118,7 @@ final class VKT_Publisher {
      */
     private static function use_community_key( $group_id, $media ) {
         unset( $media );
-        return VKT_Community::configured() && absint( $group_id ) === VKT_Community::group_id();
+        return VKT_Community::has_key( $group_id );
     }
 
     /**
@@ -157,7 +159,10 @@ final class VKT_Publisher {
         }
         $items = array();
         $total = 0;
-        if ( VKT_Tokens::has( 'user' ) ) {
+        // Список без групп токена неполный: права остальных групп тогда не трогаем.
+        $partial = VKT_Tokens::has( 'user' ) && ! VKT_Tokens::alive( 'user' );
+        $user_error = null;
+        if ( VKT_Tokens::alive( 'user' ) ) {
             $result = VKT_API::publishing_request( 'groups.get', array(
                 'filter' => 'editor',
                 'extended' => 1,
@@ -165,34 +170,59 @@ final class VKT_Publisher {
                 'count' => 1000,
             ) );
             if ( is_wp_error( $result ) ) {
-                return $result;
-            }
-            $response = (array) ( $result['response'] ?? array() );
-            $items = (array) ( $response['items'] ?? array() );
-            $total = absint( $response['count'] ?? count( $items ) );
-        }
-        if ( VKT_Community::configured() ) {
-            $community = VKT_Community::check();
-            if ( is_wp_error( $community ) ) {
-                if ( ! $items ) {
-                    return $community;
+                // Токен отказал — группы с ключами сообществ всё равно обновятся.
+                if ( ! VKT_Community::any_key() ) {
+                    return $result;
                 }
+                $user_error = $result;
+                $partial = true;
             } else {
-                $ids = array_map( static fn( $group ) => absint( $group['id'] ?? 0 ), $items );
-                if ( ! in_array( absint( $community['group_id'] ), $ids, true ) ) {
-                    $items[] = array(
-                        'id' => absint( $community['group_id'] ),
-                        'name' => $community['name'],
-                        'screen_name' => $community['screen_name'],
-                        'photo_200' => $community['photo'],
-                        'admin_level' => 3,
-                        'can_post' => in_array( 'wall', $community['permissions'], true ) ? 1 : 0,
-                    );
-                    ++$total;
+                $response = (array) ( $result['response'] ?? array() );
+                $items = (array) ( $response['items'] ?? array() );
+                $total = absint( $response['count'] ?? count( $items ) );
+            }
+        }
+        // Каждая группа с ключом проверяется своим ключом. Такие группы есть в
+        // списке всегда, даже если токен их не видит: groups.get не отдаёт
+        // группы, где админ не состоит участником.
+        $key_error = null;
+        foreach ( array_keys( VKT_Community::keys() ) as $keyed ) {
+            $community = VKT_Community::check( $keyed );
+            if ( is_wp_error( $community ) ) {
+                // Ключ отказал — его группа остаётся с прежними правами до замены ключа.
+                $key_error = $key_error ?: $community;
+                $partial = true;
+                continue;
+            }
+            $can_post = in_array( VKT_Community::REQUIRED_RIGHT, $community['permissions'], true ) ? 1 : 0;
+            foreach ( $items as &$item ) {
+                if ( absint( $item['id'] ?? 0 ) === absint( $community['group_id'] ) ) {
+                    $item['can_post'] = max( $can_post, (int) ! empty( $item['can_post'] ) );
+                    continue 2;
                 }
             }
+            unset( $item );
+            $items[] = array(
+                'id' => absint( $community['group_id'] ),
+                'name' => $community['name'],
+                'screen_name' => $community['screen_name'],
+                'photo_200' => $community['photo'],
+                'admin_level' => 3,
+                'can_post' => $can_post,
+            );
+            ++$total;
+        }
+        unset( $item );
+        if ( ! $items && $key_error && ! $user_error ) {
+            return $key_error;
         }
         if ( ! $items ) {
+            if ( $user_error ) {
+                return $user_error;
+            }
+            if ( $partial ) {
+                return new WP_Error( 'vkt_publisher', 'Пользовательский токен не действует, а ключа сообщества нет — обновить группы нечем.', array( 'status' => 400, 'fix' => VKT_Health::fix_for( 'user', 5 ) ) );
+            }
             return self::error( 'Настройте ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
         $table = VKT_Store::table( 'publishing_groups' );
@@ -200,7 +230,9 @@ final class VKT_Publisher {
         $wpdb->query( 'START TRANSACTION' );
         try {
             // После успешного полного ответа права считаем отозванными у отсутствующих групп.
-            $wpdb->query( $wpdb->prepare( "UPDATE $table SET can_post=0 WHERE user_id=%d", $user_id ) );
+            if ( ! $partial ) {
+                $wpdb->query( $wpdb->prepare( "UPDATE $table SET can_post=0 WHERE user_id=%d", $user_id ) );
+            }
             $synced = 0;
             foreach ( array_slice( $items, 0, 1000 ) as $group ) {
                 $group_id = absint( $group['id'] ?? 0 );
@@ -237,7 +269,14 @@ final class VKT_Publisher {
             $wpdb->query( 'ROLLBACK' );
             return self::error( $error->getMessage(), 500 );
         }
-        return array( 'synced' => $synced, 'total' => max( $total, $synced ) );
+        $result = array( 'synced' => $synced, 'total' => max( $total, $synced ) );
+        if ( $partial ) {
+            $result['warning'] = $key_error && VKT_Tokens::alive( 'user' ) && ! $user_error
+                ? 'Ключ одной из групп не прошёл проверку: ' . $key_error->get_error_message() . ' Её права оставлены как были.'
+                : 'Пользовательский токен не действует — обновлены только группы с ключами сообществ, остальные оставлены как были.';
+            $result['fix'] = $key_error && ! $user_error && VKT_Tokens::alive( 'user' ) ? VKT_Health::fix_for( 'community', 5 ) : VKT_Health::fix_for( 'user', 5 );
+        }
+        return $result;
     }
 
     public static function toggle_group( $id, $enabled ) {
@@ -337,7 +376,7 @@ final class VKT_Publisher {
         if ( ! $user_id ) {
             return self::error( 'Запись создаётся только вошедшему пользователю.', 401 );
         }
-        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::any_key() ) {
             return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
         }
         // Будущий адаптер агентов проходит через те же проверки входных данных.
@@ -495,8 +534,8 @@ final class VKT_Publisher {
             'groups' => $groups,
             'posts' => $posts,
             'status' => array(
-                'token_ready' => $native_media || VKT_Community::configured(),
-                'community_only' => ! $native_media && VKT_Community::configured(),
+                'token_ready' => $native_media || VKT_Community::any_key(),
+                'community_only' => ! $native_media && VKT_Community::any_key(),
                 // Ключ сообщества не может загружать фото и видео: VK отвечает
                 // ошибкой 27, поэтому файл уходит публичной ссылкой.
                 'media_native' => $native_media,
@@ -683,7 +722,7 @@ final class VKT_Publisher {
             $wpdb->query( $wpdb->prepare( "UPDATE $deliveries SET status='pending' WHERE status='publishing' AND updated_at<%s", gmdate( 'Y-m-d H:i:s', time() - 180 ) ) );
             // Группа ищется в кабинете автора: одну и ту же группу VK могут вести разные люди.
             $rows = (array) $wpdb->get_results( $wpdb->prepare(
-                "SELECT d.*,p.user_id,p.message,p.attachments,p.media,p.signed,p.close_comments,g.id AS local_group_id,g.name,g.enabled,g.can_post
+                "SELECT d.*,p.user_id,p.message,p.attachments,p.media,p.signed,p.close_comments,p.scheduled_at,g.id AS local_group_id,g.name,g.enabled,g.can_post
                  FROM $deliveries d JOIN $posts p ON p.id=d.outbound_post_id LEFT JOIN $groups g ON g.group_id=d.group_id AND g.user_id=p.user_id
                  WHERE d.status='pending' AND d.available_at<=%s$filter ORDER BY d.available_at,d.id LIMIT %d",
                 gmdate( 'Y-m-d H:i:s' ), max( 1, min( 10, absint( $limit ) ) )
@@ -709,6 +748,15 @@ final class VKT_Publisher {
                     // прямую ссылку на файл точнее и упоминает то же правило.
                     if ( 100 === (int) ( $error_data['vk_code'] ?? 0 ) && str_contains( $message, 'link_photo_sizing_rule' ) ) {
                         $message = 'VK не собрал карточку из ссылки во вложениях: на странице нет изображения подходящего размера. Уберите ссылку или замените её на страницу с превью.';
+                    }
+                    // Отвергнут ключ: запись ждёт переподключения и уходит сама, попытки не
+                    // списываются. Но не дольше суток после назначенного времени — позже она
+                    // уже неуместна, и лучше решить вручную.
+                    if ( ! empty( $error_data['auth'] ) && strtotime( $delivery['scheduled_at'] . ' UTC' ) > time() - self::AUTH_GRACE ) {
+                        $changes['status'] = 'pending';
+                        $changes['attempts'] = (int) $delivery['attempts'];
+                        $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + self::AUTH_WAIT );
+                        $message .= ' Ждём переподключения ключа — запись уйдёт сама.';
                     }
                     $changes['error'] = mb_substr( $message, 0, 255 );
                 } else {
@@ -736,7 +784,7 @@ final class VKT_Publisher {
         if ( ! VKT_Account::can_use() ) {
             return self::error( 'Кабинет автора записи закрыт администратором.' );
         }
-        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::configured() ) {
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::any_key() ) {
             return self::error( 'В кабинете автора нет ни пользовательского токена, ни ключа сообщества. Подключите их в разделе «Публикация» и повторите запись.' );
         }
         if ( ! $delivery['local_group_id'] || ! $delivery['enabled'] || ! $delivery['can_post'] ) {

@@ -1,9 +1,23 @@
 <?php
 defined( 'ABSPATH' ) || exit;
 
-/** Закрытый серверный клиент генерации текста и медиа через xAI. */
+/**
+ * Серверный клиент генерации. Тексты пишет выбранная модель из списка —
+ * любой поставщик с OpenAI-совместимым /chat/completions (xAI, DeepSeek,
+ * Qwen, Gemini, OpenRouter, свой). Картинки и видео — только xAI.
+ */
 final class VKT_AI {
     const TEXT_MODEL = 'grok-4.6';
+    const MODELS_OPTION = 'vkt_text_models';
+    // Готовые настройки поставщиков: адрес и модель подставляются в форму, их можно поправить.
+    const PRESETS = array(
+        'xai' => array( 'title' => 'xAI Grok', 'base' => 'https://api.x.ai/v1', 'model' => 'grok-4.6' ),
+        'deepseek' => array( 'title' => 'DeepSeek', 'base' => 'https://api.deepseek.com', 'model' => 'deepseek-chat' ),
+        'qwen' => array( 'title' => 'Qwen (Alibaba Cloud)', 'base' => 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'model' => 'qwen-plus' ),
+        'gemini' => array( 'title' => 'Google Gemini', 'base' => 'https://generativelanguage.googleapis.com/v1beta/openai', 'model' => 'gemini-2.5-flash' ),
+        'openrouter' => array( 'title' => 'OpenRouter', 'base' => 'https://openrouter.ai/api/v1', 'model' => 'deepseek/deepseek-chat' ),
+        'custom' => array( 'title' => 'Свой, OpenAI-совместимый', 'base' => '', 'model' => '' ),
+    );
     const IMAGE_MODEL = 'grok-imagine-image-2.0';
     const VIDEO_MODEL = 'grok-imagine-video-1.5';
     // Соотношения сторон, которые принимает xAI, под привычные подписи VK.
@@ -14,9 +28,226 @@ final class VKT_AI {
         return defined( 'VKT_XAI_API_KEY' ) && '' !== trim( (string) VKT_XAI_API_KEY );
     }
 
+    /** Для текстов годится любая сохранённая модель, а не только xAI. */
+    public static function text_configured() {
+        return (bool) self::models();
+    }
+
+    /**
+     * Модели для текстов: сохранённые администратором плюс xAI из
+     * VKT_XAI_API_KEY, если константа задана. Ключи здесь уже расшифрованы —
+     * наружу отдаётся только text_models().
+     */
+    private static function models() {
+        $stored = get_option( self::MODELS_OPTION, array() );
+        $models = array();
+        if ( self::configured() ) {
+            $models['xai'] = array( 'title' => 'xAI Grok (wp-config.php)', 'preset' => 'xai', 'base' => self::PRESETS['xai']['base'], 'model' => self::TEXT_MODEL, 'key' => trim( (string) VKT_XAI_API_KEY ), 'builtin' => true );
+        }
+        foreach ( (array) ( $stored['models'] ?? array() ) as $id => $entry ) {
+            if ( ! is_array( $entry ) || ! preg_match( '/^[a-z0-9_-]{2,40}$/', (string) $id ) ) {
+                continue;
+            }
+            $key = VKT_Tokens::unseal( (string) ( $entry['key'] ?? '' ) );
+            if ( '' === $key ) {
+                continue;
+            }
+            $models[ $id ] = array(
+                'title' => (string) ( $entry['title'] ?? $id ),
+                'preset' => (string) ( $entry['preset'] ?? 'custom' ),
+                'base' => (string) ( $entry['base'] ?? '' ),
+                'model' => (string) ( $entry['model'] ?? '' ),
+                'key' => $key,
+                'builtin' => false,
+            );
+        }
+        return $models;
+    }
+
+    public static function default_model() {
+        $models = self::models();
+        $wanted = (string) ( get_option( self::MODELS_OPTION, array() )['default'] ?? '' );
+        return isset( $models[ $wanted ] ) ? $wanted : (string) ( array_key_first( $models ) ?? '' );
+    }
+
+    /** Список для интерфейса — без ключей. */
+    public static function text_models() {
+        $out = array();
+        foreach ( self::models() as $id => $model ) {
+            $out[] = array(
+                'id' => $id,
+                'title' => $model['title'],
+                'preset' => $model['preset'],
+                'model' => $model['model'],
+                'host' => (string) wp_parse_url( $model['base'], PHP_URL_HOST ),
+                'builtin' => $model['builtin'],
+                'preview' => mb_substr( $model['key'], 0, 6 ) . '…' . mb_substr( $model['key'], -4 ),
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * Сохраняет модель. Перед сохранением делает короткий пробный запрос:
+     * неверный адрес, ключ или недоступность из страны сервера видны сразу,
+     * а не в момент генерации серии.
+     */
+    public static function save_model( $data ) {
+        $preset = sanitize_key( (string) ( $data['preset'] ?? 'custom' ) );
+        if ( ! isset( self::PRESETS[ $preset ] ) ) {
+            return self::error( 'Неизвестный поставщик.' );
+        }
+        $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
+        $model = trim( (string) ( $data['model'] ?? '' ) ) ?: self::PRESETS[ $preset ]['model'];
+        $title = sanitize_text_field( (string) ( $data['title'] ?? '' ) ) ?: self::PRESETS[ $preset ]['title'] . ' · ' . $model;
+        $key = trim( (string) ( $data['key'] ?? '' ) );
+        if ( '' === $base || ! wp_http_validate_url( $base ) ) {
+            return self::error( 'Нужен адрес API по https — например, https://api.deepseek.com.' );
+        }
+        if ( ! preg_match( '~^[A-Za-z0-9._:/@-]{1,120}$~', $model ) ) {
+            return self::error( 'Название модели — латиница, цифры и знаки . _ : / @ -.' );
+        }
+        if ( ! preg_match( '/^[!-~]{8,512}$/', $key ) ) {
+            return self::error( 'Вставьте ключ API целиком.' );
+        }
+        $probe = self::chat( 'Ответь одним словом: готово', 30, array( 'title' => $title, 'preset' => $preset, 'base' => $base, 'model' => $model, 'key' => $key ) );
+        if ( is_wp_error( $probe ) ) {
+            return $probe;
+        }
+        $sealed = VKT_Tokens::seal( $key );
+        if ( is_wp_error( $sealed ) ) {
+            return $sealed;
+        }
+        $stored = (array) get_option( self::MODELS_OPTION, array() );
+        $id = $preset . '-' . substr( md5( $base . '|' . $model ), 0, 8 );
+        $stored['models'][ $id ] = array( 'title' => $title, 'preset' => $preset, 'base' => $base, 'model' => $model, 'key' => $sealed, 'created_at' => gmdate( 'Y-m-d H:i:s' ) );
+        if ( empty( $stored['default'] ) || ! empty( $data['default'] ) ) {
+            $stored['default'] = $id;
+        }
+        update_option( self::MODELS_OPTION, $stored, false );
+        return array( 'id' => $id, 'title' => $title, 'answer' => mb_substr( $probe, 0, 60 ) );
+    }
+
+    public static function delete_model( $id ) {
+        $stored = (array) get_option( self::MODELS_OPTION, array() );
+        if ( ! isset( $stored['models'][ $id ] ) ) {
+            return self::error( 'xai' === $id ? 'Модель из wp-config.php убирается там же — константой VKT_XAI_API_KEY.' : 'Модель не найдена.', 404 );
+        }
+        unset( $stored['models'][ $id ] );
+        if ( ( $stored['default'] ?? '' ) === $id ) {
+            $stored['default'] = '';
+        }
+        update_option( self::MODELS_OPTION, $stored, false );
+        return array( 'ok' => true );
+    }
+
+    public static function set_default_model( $id ) {
+        if ( ! isset( self::models()[ $id ] ) ) {
+            return self::error( 'Модель не найдена.', 404 );
+        }
+        $stored = (array) get_option( self::MODELS_OPTION, array() );
+        $stored['default'] = $id;
+        update_option( self::MODELS_OPTION, $stored, false );
+        return array( 'ok' => true );
+    }
+
+    /** Проверка сохранённой модели тем же пробным запросом. */
+    public static function check_model( $id ) {
+        $model = self::models()[ $id ] ?? null;
+        if ( ! $model ) {
+            return self::error( 'Модель не найдена.', 404 );
+        }
+        $answer = self::chat( 'Ответь одним словом: готово', 30, $model );
+        return is_wp_error( $answer ) ? $answer : array( 'answer' => mb_substr( $answer, 0, 60 ) );
+    }
+
+    /**
+     * Один запрос к модели для текстов. $model — ID из списка или сама
+     * запись модели (при проверке перед сохранением). Пустой ID — модель по умолчанию.
+     */
+    private static function chat( $input, $timeout = 90, $model = '' ) {
+        if ( ! is_array( $model ) ) {
+            $models = self::models();
+            $id = is_string( $model ) && isset( $models[ $model ] ) ? $model : self::default_model();
+            if ( '' === $id ) {
+                return self::error( 'Не подключена ни одна модель для текстов. Добавьте её в «Настройках».', 400 );
+            }
+            $model = $models[ $id ];
+        }
+        $name = $model['title'];
+        $method = 'llm.' . $model['preset'];
+        $started = microtime( true );
+        $response = wp_remote_post( $model['base'] . '/chat/completions', array(
+            'timeout' => $timeout,
+            'redirection' => 0,
+            'sslverify' => true,
+            'limit_response_size' => 2097152,
+            'headers' => array( 'Authorization' => 'Bearer ' . $model['key'], 'Content-Type' => 'application/json' ),
+            'body' => wp_json_encode( array( 'model' => $model['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ) ) ),
+        ) );
+        $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
+        if ( is_wp_error( $response ) ) {
+            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи: ' . $name, $duration );
+            return self::error( 'Не удалось подключиться к ' . $name . ': ' . $response->get_error_message(), 502, true );
+        }
+        $http = (int) wp_remote_retrieve_response_code( $response );
+        $raw = (string) wp_remote_retrieve_body( $response );
+        $data = json_decode( $raw, true );
+        if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
+            $reason = self::reason( $data, $raw, $http, $model['key'] );
+            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $name . ': ' . $reason, 0, 250 ), $duration );
+            return new WP_Error( 'vkt_ai', $name . ' отклонил запрос (HTTP ' . $http . '): ' . $reason, array(
+                'status' => 422,
+                'retryable' => 429 === $http || $http >= 500,
+                'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Выбрать другую модель — «Настройки»' ) : null,
+            ) );
+        }
+        $text = self::choice_text( $data );
+        VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration );
+        return '' === $text ? self::error( $name . ' не вернул текст.', 502, true ) : $text;
+    }
+
+    /** Текст ответа chat/completions: строка или массив частей. */
+    private static function choice_text( $data ) {
+        $content = $data['choices'][0]['message']['content'] ?? '';
+        if ( is_array( $content ) ) {
+            $content = implode( "\n", array_map( static fn( $part ) => is_array( $part ) ? (string) ( $part['text'] ?? '' ) : (string) $part, $content ) );
+        }
+        return trim( (string) $content );
+    }
+
+    /**
+     * Причина отказа словами. Поставщики кладут её по-разному: error строкой,
+     * error.message, message. Если JSON нет вовсе — запрос завернули до API
+     * (чаще всего по стране сервера), тогда показываем начало ответа.
+     */
+    private static function reason( $data, $raw, $http, $key ) {
+        $message = '';
+        if ( is_array( $data ) ) {
+            $error = $data['error'] ?? null;
+            $message = is_array( $error ) ? (string) ( $error['message'] ?? $error['code'] ?? '' ) : (string) ( $error ?? $data['message'] ?? '' );
+            if ( is_array( $data[0] ?? null ) && '' === $message ) {
+                $message = (string) ( $data[0]['error']['message'] ?? '' );
+            }
+        }
+        if ( '' === trim( $message ) ) {
+            $message = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $raw ) ) );
+            $message = '' === $message ? 'пустой ответ' : 'ответ не от API: «' . mb_substr( $message, 0, 120 ) . '»';
+            if ( in_array( $http, array( 403, 451 ), true ) ) {
+                $message .= '. Похоже, поставщик не обслуживает страну сервера — выберите другую модель (DeepSeek или Qwen обычно доступны).';
+            }
+        }
+        return str_replace( $key, '[hidden]', sanitize_text_field( $message ) );
+    }
+
     public static function public_status() {
         return array(
-            'configured' => self::configured(),
+            // Тексты пишет любая подключённая модель, картинки и видео — только xAI.
+            'configured' => self::text_configured(),
+            'media_configured' => self::configured(),
+            'models' => self::text_models(),
+            'default_model' => self::default_model(),
+            'presets' => self::PRESETS,
             'text_model' => self::TEXT_MODEL,
             'image_model' => self::IMAGE_MODEL,
             'video_model' => self::VIDEO_MODEL,
@@ -64,15 +295,15 @@ final class VKT_AI {
         $http = wp_remote_retrieve_response_code( $response );
         $data = json_decode( wp_remote_retrieve_body( $response ), true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
-            $message = is_array( $data ) ? sanitize_text_field( (string) ( $data['error']['message'] ?? $data['error'] ?? '' ) ) : '';
-            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', $http, 'xAI отклонил запрос', $duration );
-            return self::error( 'xAI отклонил запрос' . ( $message ? ': ' . mb_substr( $message, 0, 180 ) : '.' ), in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
+            $message = self::reason( $data, (string) wp_remote_retrieve_body( $response ), $http, trim( (string) VKT_XAI_API_KEY ) );
+            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', $http, mb_substr( 'xAI: ' . $message, 0, 250 ), $duration );
+            return self::error( 'xAI отклонил запрос (HTTP ' . $http . '): ' . mb_substr( $message, 0, 220 ), in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
         }
         VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'ok', $http, 'Генерация xAI выполнена', $duration );
         return $data;
     }
 
-    public static function generate_text( $prompt, $current = '' ) {
+    public static function generate_text( $prompt, $current = '', $model = '' ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
@@ -82,33 +313,12 @@ final class VKT_AI {
         if ( '' !== $current ) {
             $input .= "\n\nТекущий черновик, который можно улучшить:\n" . $current;
         }
-        $result = self::request( 'POST', '/v1/responses', array(
-            'model' => self::TEXT_MODEL,
-            'input' => $input,
-            'store' => false,
-            'reasoning' => array( 'effort' => 'low' ),
-        ) );
+        $result = self::chat( $input, 90, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
-        $text = trim( wp_strip_all_tags( self::output_text( $result ) ) );
-        return '' === $text ? self::error( 'xAI не вернул текст.', 502 ) : array( 'text' => mb_substr( $text, 0, 16000 ) );
-    }
-
-    /** Текст ответа: xAI кладёт его либо в output_text, либо по частям в output[].content[]. */
-    private static function output_text( $result ) {
-        $text = is_string( $result['output_text'] ?? null ) ? trim( $result['output_text'] ) : '';
-        if ( '' !== $text ) {
-            return $text;
-        }
-        foreach ( (array) ( $result['output'] ?? array() ) as $output ) {
-            foreach ( (array) ( $output['content'] ?? array() ) as $content ) {
-                if ( 'output_text' === ( $content['type'] ?? '' ) && is_string( $content['text'] ?? null ) ) {
-                    $text .= ( $text ? "\n" : '' ) . trim( $content['text'] );
-                }
-            }
-        }
-        return $text;
+        $text = trim( wp_strip_all_tags( $result ) );
+        return '' === $text ? self::error( 'Модель не вернула текст.', 502 ) : array( 'text' => mb_substr( $text, 0, 16000 ) );
     }
 
     /**
@@ -116,7 +326,7 @@ final class VKT_AI {
      * не знает, о чём уже написала, и посты повторяли бы друг друга. Поэтому
      * просим сразу список и разбираем ответ.
      */
-    public static function generate_series( $prompt, $count ) {
+    public static function generate_series( $prompt, $count, $model = '' ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
@@ -127,18 +337,13 @@ final class VKT_AI {
             . ' Ровно ' . $count . ' элементов, каждый не длиннее 3000 символов. Не выдумывай факты, цены, ссылки и обещания.'
             . "\n\nТема серии: " . $prompt;
         // Серия из десятков текстов пишется дольше одиночного поста.
-        $result = self::request( 'POST', '/v1/responses', array(
-            'model' => self::TEXT_MODEL,
-            'input' => $input,
-            'store' => false,
-            'reasoning' => array( 'effort' => 'low' ),
-        ), 180 );
+        $result = self::chat( $input, 180, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
-        $posts = self::parse_series( self::output_text( $result ) );
+        $posts = self::parse_series( $result );
         if ( ! $posts ) {
-            return self::error( 'xAI ответил, но собрать из ответа список текстов не удалось. Повторите запрос или уточните тему.', 502, true );
+            return self::error( 'Модель ответила, но собрать из ответа список текстов не удалось. Повторите запрос или уточните тему.', 502, true );
         }
         return array( 'posts' => array_slice( $posts, 0, $count ), 'requested' => $count );
     }
@@ -179,6 +384,75 @@ final class VKT_AI {
             }
         }
         return $texts;
+    }
+
+    /**
+     * Ответы на комментарии одним запросом. Каждый комментарий уходит со
+     * своим номером и текстом записи: без записи модель не понимает, о чём
+     * спрашивают, а по номерам ответ сверяется с комментарием, даже если
+     * модель пропустит один или переставит их.
+     */
+    public static function generate_replies( $instruction, $items, $model = '' ) {
+        $instruction = is_string( $instruction ) ? trim( wp_strip_all_tags( $instruction ) ) : '';
+        if ( mb_strlen( $instruction ) > 2000 ) {
+            return self::error( 'Указания для ответов — не длиннее 2000 символов.' );
+        }
+        $list = array();
+        foreach ( array_slice( is_array( $items ) ? array_values( $items ) : array(), 0, VKT_Replies::MAX_BATCH ) as $index => $item ) {
+            $comment = is_array( $item ) ? trim( wp_strip_all_tags( (string) ( $item['comment'] ?? '' ) ) ) : '';
+            if ( '' === $comment ) {
+                continue;
+            }
+            $list[] = array(
+                'id' => $index + 1,
+                'author' => mb_substr( sanitize_text_field( (string) ( $item['author'] ?? '' ) ), 0, 80 ),
+                'post' => mb_substr( trim( wp_strip_all_tags( (string) ( $item['post'] ?? '' ) ) ), 0, 600 ),
+                'comment' => mb_substr( $comment, 0, 1000 ),
+            );
+        }
+        if ( ! $list ) {
+            return self::error( 'Нет комментариев с текстом: отвечать не на что.' );
+        }
+        $input = 'Ты отвечаешь от имени сообщества VK на комментарии подписчиков. На каждый комментарий напиши отдельный ответ на русском языке:'
+            . ' вежливо, по существу, коротко — одно-три предложения, без Markdown и хэштегов. Если имя автора известно, можно обратиться по имени.'
+            . ' Не выдумывай факты, цены, сроки, ссылки и обещания; если ответить по существу нечем — поблагодари и предложи написать в сообщения сообщества.'
+            . ' Верни строго JSON вида {"replies":[{"id":1,"text":"ответ"}]} — по одному элементу на каждый id, без пояснений.'
+            . ( '' !== $instruction ? "\n\nУказания владельца сообщества: " . $instruction : '' )
+            . "\n\nКомментарии (post — текст записи, под которой оставлен комментарий):\n" . wp_json_encode( $list, JSON_UNESCAPED_UNICODE );
+        $result = self::chat( $input, 180, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $replies = self::parse_replies( $result, count( $list ) );
+        if ( ! $replies ) {
+            return self::error( 'Модель ответила, но собрать из ответа тексты не удалось. Повторите запрос.', 502, true );
+        }
+        // Номер модели — позиция в присланном списке, а не в нашем: пустые комментарии мы пропускали.
+        $out = array();
+        foreach ( $list as $position => $entry ) {
+            $out[] = array( 'index' => $entry['id'] - 1, 'text' => $replies[ $position + 1 ] ?? '' );
+        }
+        return array( 'replies' => $out );
+    }
+
+    /** Ответ модели в карту «номер → текст». Если номеров нет, опираемся на порядок. */
+    private static function parse_replies( $raw, $count ) {
+        $raw = trim( (string) $raw );
+        if ( preg_match( '/```(?:json)?\s*(.+?)```/s', $raw, $fenced ) ) {
+            $raw = trim( $fenced[1] );
+        }
+        $decoded = json_decode( $raw, true );
+        $items = is_array( $decoded ) ? ( isset( $decoded['replies'] ) && is_array( $decoded['replies'] ) ? $decoded['replies'] : $decoded ) : array();
+        $map = array();
+        foreach ( array_values( $items ) as $position => $item ) {
+            $id = is_array( $item ) && isset( $item['id'] ) ? absint( $item['id'] ) : $position + 1;
+            $text = is_array( $item ) ? (string) ( $item['text'] ?? $item['reply'] ?? '' ) : ( is_string( $item ) ? $item : '' );
+            $text = mb_substr( trim( wp_strip_all_tags( $text ) ), 0, VKT_Replies::MAX_LENGTH );
+            if ( $id >= 1 && $id <= $count && '' !== $text && ! isset( $map[ $id ] ) ) {
+                $map[ $id ] = $text;
+            }
+        }
+        return $map;
     }
 
     public static function generate_image( $prompt, $ratio = 'portrait' ) {

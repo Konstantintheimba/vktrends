@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setComments(d, p, post, thread) {commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -72,7 +72,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     api.setPublishing({
         groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: 'https://vk.test/g.jpg'}],
         posts: [{id: 5, message: 'Текст', attachments: '', media_items: [uploaded], origin: 'manual', status: 'published', scheduled_at: '2026-09-14 04:00:00', deliveries: []}],
-        status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: true, text_model: 'grok-4.6', image_model: 'grok-imagine-image-2.0', video_model: 'grok-imagine-video-1.5', image_ratios: ['portrait'], video_ratios: ['story']}, next: 0, last: null},
+        status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: true, media_configured: true, models: [{id: 'xai', title: 'xAI Grok', model: 'grok-4.6'}, {id: 'deepseek-1', title: 'DeepSeek <b>', model: 'deepseek-chat'}], default_model: 'xai', text_model: 'grok-4.6', image_model: 'grok-imagine-image-2.0', video_model: 'grok-imagine-video-1.5', image_ratios: ['portrait'], video_ratios: ['story']}, next: 0, last: null},
     });
     state.settings.publishing_review = false;
     const view = api.publishing();
@@ -89,7 +89,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     const failed = api.publishing();
     check(failed.includes('VK: авторизация не прошла.') && failed.includes('попытка'), 'Рядом с ошибкой видно, когда была попытка');
     // Ключ сообщества: VK запрещает медиа, поэтому блок файлов заменяется объяснением.
-    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: ''}], posts: [], status: {token_ready: true, community_only: true, media_native: false, media_limit: 10, ai: {configured: true, text_model: 'grok-4.6', image_model: 'i', video_model: 'v', image_ratios: ['portrait'], video_ratios: ['story']}}});
+    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: ''}], posts: [], status: {token_ready: true, community_only: true, media_native: false, media_limit: 10, ai: {configured: true, media_configured: true, models: [{id: 'xai', title: 'xAI Grok', model: 'grok-4.6'}, {id: 'deepseek-1', title: 'DeepSeek <b>', model: 'deepseek-chat'}], default_model: 'xai', text_model: 'grok-4.6', image_model: 'i', video_model: 'v', image_ratios: ['portrait'], video_ratios: ['story']}}});
     const communityOnly = api.publishing();
     check(!communityOnly.includes('data-media-upload') && !communityOnly.includes('data-command="ai-image"'), 'Без пользовательского токена кнопки файлов и картинок не показываются');
     check(communityOnly.includes('ошибкой 27') && communityOnly.includes('кодом 100'), 'Причина запрета названа конкретными кодами VK');
@@ -166,10 +166,18 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     api.setPublishing({groups: [{id: 3, group_id: 241464933, name: 'Своя группа', enabled: 1, can_post: 1}], posts: [], status: {}});
     const seriesView = api.series();
     check(seriesView.includes('data-form="series-setup"') && seriesView.includes('data-form="series-prompt"'), 'Вкладка содержит настройку периода и промпт на серию');
+    // Модель для текста выбирается там же, где пишется текст; чужие названия экранируются.
+    state.settings.ai = {...(state.settings.ai || {}), configured: true, models: [{id: 'xai', title: 'xAI Grok', model: 'grok-4.6'}, {id: 'deepseek-1', title: 'DeepSeek <b>', model: 'deepseek-chat'}], default_model: 'deepseek-1'};
+    const pickerView = api.series();
+    check(pickerView.includes('data-ai-model') && pickerView.includes('value="deepseek-1" selected') && pickerView.includes('DeepSeek &lt;b&gt;'), 'В серии есть выбор модели, по умолчанию — выбранная в настройках');
+    state.settings.ai.presets = {deepseek: {title: 'DeepSeek', base: 'https://api.deepseek.com', model: 'deepseek-chat'}, qwen: {title: 'Qwen', base: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus'}};
+    state.settings.ai.models[1].preview = 'sk-abc…1234'; state.settings.ai.models[1].host = 'api.deepseek.com';
+    const settingsView = api.settings();
+    check(settingsView.includes('data-form="ai-model"') && settingsView.includes('value="https://api.deepseek.com"') && settingsView.includes('data-command="ai-model-check"') && settingsView.includes('по умолчанию'), 'В настройках список моделей, проверка и добавление с готовыми адресами');
     check(seriesView.includes('data-command="series-queue"'), 'Есть кнопка отправки всей серии');
     check(seriesView.includes('name="weekdays"') && seriesView.includes('name="times"'), 'Дни недели и время выбираются в форме');
     state.settings.ai = {configured: false};
-    check(!api.series().includes('data-form="series-prompt"'), 'Без ключа xAI промпт не показывается');
+    check(!api.series().includes('data-form="series-prompt"'), 'Без модели для текстов промпт не показывается');
     api.setSeries([]);
 
     // Личный кабинет участника: ключей сайта и запасных способов у него нет.
@@ -231,5 +239,42 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     const orphans = [...commands].filter(name => !source.includes(`command==='${name}'`));
     check(orphans.length === 0, `У каждой кнопки есть обработчик (осиротели: ${orphans.join(', ') || 'нет'})`);
     check(source.includes("window.open('', '_blank')"), 'Вкладка согласия открывается синхронно по клику, иначе её блокирует браузер');
+    // Вкладка «Комментарии»: чужой текст экранируется, отвеченное не выбирается.
+    const commentsState = {groups: [{group_id: 100, name: 'Своя <b>группа</b>', screen_name: 'own', sender: 'user'}], queue: [{id: 1, group_id: 100, post_id: 10, comment_id: 30, author_name: 'Анна', comment_text: 'Вопрос', message: 'Ответ <img src=x onerror=alert(1)>', origin: 'ai', status: 'failed', error: 'VK: доступ запрещён', available_at: '2026-09-27 10:00:00'}], status: {reading: true, ai: {configured: true}, min_gap: 60, max_length: 2000}};
+    const commentsPost = {id: 10, date: '2026-09-27 09:00:00', text: 'Пост', comments: 3, can_comment: true};
+    const commentsThread = {post_id: 10, total: 3, comments: [
+        {id: 30, from_id: 42, author: 'Анна <script>x</script>', text: 'Сколько стоит?', thread: [{id: 31, from_id: -100, author: 'Своя', text: 'Ответили', is_group: true, thread: []}], thread_count: 1, answered: true, queued: ''},
+        {id: 32, from_id: 43, author: 'Олег', text: 'Есть доставка?', thread: [], thread_count: 0, answered: false, queued: ''},
+        {id: 33, from_id: 44, author: 'Ира', text: 'А цвет?', thread: [], thread_count: 0, answered: false, queued: 'pending'},
+    ]};
+    api.setComments(commentsState, {posts: [commentsPost], total: 1}, commentsPost, commentsThread);
+    html = api.comments();
+    check(html.includes('Анна &lt;script&gt;') && !html.includes('<script>x') && !html.includes('<img src=x'), 'Имена и тексты комментариев и ответов экранируются');
+    check(html.includes('data-comments-pick="10_32"') && !html.includes('data-comments-pick="10_33"') && !html.includes('data-comments-pick="10_31"'), 'Ответ группы и комментарий в очереди нельзя выбрать повторно');
+    check(html.includes('Есть ответ группы') && html.includes('Ошибка') && html.includes('VK: доступ запрещён'), 'Видны ответ группы в ветке и причина ошибки очереди');
+    check(html.includes('data-command="comments-retry"') && html.includes('Черновик нейросети'), 'Неудачный ответ можно повторить, источник текста подписан');
+    check(html.includes('пользовательским токеном'), 'Вкладка объясняет, чем уйдёт ответ');
+    api.pick('10_32');
+    check(api.selected().get('10_32').comment_text === 'Есть доставка?' && api.comments().includes('Ответить выбранным'), 'Выбранный комментарий попадает в пачку, появляется панель ответа');
+    // Неполадки: над разделом, со ссылкой на вкладку, где чинить.
+    state.health = [
+        {level: 'error', title: 'Пользовательский токен VK не действует', text: 'Срок истёк <b>', view: 'posting', action: 'Переподключить'},
+        {level: 'warning', title: 'Сбор простаивал', text: 'wget …', view: 'collector', action: 'Сбор данных'},
+    ];
+    html = api.healthBanner();
+    check(html.includes('href="#posting"') && html.includes('Переподключить') && html.includes('is-error'), 'Ошибка ключа ведёт на «Публикацию»');
+    check(html.includes('&lt;b&gt;') && !html.includes('Срок истёк <b>'), 'Текст неполадки экранируется');
+    api.setAccount({id: 7, name: 'Участник', is_admin: false, status: 'active'});
+    check(!api.healthBanner().includes('#collector'), 'Участник не видит ссылок в разделы администратора');
+    check(api.fixFor('Сервисный ключ не действует') === null, 'Участнику не предлагают чинить общий ключ');
+    api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
+    api.toast('VK: авторизация не прошла. Токен просрочен… [groups.get: User authorization failed: access_token has expired.]', true);
+    check(element.innerHTML.includes('href="#posting"') && element.innerHTML.includes('Переподключить токен'), 'Ошибка токена в сообщении сразу ведёт туда, где его заменить');
+    api.toast('Что-то сломалось', true, {view: 'comments', label: 'Очередь ответов'});
+    check(element.innerHTML.includes('href="#comments"') && element.innerHTML.includes('Очередь ответов'), 'Подсказка сервера важнее догадки по тексту');
+    api.toast('Готово <script>', false);
+    check(!element.innerHTML.includes('<script>') && !element.innerHTML.includes('href='), 'Обычное сообщение без ссылки и экранировано');
+    check(!api.hasSlot({tokens: [{slot: 'user', has_token: true, alive: false}]}, 'user') && api.hasSlot({tokens: [{slot: 'user', has_token: true, alive: true}]}, 'user'), 'Точка в меню зелёная только у живого ключа');
+    state.health = [];
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

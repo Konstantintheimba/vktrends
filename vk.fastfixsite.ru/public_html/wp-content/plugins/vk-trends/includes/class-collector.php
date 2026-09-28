@@ -2,6 +2,12 @@
 defined( 'ABSPATH' ) || exit;
 
 final class VKT_Collector {
+    // Упавшее задание раньше ждало ручного повтора вечно, и сбор молча стоял.
+    // Теперь сборщик сам пробует снова через столько часов — или сразу, как только сохранён новый ключ.
+    const FAILED_COOLDOWN_HOURS = 6;
+    // Отвергнутый ключ не повод бросать задание: ждём замены и пробуем снова.
+    const AUTH_WAIT = 30 * MINUTE_IN_SECONDS;
+
     public static function enqueue( $kind, $id ) {
         global $wpdb;
         $table = VKT_Store::table( 'jobs' );
@@ -24,13 +30,25 @@ final class VKT_Collector {
             $table = VKT_Store::table( $name );
             $extra = 'source' === $kind ? ' AND enabled=1' : '';
             $jobs = VKT_Store::table( 'jobs' );
-            $ids = $wpdb->get_col( $wpdb->prepare( "SELECT id FROM $table WHERE next_run<=%s $extra AND id NOT IN (SELECT entity_id FROM $jobs WHERE kind=%s AND status='failed') ORDER BY next_run LIMIT 30", $now, $kind ) );
+            $ids = $wpdb->get_col( $wpdb->prepare( "SELECT id FROM $table WHERE next_run<=%s $extra AND id NOT IN (SELECT entity_id FROM $jobs WHERE kind=%s AND status='failed' AND updated_at>%s) ORDER BY next_run LIMIT 30", $now, $kind, self::failed_until() ) );
             foreach ( $ids as $id ) {
                 if ( false !== self::enqueue( $kind, (int) $id ) ) {
                     $wpdb->update( $table, array( 'next_run' => $next ), array( 'id' => $id ) );
                 }
             }
         }
+    }
+
+    /**
+     * Граница, после которой упавшее задание снова идёт в работу: прошло
+     * FAILED_COOLDOWN_HOURS либо ключ сохранён уже после падения.
+     */
+    private static function failed_until() {
+        $border = time() - self::FAILED_COOLDOWN_HOURS * HOUR_IN_SECONDS;
+        foreach ( array( 'service', 'user' ) as $slot ) {
+            $border = max( $border, (int) VKT_Tokens::get( $slot )['saved_at'] );
+        }
+        return gmdate( 'Y-m-d H:i:s', min( time(), $border ) );
     }
 
     /**
@@ -51,11 +69,18 @@ final class VKT_Collector {
             VKT_Posts::prune();
             set_transient( 'vkt_logs_pruned', 1, HOUR_IN_SECONDS );
         }
+        if ( ! $manual ) {
+            self::tick();
+        }
         if ( ! $manual && VKT_Plugin::settings()['paused'] ) {
             return array( 'processed' => 0, 'message' => 'Автосбор на паузе.' );
         }
         if ( ! VKT_API::token() ) {
             return new WP_Error( 'no_token', 'Сначала сохраните Access token.', array( 'status' => 400 ) );
+        }
+        // Оба ключа отвергнуты VK: не тратим запросы впустую, уведомление в кабинете уже висит.
+        if ( ! VKT_Tokens::alive( 'service' ) && ! VKT_Tokens::alive( 'user' ) ) {
+            return new WP_Error( 'dead_token', 'Ключ сбора не действует — замените его в разделе «Чтение постов».', array( 'status' => 400, 'fix' => VKT_Health::fix_for( 'service', 5 ) ) );
         }
         if ( ! VKT_Store::lock( 'collector', 120 ) ) {
             return new WP_Error( 'busy', 'Сборщик уже работает.', array( 'status' => 409 ) );
@@ -80,6 +105,11 @@ final class VKT_Collector {
                     $changes['status'] = $retry ? 'pending' : 'failed';
                     $changes['message'] = $result->get_error_message();
                     $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + min( 3600, 60 * ( 2 ** $attempts ) ) );
+                    if ( ! empty( $data['auth'] ) ) {
+                        $changes['status'] = 'pending';
+                        $changes['attempts'] = (int) $job['attempts'];
+                        $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + self::AUTH_WAIT );
+                    }
                 }
                 $wpdb->update( $jobs, $changes, array( 'id' => $job['id'] ) );
                 ++$processed;
@@ -97,6 +127,20 @@ final class VKT_Collector {
         } finally {
             VKT_Store::unlock( 'collector' );
         }
+    }
+
+    /**
+     * Отметка каждого срабатывания cron. Если между отметками прошло больше
+     * CRON_STALE, простой запоминается: WP-cron оживает при первом же заходе
+     * на сайт, и без записи провал в неделю было бы не заметить.
+     */
+    private static function tick() {
+        $previous = (string) get_option( 'vkt_cron_tick', '' );
+        $now = gmdate( 'Y-m-d H:i:s' );
+        if ( '' !== $previous && strtotime( $previous . ' UTC' ) < time() - VKT_Health::CRON_STALE ) {
+            update_option( 'vkt_cron_gap', array( 'from' => $previous, 'to' => $now ), false );
+        }
+        update_option( 'vkt_cron_tick', $now, false );
     }
 
     // Параметры обхода стены. Поисковые источники требуют video.search, а он недоступен сервисному токену.
@@ -224,7 +268,8 @@ final class VKT_Collector {
             if ( ! $video ) {
                 return true;
             }
-            if ( VKT_Tokens::has( 'user' ) ) {
+            // С истёкшим токеном точечного замера нет — ролик перемеряется обходом стены, как у сервисного ключа.
+            if ( VKT_Tokens::alive( 'user' ) ) {
                 return self::measure_video_point( $video );
             }
             $only = $video['owner_id'] . '_' . $video['video_id'];
@@ -250,7 +295,7 @@ final class VKT_Collector {
         $section_videos = array();
         // Видеораздел владельца доступен только пользовательскому токену и только по числовому ID,
         // короткое имя (domain) video.get не принимает.
-        if ( VKT_Tokens::has( 'user' ) && 'owner' === $wall['kind'] ) {
+        if ( VKT_Tokens::alive( 'user' ) && 'owner' === $wall['kind'] ) {
             $section = VKT_API::request( 'video.get', array( 'owner_id' => (int) $wall['value'], 'count' => 100 ), 'collector' );
             if ( ! is_wp_error( $section ) ) {
                 foreach ( (array) ( $section['response']['items'] ?? array() ) as $item ) {

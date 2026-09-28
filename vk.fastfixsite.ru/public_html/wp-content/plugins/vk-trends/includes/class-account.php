@@ -246,5 +246,6 @@ final class VKT_Account {
         }
         $wpdb->delete( VKT_Store::table( 'outbound_posts' ), array( 'user_id' => $user_id ) );
         $wpdb->delete( VKT_Store::table( 'publishing_groups' ), array( 'user_id' => $user_id ) );
+        VKT_Replies::purge_user( $user_id );
     }
 }

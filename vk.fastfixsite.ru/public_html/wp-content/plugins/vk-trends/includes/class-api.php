@@ -23,7 +23,7 @@ final class VKT_API {
      * прав. Если подходящего слота нет — берём любой доступный, чтобы ошибка
      * пришла от VK с внятным текстом, а не от плагина.
      */
-    const USER_ONLY = array( 'video.get', 'groups.get', 'wall.post', 'photos.getWallUploadServer', 'photos.saveWallPhoto', 'video.save' );
+    const USER_ONLY = array( 'video.get', 'groups.get', 'wall.post', 'wall.createComment', 'photos.getWallUploadServer', 'photos.saveWallPhoto', 'video.save' );
 
     public static function slot_for( $method ) {
         if ( in_array( $method, self::USER_ONLY, true ) && VKT_Tokens::has( 'user' ) ) {
@@ -32,7 +32,9 @@ final class VKT_API {
         if ( VKT_Tokens::has( 'service' ) ) {
             return 'service';
         }
-        return VKT_Tokens::has( 'user' ) ? 'user' : '';
+        // Истёкший пользовательский токен не подменяет отсутствующий сервисный:
+        // ответ был бы тем же кодом 5, только без понятной причины.
+        return VKT_Tokens::alive( 'user' ) ? 'user' : '';
     }
 
     private static function token_data() {
@@ -499,7 +501,8 @@ final class VKT_API {
             $body = json_decode( wp_remote_retrieve_body( $response ), true );
             if ( 200 !== $http || ! is_array( $body ) || empty( $body['access_token'] ) ) {
                 VKT_Store::log( 'oauth2.auth', 'refresh', 'error', (int) $http, 'VK ID отклонил обновление токена', 0 );
-                return new WP_Error( 'refresh_failed', 'VK ID отклонил обновление токена. Сохраните пользовательский токен заново.', array( 'status' => 401 ) );
+                VKT_Tokens::note( 'user', 'VK ID отклонил обновление токена.', true );
+                return new WP_Error( 'refresh_failed', 'VK ID отклонил обновление токена. Сохраните пользовательский токен заново.', array( 'status' => 401, 'auth' => true, 'fix' => VKT_Health::fix_for( 'user', 5 ) ) );
             }
             $saved = self::save_token( $body['access_token'], 'user', array(
                 'refresh_token' => $body['refresh_token'] ?? $data['refresh_token'],
@@ -569,6 +572,8 @@ final class VKT_API {
         $allowed = array(
             'groups.get' => array( 'extended', 'filter', 'fields', 'count', 'offset' ),
             'wall.post'  => array( 'owner_id', 'from_group', 'message', 'attachments', 'signed', 'close_comments', 'guid' ),
+            // Ответ на комментарий от имени группы, где у ключа сообщества нет доступа.
+            'wall.createComment' => array( 'owner_id', 'post_id', 'from_group', 'message', 'reply_to_comment', 'guid' ),
             // Загрузка медиа с нашего сервера: VK разрешает эти методы только
             // пользовательскому токену, ключ сообщества отвечает ошибкой 27.
             'photos.getWallUploadServer' => array( 'group_id' ),
@@ -672,7 +677,15 @@ final class VKT_API {
                     // Метод в тексте: без него по коду не понять, на каком шаге
                     // публикации отказал VK — на загрузке фото или на самой записи.
                     $detail = sanitize_text_field( (string) ( $body['error']['error_msg'] ?? '' ) );
-                    $error = new WP_Error( 'vk_' . $code, self::message( $code ) . ' [' . $method . ( '' !== $detail ? ': ' . mb_substr( $detail, 0, 120 ) : '' ) . ']', array( 'status' => 422, 'vk_code' => $code, 'retryable' => in_array( $code, array( 1, 6, 9, 10, 29, 32, 36 ), true ) ) );
+                    $error = new WP_Error( 'vk_' . $code, self::message( $code ) . ' [' . $method . ( '' !== $detail ? ': ' . mb_substr( $detail, 0, 120 ) : '' ) . ']', array(
+                        'status' => 422,
+                        'vk_code' => $code,
+                        'retryable' => in_array( $code, array( 1, 6, 9, 10, 29, 32, 36 ), true ),
+                        // Отвергнут сам ключ: очереди не бросают задание, а ждут переподключения.
+                        'auth' => in_array( $code, VKT_Health::DEAD_CODES, true ),
+                        'slot' => $slot,
+                        'fix' => VKT_Health::fix_for( $slot, $code ),
+                    ) );
                 } else {
                     VKT_Tokens::note( $slot, '' );
                     VKT_Store::log( $method, $context, 'ok', 0, 'Запрос выполнен', $ms );
@@ -683,7 +696,7 @@ final class VKT_API {
             $data['duration_ms'] = $ms;
             $error->add_data( $data );
             // Ошибка остаётся закреплённой за слотом: в настройках видно, какой ключ виноват.
-            VKT_Tokens::note( $slot, $error->get_error_message() );
+            VKT_Tokens::note( $slot, $error->get_error_message(), ! empty( $data['auth'] ) );
             VKT_Store::log( $method, $context, 'error', $data['vk_code'] ?? 0, $error->get_error_message(), $ms );
             return $error;
         } finally {

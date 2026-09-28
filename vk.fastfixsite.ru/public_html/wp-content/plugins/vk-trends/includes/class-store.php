@@ -91,7 +91,7 @@ final class VKT_Store {
                 KEY created (created_at)",
         );
         // Таблицы постов описаны в VKT_Posts: dbDelta обновит их вместе с остальными.
-        $schemas = array_merge( $schemas, VKT_Posts::schema(), VKT_Links::schema(), VKT_Publisher::schema(), VKT_Subscriptions::schema() );
+        $schemas = array_merge( $schemas, VKT_Posts::schema(), VKT_Links::schema(), VKT_Publisher::schema(), VKT_Subscriptions::schema(), VKT_Replies::schema() );
         foreach ( $schemas as $name => $columns ) {
             dbDelta( 'CREATE TABLE ' . self::table( $name ) . " ($columns) ENGINE=InnoDB $collate;" );
         }
@@ -348,6 +348,8 @@ final class VKT_Store {
         unset( $video );
         return array(
             'settings' => VKT_Plugin::public_settings(),
+            // Неполадки кабинета со ссылкой на вкладку, где их чинить: дашборд показывает их над любым разделом.
+            'health' => VKT_Health::issues(),
             'stats' => array_merge(
                 (array) $wpdb->get_row( "SELECT COUNT(*) AS videos,COALESCE(SUM(views),0) AS views,COUNT(velocity) AS measured,MAX(measured_at) AS last_measurement FROM $v WHERE $mine", ARRAY_A ),
                 (array) $wpdb->get_row( 'SELECT COUNT(*) AS posts,COALESCE(SUM(views),0) AS post_views,COALESCE(SUM(g1),0) AS post_day_growth,AVG(err) AS post_err FROM ' . self::table( 'posts' ) . " WHERE $own_posts", ARRAY_A )

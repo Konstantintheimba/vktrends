@@ -26,6 +26,9 @@ class VKT_Community {
     public static array $published = array();
     public static function configured() { return self::$on; }
     public static function group_id() { return 241464933; }
+    public static function has_key( $group_id ) { return self::$on && 241464933 === (int) $group_id; }
+    public static function any_key() { return self::$on; }
+    public static function keys() { return self::$on ? array( 241464933 => 'KEY' ) : array(); }
     public static string $fail_with = '';
     public static function publish( $params ) {
         if ( '' !== self::$fail_with ) { return new WP_Error( 'vk_100', self::$fail_with, array( 'status' => 422, 'vk_code' => 100 ) ); }

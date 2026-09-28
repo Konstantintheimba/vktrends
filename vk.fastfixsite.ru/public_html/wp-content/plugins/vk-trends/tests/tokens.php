@@ -73,6 +73,19 @@ $assert( null === VKT_Tokens::error( 'service' ), 'Ошибка одного с�
 VKT_Tokens::save( 'user', $user );
 $assert( null === VKT_Tokens::error( 'user' ), 'Новый ключ сбрасывает прошлую ошибку' );
 
+// Отвергнутый VK ключ сохранён, но не считается рабочим — до повторного сохранения.
+$assert( VKT_Tokens::alive( 'user' ), 'Свежий ключ живой' );
+VKT_Tokens::note( 'user', 'VK: авторизация не прошла', true );
+$assert( VKT_Tokens::has( 'user' ) && ! VKT_Tokens::alive( 'user' ), 'Отказ VK кодом 5 выключает ключ' );
+$dead_status = array_values( array_filter( VKT_Tokens::status(), static fn( $row ) => 'user' === $row['slot'] ) )[0];
+$assert( false === $dead_status['alive'] && true === $dead_status['error']['dead'], 'Мёртвый ключ виден в статусе' );
+VKT_Tokens::note( 'user', 'Нет права photos' );
+$assert( VKT_Tokens::alive( 'user' ), 'Отказ по правам ключ не выключает' );
+VKT_Tokens::note( 'user', 'VK: авторизация не прошла', true );
+VKT_Tokens::save( 'user', $user, array( 'expires_in' => 86400 ) );
+$assert( VKT_Tokens::alive( 'user' ), 'Переподключение оживляет ключ' );
+$assert( ! VKT_Tokens::alive( 'bfl' ), 'Пустой слот не живой' );
+
 // Удаление затрагивает только свой слот.
 VKT_Tokens::forget( 'user' );
 $assert( ! VKT_Tokens::has( 'user' ), 'Пользовательский токен удалён' );

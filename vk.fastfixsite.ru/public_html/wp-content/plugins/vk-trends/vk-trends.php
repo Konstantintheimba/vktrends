@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: VK Trends
- * Description: Дашборд постов, видео и товаров VK с личными кабинетами: вход через VK ID, свои источники и публикации, счётчики, динамика, автопостинг с генерацией текста и медиа.
- * Version: 0.23.0
+ * Description: Дашборд постов, видео и товаров VK с личными кабинетами: вход через VK ID, свои источники и публикации, счётчики, динамика, автопостинг с генерацией текста и медиа, ответы на комментарии.
+ * Version: 0.24.0
  * Requires at least: 6.6
  * Requires PHP: 8.0
  * Author: FastFixSite
@@ -11,7 +11,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-define( 'VKT_VERSION', '0.23.0' );
+define( 'VKT_VERSION', '0.24.0' );
 define( 'VKT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'VKT_URL', plugin_dir_url( __FILE__ ) );
 
@@ -24,6 +24,7 @@ require_once VKT_DIR . 'includes/class-commerce.php';
 require_once VKT_DIR . 'includes/class-product-page.php';
 require_once VKT_DIR . 'includes/class-tokens.php';
 require_once VKT_DIR . 'includes/class-api.php';
+require_once VKT_DIR . 'includes/class-health.php';
 require_once VKT_DIR . 'includes/class-community.php';
 require_once VKT_DIR . 'includes/class-vkid.php';
 require_once VKT_DIR . 'includes/class-oauth.php';
@@ -32,6 +33,7 @@ require_once VKT_DIR . 'includes/class-media.php';
 require_once VKT_DIR . 'includes/class-ai.php';
 require_once VKT_DIR . 'includes/class-flux.php';
 require_once VKT_DIR . 'includes/class-publisher.php';
+require_once VKT_DIR . 'includes/class-replies.php';
 require_once VKT_DIR . 'includes/class-collector.php';
 require_once VKT_DIR . 'includes/class-plugin.php';
 

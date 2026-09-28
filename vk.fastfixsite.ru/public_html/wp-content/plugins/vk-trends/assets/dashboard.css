@@ -426,3 +426,69 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-flux-result img { display: block; width: 100%; height: auto; }
 .vkt-flux-result figcaption { padding: 12px 14px; font-size: 11px; color: var(--vkt-muted); line-height: 1.7; }
 .vkt-flux-index { display: inline-block; margin-right: 6px; padding: 2px 6px; border-radius: 5px; background: #e9f1ff; color: #437cea; font-size: 9px; font-style: normal; font-weight: 600; }
+/* Комментарии */
+.vkt-comments-group { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--vkt-muted); }
+.vkt-comments-group select { min-width: 260px; }
+.vkt-posts-toolbar .vkt-info { margin: 16px 0 0; }
+.vkt-comments-layout { display: grid; grid-template-columns: minmax(260px,.42fr) minmax(0,1fr); gap: 22px; align-items: start; margin-bottom: 26px; }
+.vkt-comments-posts { display: flex; flex-direction: column; gap: 6px; max-height: 78vh; overflow-y: auto; }
+.vkt-comments-posts > .vkt-button { align-self: center; margin-top: 8px; }
+.vkt-comments-post { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; border: 1px solid transparent; background: none; border-radius: 9px; padding: 10px; color: var(--vkt-ink); cursor: pointer; }
+.vkt-comments-post:hover { background: #f7f9fc; }
+.vkt-comments-post.is-active { background: #edf4ff; border-color: #bcd3fb; }
+.vkt-comments-post img { width: 46px; height: 46px; border-radius: 7px; object-fit: cover; flex: 0 0 46px; }
+.vkt-comments-post span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vkt-comments-post strong { font-size: 12px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.vkt-comments-post small { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--vkt-muted); }
+.vkt-comments-post small svg { width: 12px; height: 12px; }
+.vkt-comments-thread { display: flex; flex-direction: column; gap: 16px; }
+.vkt-comments-thread > .vkt-button { align-self: center; }
+.vkt-comments-placeholder { display: grid; place-items: center; gap: 8px; padding: 50px 20px; color: var(--vkt-muted); text-align: center; font-size: 12px; }
+.vkt-comments-post-head { border-bottom: 1px solid var(--vkt-line); padding-bottom: 14px; }
+.vkt-comments-post-head p { margin: 0 0 6px; font-size: 13px; line-height: 1.7; white-space: pre-line; max-height: 150px; overflow-y: auto; overflow-wrap: anywhere; }
+.vkt-comments-list { display: flex; flex-direction: column; }
+.vkt-comment { display: flex; gap: 10px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--vkt-line); }
+.vkt-comments-list > .vkt-comment:last-child { border-bottom: 0; }
+.vkt-comment.is-nested { padding: 10px 0 0; border-bottom: 0; }
+.vkt-comment.is-own .vkt-comment-body > p { background: #f3f7ff; border-radius: 8px; padding: 6px 10px; }
+.vkt-comment > img, .vkt-comment > .vkt-post-avatar { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%; object-fit: cover; }
+.vkt-comment .vkt-comment-pick { width: 16px !important; height: 16px; min-height: 16px; flex: 0 0 16px; padding: 0; margin-top: 8px !important; accent-color: var(--vkt-blue); appearance: auto; }
+.vkt-comment-body { flex: 1; min-width: 0; }
+.vkt-comment-body > p { margin: 4px 0 6px; font-size: 13px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; }
+.vkt-comment-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+.vkt-comment-head strong { font-size: 12px; }
+.vkt-comment-head small { font-size: 10px; color: var(--vkt-muted); }
+.vkt-comment-thread { border-left: 2px solid var(--vkt-line); padding-left: 12px; margin-top: 6px; }
+.vkt-link-button { border: 0; background: none; padding: 0; color: var(--vkt-blue); font-size: 11px; font-weight: 500; cursor: pointer; }
+.vkt-comment-reply { margin-top: 8px; gap: 10px; }
+.vkt-comment-reply textarea { min-height: 70px; }
+.vkt-comment-reply-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.vkt-comments-bulkbar { position: sticky; bottom: 16px; z-index: 5; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: -10px 0 26px; padding: 12px 16px; background: #fff; border: 1px solid #bcd3fb; border-radius: 11px; box-shadow: 0 10px 30px #24344e1c; font-size: 12px; }
+.vkt-comments-bulkbar > span { margin-right: auto; }
+.vkt-comments-bulk-tools { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: end; }
+.vkt-comments-bulk-list { display: flex; flex-direction: column; gap: 10px; max-height: 45vh; overflow-y: auto; border: 1px solid var(--vkt-line); border-radius: 9px; padding: 10px; }
+.vkt-comments-bulk-item { position: relative; display: grid; grid-template-columns: minmax(0,.8fr) minmax(0,1.2fr); gap: 10px; padding: 0 28px 10px 0; border-bottom: 1px solid var(--vkt-line); }
+.vkt-comments-bulk-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.vkt-comments-bulk-item > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 12px; }
+.vkt-comments-bulk-item small { color: var(--vkt-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.vkt-comments-bulk-item textarea { min-height: 60px; }
+.vkt-comments-bulk-item .vkt-media-remove { position: absolute; top: 0; right: 0; }
+.vkt-comments-table td { vertical-align: top; }
+.vkt-comments-table td small { display: block; margin-top: 3px; max-width: 320px; overflow-wrap: anywhere; }
+.vkt-comments-table td:nth-child(2) { max-width: 360px; white-space: pre-line; overflow-wrap: anywhere; }
+@media (max-width: 1050px) { .vkt-comments-layout { grid-template-columns: minmax(0,1fr); }.vkt-comments-posts { max-height: 360px; } }
+@media (max-width: 760px) { .vkt-comments-group { flex-direction: column; align-items: stretch; width: 100%; }.vkt-comments-group select { min-width: 0; }.vkt-comments-bulk-tools, .vkt-comments-bulk-item { grid-template-columns: minmax(0,1fr); }.vkt-comments-bulkbar > span { flex-basis: 100%; } }
+/* Неполадки: над любым разделом, со ссылкой туда, где их чинят */
+.vkt-health { display: flex; flex-direction: column; gap: 8px; margin: 0 0 24px; }
+.vkt-health > .vkt-link-button { align-self: flex-start; }
+.vkt-health-item { display: flex; align-items: center; gap: 14px; padding: 13px 16px; border-radius: 10px; border: 1px solid #f1d3a8; background: #fff8eb; color: #6f5328; }
+.vkt-health-item.is-error { border-color: #f3c4c4; background: #fff3f3; color: #8a3b3b; }
+.vkt-health-item > div { flex: 1; min-width: 0; }
+.vkt-health-item strong { display: block; font-size: 13px; }
+.vkt-health-item p { margin: 3px 0 0; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.vkt-health-item > .vkt-button { flex: 0 0 auto; background: #fff; }
+.vkt-health-mark { flex: 0 0 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #fff; background: #d9a24a; }
+.is-error > .vkt-health-mark { background: #d65c5c; }
+.vkt-sidebar nav a.has-issue::after { content: ''; flex: 0 0 8px; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: #d65c5c; }
+.vkt-toast-fix { color: #fff !important; font-weight: 600; text-decoration: underline !important; white-space: nowrap; margin-left: 6px; }
+@media (max-width: 760px) { .vkt-health-item { flex-wrap: wrap; }.vkt-health-item > .vkt-button { margin-left: 38px; } }

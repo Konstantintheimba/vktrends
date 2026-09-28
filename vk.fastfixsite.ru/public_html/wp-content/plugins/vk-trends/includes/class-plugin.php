@@ -9,6 +9,8 @@ final class VKT_Plugin {
         } );
         add_action( 'vkt_collect', array( 'VKT_Collector', 'run' ) );
         add_action( 'vkt_publish', array( 'VKT_Publisher', 'run_due' ) );
+        // Ответы на комментарии идут тем же ежеминутным событием: отдельное пришлось бы заводить на каждом сайте заново.
+        add_action( 'vkt_publish', array( 'VKT_Replies', 'cron' ) );
         add_action( 'init', static function () {
             if ( get_option( 'vkt_db_version' ) !== VKT_VERSION ) { VKT_Store::install(); }
             if ( ! wp_next_scheduled( 'vkt_collect' ) ) { wp_schedule_event( time() + 60, 'vkt_minute', 'vkt_collect' ); }
@@ -86,7 +88,8 @@ final class VKT_Plugin {
     const SITE_KEYS = array( 'api_version', 'token', 'token_kind', 'delete_token', 'refresh_token', 'device_id', 'client_id', 'expires_in', 'proxy', 'source_hours', 'video_hours', 'paused', 'homepage', 'posts', 'links', 'vkid_client_id', 'vkid_redirect', 'app_id', 'member_sources', 'ai_text_daily', 'ai_media_daily' );
 
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'flux_start', 'flux_status', 'flux_credits' );
+    // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'flux_start', 'flux_status', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -218,6 +221,11 @@ final class VKT_Plugin {
             $response->header( 'Cache-Control', 'no-store, private' );
             return $response;
         } ) );
+        register_rest_route( 'vk-trends/v1', '/comments', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function () {
+            $response = new WP_REST_Response( VKT_Replies::state() );
+            $response->header( 'Cache-Control', 'no-store, private' );
+            return $response;
+        } ) );
         // Медиатека WordPress как источник вложений: ID для VK плагин получает сам.
         register_rest_route( 'vk-trends/v1', '/media', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function ( $r ) {
             $response = new WP_REST_Response( array( 'items' => VKT_Media::library( absint( $r['limit'] ?? 24 ), sanitize_text_field( $r['search'] ?? '' ) ) ) );
@@ -299,8 +307,10 @@ final class VKT_Plugin {
     public static function action( $request ) {
         global $wpdb;
         $data = $request->get_json_params();
-        // 16 000 символов записи VK могут занимать до 64 КБ в UTF-8.
-        if ( ! is_array( $data ) || strlen( $request->get_body() ) > 80000 ) { return self::error( 'Неверный формат или слишком большой запрос.' ); }
+        // 16 000 символов записи VK могут занимать до 64 КБ в UTF-8. Пачка
+        // ответов на комментарии — до 50 текстов, ей нужно больше.
+        $bulk = is_array( $data ) && in_array( $data['action'] ?? '', array( 'comments_queue', 'comments_generate' ), true );
+        if ( ! is_array( $data ) || strlen( $request->get_body() ) > ( $bulk ? 400000 : 80000 ) ) { return self::error( 'Неверный формат или слишком большой запрос.' ); }
         $action = $data['action'] ?? '';
         if ( in_array( $action, self::ADMIN_ACTIONS, true ) && ! VKT_Account::is_admin() ) {
             return self::error( 'Это действие доступно только администратору.', 403 );
@@ -495,6 +505,18 @@ final class VKT_Plugin {
                 return VKT_Publisher::sync_groups();
             case 'community_check':
                 return VKT_Community::check();
+            case 'ai_model_save':
+                return VKT_AI::save_model( is_array( $data ) ? $data : array() );
+            case 'ai_model_delete':
+                return VKT_AI::delete_model( self::model_id( $data ) );
+            case 'ai_model_default':
+                return VKT_AI::set_default_model( self::model_id( $data ) );
+            case 'ai_model_check':
+                return VKT_AI::check_model( self::model_id( $data ) );
+            case 'community_key_add':
+                return VKT_Community::add_key( $data['token'] ?? '', $data['group'] ?? '' );
+            case 'community_key_forget':
+                return VKT_Community::forget_key( $data['group_id'] ?? 0 );
             case 'token_check':
                 return VKT_API::check_token();
             case 'token_save': {
@@ -535,13 +557,13 @@ final class VKT_Plugin {
             case 'probe_matrix':
                 return VKT_API::probe_matrix();
             case 'series_generate':
-                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0 ) );
+                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ) ) );
             case 'series_queue':
                 return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
             case 'vkid_start':
                 return VKT_VKID::start( $data['return_to'] ?? '' );
             case 'ai_text':
-                return self::metered( 'text', static fn() => VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '' ) );
+                return self::metered( 'text', static fn() => VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '', self::model_id( $data ) ) );
             case 'ai_image':
                 return self::metered( 'media', static fn() => VKT_AI::generate_image( $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' ) );
             case 'ai_video_start': {
@@ -580,6 +602,23 @@ final class VKT_Plugin {
                 return VKT_Publisher::retry( $data['id'] ?? 0 );
             case 'publishing_cancel':
                 return VKT_Publisher::cancel( $data['id'] ?? 0 );
+            case 'comments_posts':
+                return VKT_Replies::posts( $data['group_id'] ?? 0, $data['offset'] ?? 0 );
+            case 'comments_thread':
+                return VKT_Replies::thread( $data['group_id'] ?? 0, $data['post_id'] ?? 0, $data['offset'] ?? 0 );
+            case 'comments_generate':
+                return self::metered( 'text', static fn() => VKT_AI::generate_replies( $data['instruction'] ?? '', $data['items'] ?? array(), self::model_id( $data ) ) );
+            case 'comments_reply':
+                return VKT_Replies::reply_now( $data );
+            case 'comments_queue':
+                return VKT_Replies::enqueue( $data );
+            case 'comments_run':
+                // Кнопка разбирает только свою очередь; общую обходит cron.
+                return VKT_Replies::run_due( 3, 0, VKT_Account::id() );
+            case 'comments_cancel':
+                return VKT_Replies::cancel( $data['ids'] ?? array(), ! empty( $data['all'] ) );
+            case 'comments_retry':
+                return VKT_Replies::retry( $data['id'] ?? 0 );
             case 'product':
                 $title = is_string( $data['title'] ?? null ) ? sanitize_text_field( $data['title'] ) : '';
                 $raw_url = is_string( $data['url'] ?? null ) ? trim( $data['url'] ) : '';
@@ -663,6 +702,12 @@ final class VKT_Plugin {
             VKT_Account::ai_spend( $kind );
         }
         return $result;
+    }
+
+    /** ID модели для текстов из запроса: пустой — модель по умолчанию. */
+    private static function model_id( $data ) {
+        $id = is_array( $data ) && is_string( $data['model'] ?? null ) ? $data['model'] : '';
+        return preg_match( '/^[a-z0-9_-]{2,40}$/', $id ) ? $id : '';
     }
 
     private static function db_result( $result ) {

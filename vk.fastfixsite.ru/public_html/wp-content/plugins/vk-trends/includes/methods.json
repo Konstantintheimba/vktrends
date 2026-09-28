@@ -780,6 +780,95 @@
       }
     ]
   },
+  "wall.getComments": {
+    "description": "Returns a list of comments on a post on a user wall or community wall.",
+    "tokens": [
+      "user",
+      "service"
+    ],
+    "parameters": [
+      {
+        "name": "owner_id",
+        "description": "User ID or community ID. Use a negative value to designate a community ID.",
+        "type": "integer",
+        "format": "int64",
+        "entity": "owner"
+      },
+      {
+        "name": "post_id",
+        "description": "Post ID.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "need_likes",
+        "description": "'1' - to return the 'likes' field, '0' - not to return the 'likes' field (default)",
+        "type": "boolean"
+      },
+      {
+        "name": "start_comment_id",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "offset",
+        "description": "Offset needed to return a specific subset of comments.",
+        "type": "integer"
+      },
+      {
+        "name": "count",
+        "description": "Number of comments to return (maximum 100).",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "sort",
+        "description": "Sort order: 'asc' - chronological, 'desc' - reverse chronological",
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc",
+          "smart"
+        ],
+        "enumNames": [
+          "chronological",
+          "reverse chronological",
+          "most interesting"
+        ]
+      },
+      {
+        "name": "preview_length",
+        "description": "Number of characters at which to truncate comments when previewed. By default, '90'. Specify '0' if you do not want to truncate comments.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "extended",
+        "type": "boolean"
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "items": {
+          "$ref": "../base/objects.json#/definitions/base_user_group_fields"
+        }
+      },
+      {
+        "name": "comment_id",
+        "description": "Comment ID.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "thread_items_count",
+        "description": "Count items in threads.",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 10
+      }
+    ]
+  },
   "wall.search": {
     "description": "Allows to search posts on user or community walls.",
     "tokens": [
