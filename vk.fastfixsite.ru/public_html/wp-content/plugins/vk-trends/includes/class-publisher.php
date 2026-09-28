@@ -29,6 +29,11 @@ final class VKT_Publisher {
                 admin_level tinyint unsigned NOT NULL DEFAULT 0,
                 can_post tinyint unsigned NOT NULL DEFAULT 0,
                 enabled tinyint unsigned NOT NULL DEFAULT 1,
+                callback_code varchar(32) NOT NULL DEFAULT '',
+                callback_secret varchar(255) NOT NULL DEFAULT '',
+                callback_server int unsigned NOT NULL DEFAULT 0,
+                callback_status varchar(20) NOT NULL DEFAULT '',
+                callback_at datetime DEFAULT NULL,
                 synced_at datetime NOT NULL,
                 created_at datetime NOT NULL,
                 PRIMARY KEY  (id),
@@ -42,6 +47,8 @@ final class VKT_Publisher {
                 signed tinyint unsigned NOT NULL DEFAULT 0,
                 close_comments tinyint unsigned NOT NULL DEFAULT 0,
                 origin varchar(20) NOT NULL DEFAULT 'manual',
+                series_id varchar(40) NOT NULL DEFAULT '',
+                series_title varchar(255) NOT NULL DEFAULT '',
                 editor_status varchar(20) NOT NULL DEFAULT 'awaiting',
                 status varchar(20) NOT NULL DEFAULT 'scheduled',
                 scheduled_at datetime NOT NULL,
@@ -50,7 +57,8 @@ final class VKT_Publisher {
                 updated_at datetime NOT NULL,
                 PRIMARY KEY  (id),
                 KEY schedule (status,scheduled_at),
-                KEY author (user_id,id)",
+                KEY author (user_id,id),
+                KEY series (user_id,series_id)",
             'outbound_deliveries' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
                 outbound_post_id bigint unsigned NOT NULL,
                 group_id bigint unsigned NOT NULL,
@@ -453,6 +461,9 @@ final class VKT_Publisher {
                 'signed' => empty( $data['signed'] ) ? 0 : 1,
                 'close_comments' => empty( $data['close_comments'] ) ? 0 : 1,
                 'origin' => $origin,
+                // Запись серии помнит её: так серию видно в сетке и её можно отменить целиком.
+                'series_id' => preg_match( '/^s[0-9a-z]{6,39}$/', (string) ( $data['series_id'] ?? '' ) ) ? $data['series_id'] : '',
+                'series_title' => mb_substr( sanitize_text_field( (string) ( $data['series_title'] ?? '' ) ), 0, 255 ),
                 'editor_status' => $approval_required ? 'awaiting' : 'approved',
                 'status' => $status,
                 'scheduled_at' => $scheduled_at,
@@ -533,6 +544,7 @@ final class VKT_Publisher {
         return array(
             'groups' => $groups,
             'posts' => $posts,
+            'series' => self::series_overview(),
             'status' => array(
                 'token_ready' => $native_media || VKT_Community::any_key(),
                 'community_only' => ! $native_media && VKT_Community::any_key(),
@@ -648,6 +660,9 @@ final class VKT_Publisher {
         }
         $created = array();
         $failed = array();
+        $series_id = 's' . strtolower( wp_generate_password( 12, false ) );
+        $title = trim( sanitize_text_field( (string) ( $data['title'] ?? '' ) ) );
+        $series_title = mb_substr( '' !== $title ? $title : 'Серия от ' . wp_date( 'd.m H:i' ), 0, 255 );
         foreach ( $slots as $index => $slot ) {
             $when = is_array( $slot ) ? (string) ( $slot['scheduled_at'] ?? '' ) : '';
             $timestamp = '' === $when ? false : strtotime( $when );
@@ -667,6 +682,8 @@ final class VKT_Publisher {
                 'scheduled_at' => $when,
                 'signed' => $data['signed'] ?? false,
                 'close_comments' => $data['close_comments'] ?? false,
+                'series_id' => $series_id,
+                'series_title' => $series_title,
             ) );
             if ( is_wp_error( $result ) ) {
                 $failed[] = array( 'index' => (int) $index, 'scheduled_at' => $when, 'error' => $result->get_error_message() );
@@ -677,7 +694,51 @@ final class VKT_Publisher {
         if ( ! $created ) {
             return self::error( 'Ни одна запись серии не создана. Первая причина: ' . ( $failed[0]['error'] ?? 'неизвестна' ), 422 );
         }
-        return array( 'created' => count( $created ), 'posts' => $created, 'failed' => $failed );
+        return array( 'created' => count( $created ), 'posts' => $created, 'failed' => $failed, 'series_id' => $series_id, 'title' => $series_title );
+    }
+
+    /**
+     * Запущенные серии кабинета и записи для сетки. Кроме серий в сетку идут
+     * все ещё не отправленные записи: серии, поставленные до появления
+     * отметки серии, тоже должны быть видны.
+     */
+    public static function series_overview() {
+        global $wpdb;
+        $user_id = VKT_Account::id();
+        $posts_table = VKT_Store::table( 'outbound_posts' );
+        $series = (array) $wpdb->get_results( $wpdb->prepare(
+            "SELECT series_id,MAX(series_title) AS title,COUNT(*) AS total,MIN(scheduled_at) AS first_at,MAX(scheduled_at) AS last_at,
+                SUM(status IN ('scheduled','queued','draft')) AS waiting,SUM(status='published') AS published,
+                SUM(status IN ('failed','partial')) AS failed,SUM(status='cancelled') AS cancelled,MAX(created_at) AS created_at
+             FROM $posts_table WHERE user_id=%d AND series_id<>'' GROUP BY series_id ORDER BY created_at DESC LIMIT 20",
+            $user_id
+        ), ARRAY_A );
+        $ids = array_map( static fn( $row ) => $row['series_id'], $series );
+        $filter = $ids ? " OR p.series_id IN ('" . implode( "','", array_map( 'esc_sql', $ids ) ) . "')" : '';
+        $posts = (array) $wpdb->get_results( $wpdb->prepare(
+            "SELECT p.id,p.series_id,p.series_title,p.scheduled_at,p.published_at,p.status,LEFT(p.message,140) AS message,
+                (SELECT GROUP_CONCAT(COALESCE(NULLIF(g.name,''),CONCAT('club',d.group_id)) SEPARATOR ', ') FROM " . VKT_Store::table( 'outbound_deliveries' ) . ' d LEFT JOIN ' . VKT_Store::table( 'publishing_groups' ) . " g ON g.group_id=d.group_id AND g.user_id=p.user_id WHERE d.outbound_post_id=p.id) AS groups_names
+             FROM $posts_table p WHERE p.user_id=%d AND (p.status IN ('scheduled','queued','draft')$filter) ORDER BY p.scheduled_at LIMIT 1500",
+            $user_id
+        ), ARRAY_A );
+        return array( 'list' => $series, 'posts' => $posts );
+    }
+
+    /** Отменяет всё ещё не отправленное в серии; опубликованное остаётся. */
+    public static function cancel_series( $series_id ) {
+        global $wpdb;
+        $series_id = (string) $series_id;
+        if ( ! preg_match( '/^s[0-9a-z]{6,39}$/', $series_id ) ) {
+            return self::error( 'Серия не найдена.', 404 );
+        }
+        $ids = $wpdb->get_col( $wpdb->prepare(
+            'SELECT id FROM ' . VKT_Store::table( 'outbound_posts' ) . " WHERE user_id=%d AND series_id=%s AND status IN ('scheduled','queued','draft')",
+            VKT_Account::id(), $series_id
+        ) );
+        foreach ( $ids as $id ) {
+            self::cancel( (int) $id );
+        }
+        return array( 'cancelled' => count( $ids ) );
     }
 
     public static function retry( $post_id ) {

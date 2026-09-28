@@ -47,7 +47,166 @@ final class VKT_Replies {
                 KEY ready (status,available_at),
                 KEY author (user_id,id),
                 KEY target (user_id,group_id,post_id,comment_id)",
+            // Лента комментариев группы: события Callback API и обход последних
+            // записей. Общая для группы — её видит каждый кабинет, который ведёт группу.
+            'comment_inbox' => "id bigint unsigned NOT NULL AUTO_INCREMENT,
+                group_id bigint unsigned NOT NULL,
+                post_id bigint unsigned NOT NULL,
+                comment_id bigint unsigned NOT NULL,
+                thread_id bigint unsigned NOT NULL DEFAULT 0,
+                from_id bigint NOT NULL DEFAULT 0,
+                author_name varchar(255) NOT NULL DEFAULT '',
+                author_photo varchar(500) NOT NULL DEFAULT '',
+                text text NOT NULL,
+                post_text varchar(600) NOT NULL DEFAULT '',
+                has_media tinyint unsigned NOT NULL DEFAULT 0,
+                deleted tinyint unsigned NOT NULL DEFAULT 0,
+                source varchar(10) NOT NULL DEFAULT 'scan',
+                commented_at datetime NOT NULL,
+                received_at datetime NOT NULL,
+                PRIMARY KEY  (id),
+                UNIQUE KEY comment (group_id,comment_id),
+                KEY feed (group_id,commented_at),
+                KEY thread (group_id,thread_id)",
         );
+    }
+
+    /**
+     * Кладёт комментарий в ленту. $item — объект комментария VK: из события
+     * wall_reply_* или из wall.getComments. Повтор того же комментария
+     * обновляет текст — так ложатся и правки.
+     */
+    public static function ingest( $group_id, $item, $source = 'scan', $post_text = '', $author = array() ) {
+        global $wpdb;
+        $group_id = absint( $group_id );
+        $comment_id = absint( $item['id'] ?? 0 );
+        $post_id = absint( $item['post_id'] ?? 0 );
+        if ( ! $group_id || ! $comment_id || ! $post_id ) {
+            return false;
+        }
+        $stack = array_values( array_filter( array_map( 'absint', (array) ( $item['parents_stack'] ?? array() ) ) ) );
+        $table = VKT_Store::table( 'comment_inbox' );
+        $now = gmdate( 'Y-m-d H:i:s' );
+        return false !== $wpdb->query( $wpdb->prepare(
+            "INSERT INTO $table (group_id,post_id,comment_id,thread_id,from_id,author_name,author_photo,text,post_text,has_media,deleted,source,commented_at,received_at)
+             VALUES (%d,%d,%d,%d,%d,%s,%s,%s,%s,%d,0,%s,%s,%s)
+             ON DUPLICATE KEY UPDATE text=VALUES(text),has_media=VALUES(has_media),deleted=0,
+                author_name=IF(VALUES(author_name)<>'',VALUES(author_name),author_name),author_photo=IF(VALUES(author_photo)<>'',VALUES(author_photo),author_photo),
+                post_text=IF(VALUES(post_text)<>'',VALUES(post_text),post_text),thread_id=IF(VALUES(thread_id)>0,VALUES(thread_id),thread_id)",
+            $group_id, $post_id, $comment_id, $stack[0] ?? absint( $item['thread_id'] ?? 0 ), (int) ( $item['from_id'] ?? 0 ),
+            mb_substr( sanitize_text_field( (string) ( $author['name'] ?? '' ) ), 0, 255 ),
+            esc_url_raw( (string) ( $author['photo'] ?? '' ), array( 'https' ) ),
+            mb_substr( sanitize_textarea_field( (string) ( $item['text'] ?? '' ) ), 0, 4000 ),
+            mb_substr( sanitize_textarea_field( (string) $post_text ), 0, 600 ),
+            empty( $item['attachments'] ) ? 0 : 1,
+            'callback' === $source ? 'callback' : 'scan',
+            gmdate( 'Y-m-d H:i:s', absint( $item['date'] ?? 0 ) ?: time() ),
+            $now
+        ) );
+    }
+
+    /** Удалённый в VK комментарий пропадает из ленты, но строка остаётся — на случай восстановления. */
+    public static function forget_comment( $group_id, $comment_id ) {
+        global $wpdb;
+        $wpdb->update( VKT_Store::table( 'comment_inbox' ), array( 'deleted' => 1 ), array( 'group_id' => absint( $group_id ), 'comment_id' => absint( $comment_id ) ) );
+    }
+
+    /**
+     * Обходит последние записи группы и складывает их комментарии в ленту.
+     * Нужен, чтобы увидеть уже существующие комментарии: Callback присылает
+     * только новые, с момента подключения.
+     */
+    public static function scan( $group_id ) {
+        $posts = self::posts( $group_id );
+        if ( is_wp_error( $posts ) ) {
+            return $posts;
+        }
+        $with = array_slice( array_values( array_filter( $posts['posts'], static fn( $post ) => $post['comments'] > 0 ) ), 0, 10 );
+        $found = 0;
+        foreach ( $with as $post ) {
+            $thread = self::thread( $group_id, $post['id'] );
+            if ( is_wp_error( $thread ) ) {
+                return $found ? array( 'posts' => count( $with ), 'comments' => $found, 'warning' => $thread->get_error_message() ) : $thread;
+            }
+            foreach ( $thread['comments'] as $comment ) {
+                foreach ( array_merge( array( $comment ), $comment['thread'] ) as $index => $item ) {
+                    $raw = array( 'id' => $item['id'], 'post_id' => $post['id'], 'from_id' => $item['from_id'], 'text' => $item['text'], 'date' => strtotime( $item['date'] . ' UTC' ), 'attachments' => $item['has_media'] ? array( 1 ) : array(), 'thread_id' => $index ? $comment['id'] : 0 );
+                    if ( self::ingest( $group_id, $raw, 'scan', $post['text'], array( 'name' => $item['author'], 'photo' => $item['photo'] ) ) ) {
+                        ++$found;
+                    }
+                }
+            }
+        }
+        return array( 'posts' => count( $with ), 'comments' => $found );
+    }
+
+    /**
+     * Лента комментариев группы: сначала новые. Ответ группы в ветке и ответ
+     * из очереди помечают комментарий, «open» оставляет только ждущие ответа.
+     */
+    public static function inbox( $group_id, $filter = 'open', $offset = 0 ) {
+        global $wpdb;
+        $group = self::group( $group_id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $group_id = absint( $group['group_id'] );
+        $inbox = VKT_Store::table( 'comment_inbox' );
+        $replies = VKT_Store::table( 'comment_replies' );
+        $answered = "EXISTS (SELECT 1 FROM $inbox a WHERE a.group_id=c.group_id AND a.from_id=-c.group_id AND a.deleted=0 AND a.comment_id>c.comment_id AND a.thread_id=IF(c.thread_id>0,c.thread_id,c.comment_id))";
+        $queued = $wpdb->prepare( "(SELECT r.status FROM $replies r WHERE r.user_id=%d AND r.group_id=c.group_id AND r.comment_id=c.comment_id AND r.status IN ('pending','sending','sent','failed') ORDER BY r.id DESC LIMIT 1)", VKT_Account::id() );
+        $where = $wpdb->prepare( 'c.group_id=%d AND c.deleted=0 AND c.from_id<>-c.group_id', $group_id );
+        $having = 'open' === $filter ? " HAVING answered=0 AND (queued IS NULL OR queued='failed')" : '';
+        $rows = (array) $wpdb->get_results(
+            "SELECT c.*,$answered AS answered,$queued AS queued FROM $inbox c WHERE $where$having ORDER BY c.commented_at DESC,c.id DESC LIMIT 50 OFFSET " . max( 0, min( 5000, absint( $offset ) ) ),
+            ARRAY_A
+        );
+        self::fill_authors( $rows );
+        $comments = array_map( static fn( $row ) => array(
+            'id' => (int) $row['comment_id'],
+            'post_id' => (int) $row['post_id'],
+            'post_text' => (string) $row['post_text'],
+            'from_id' => (int) $row['from_id'],
+            'author' => '' !== $row['author_name'] ? $row['author_name'] : 'id' . $row['from_id'],
+            'photo' => (string) $row['author_photo'],
+            'date' => $row['commented_at'],
+            'text' => (string) $row['text'],
+            'has_media' => (bool) $row['has_media'],
+            'deleted' => false,
+            'is_group' => false,
+            'answered' => (bool) $row['answered'],
+            'queued' => (string) ( $row['queued'] ?? '' ),
+            'in_thread' => (int) $row['thread_id'] > 0,
+            'thread' => array(),
+        ), $rows );
+        $totals = (array) $wpdb->get_row( "SELECT COUNT(*) AS total,MAX(received_at) AS last_at FROM $inbox c WHERE $where", ARRAY_A );
+        return array( 'comments' => $comments, 'total' => (int) ( $totals['total'] ?? 0 ), 'last_at' => $totals['last_at'] ?? null, 'filter' => 'open' === $filter ? 'open' : 'all', 'offset' => absint( $offset ) );
+    }
+
+    /** Callback присылает только ID автора: имена и аватары дотягиваем одним users.get и запоминаем. */
+    private static function fill_authors( &$rows ) {
+        global $wpdb;
+        $ids = array_unique( array_filter( array_map( static fn( $row ) => '' === $row['author_name'] && (int) $row['from_id'] > 0 ? (int) $row['from_id'] : 0, $rows ) ) );
+        if ( ! $ids ) {
+            return;
+        }
+        $result = VKT_API::request( 'users.get', array( 'user_ids' => implode( ',', array_slice( $ids, 0, 100 ) ), 'fields' => 'photo_50' ), 'comments' );
+        if ( is_wp_error( $result ) ) {
+            return;
+        }
+        $people = array();
+        foreach ( (array) ( $result['response'] ?? array() ) as $person ) {
+            $people[ (int) ( $person['id'] ?? 0 ) ] = array( trim( sanitize_text_field( ( $person['first_name'] ?? '' ) . ' ' . ( $person['last_name'] ?? '' ) ) ), esc_url_raw( (string) ( $person['photo_50'] ?? '' ), array( 'https' ) ) );
+        }
+        foreach ( $rows as &$row ) {
+            $known = $people[ (int) $row['from_id'] ] ?? null;
+            if ( $known && '' === $row['author_name'] ) {
+                $row['author_name'] = $known[0];
+                $row['author_photo'] = $known[1];
+                $wpdb->update( VKT_Store::table( 'comment_inbox' ), array( 'author_name' => $known[0], 'author_photo' => $known[1] ), array( 'from_id' => (int) $row['from_id'] ) );
+            }
+        }
+        unset( $row );
     }
 
     private static function error( $message, $status = 400 ) {
@@ -76,11 +235,12 @@ final class VKT_Replies {
         global $wpdb;
         $user_id = VKT_Account::id();
         $groups = (array) $wpdb->get_results( $wpdb->prepare(
-            'SELECT id,group_id,name,screen_name,photo FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d AND enabled=1 AND can_post=1 ORDER BY name,id LIMIT 1000',
+            'SELECT id,group_id,name,screen_name,photo,callback_status,callback_at,(callback_code<>\'\') AS callback_ready FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d AND enabled=1 AND can_post=1 ORDER BY name,id LIMIT 1000',
             $user_id
         ), ARRAY_A );
         foreach ( $groups as &$group ) {
             $group['sender'] = self::sender( $group['group_id'] );
+            $group['has_key'] = VKT_Community::has_key( $group['group_id'] );
         }
         unset( $group );
         $queue = (array) $wpdb->get_results( $wpdb->prepare(

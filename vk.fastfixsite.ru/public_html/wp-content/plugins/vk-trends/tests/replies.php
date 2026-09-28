@@ -85,7 +85,7 @@ class VKT_SQLite_WPDB {
     public function __construct() {
         $this->pdo = new PDO( 'sqlite::memory:' );
         $this->pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-        $this->pdo->exec( 'CREATE TABLE wp_vkt_publishing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, name TEXT, screen_name TEXT, photo TEXT, enabled INT, can_post INT)' );
+        $this->pdo->exec( 'CREATE TABLE wp_vkt_publishing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, name TEXT, screen_name TEXT, photo TEXT, enabled INT, can_post INT, callback_code TEXT DEFAULT \'\', callback_status TEXT DEFAULT \'\', callback_at TEXT)' );
         $this->pdo->exec( "CREATE TABLE wp_vkt_comment_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, post_id INT, comment_id INT, author_id INT DEFAULT 0, author_name TEXT DEFAULT '', comment_text TEXT, message TEXT, origin TEXT DEFAULT 'manual', status TEXT DEFAULT 'pending', attempts INT DEFAULT 0, available_at TEXT, vk_comment_id INT, guid TEXT, error TEXT DEFAULT '', sent_at TEXT, created_at TEXT, updated_at TEXT)" );
     }
     public function prepare( $sql, ...$args ) {

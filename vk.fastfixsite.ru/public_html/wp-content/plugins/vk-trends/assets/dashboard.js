@@ -101,6 +101,8 @@
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
+    // Лента — все комментарии группы сразу (Callback и обход записей); «По записям» — выбор записи и её ветки.
+    let commentsMode = 'feed', commentsFeed = null, commentsFeedFilter = 'open';
     let commentsBulk = {common: '', instruction: '', interval: 3, jitter: true, start: ''};
     const commentsSelected = new Map(), commentsDrafts = new Map(), commentsIndex = new Map(), commentsAiKeys = new Set();
     // Где чинить ошибку, если сервер не подсказал сам: по тексту узнаём, какой ключ или раздел виноват.
@@ -183,7 +185,8 @@
                 postsData = await request('posts?' + query.toString());
             }
             if (view === 'communities') communitiesData = (await request('communities')).communities || [];
-            if (view === 'publishing') publishingData = await request('publishing');
+            // Серия берёт группы и уже запущенные записи из тех же данных, что и автопостинг.
+            if (view === 'publishing' || view === 'series') publishingData = await request('publishing');
             if (view === 'comments') await loadComments();
             if (view === 'users' && isAdmin()) usersData = (await request('users')).users || [];
         } catch (error) { toast(error.message, true, error.fix); }
@@ -309,14 +312,17 @@
 
     const seriesFilled = () => seriesSlots.filter(slot => slot.message.trim() || slot.media.length || slot.attachments.trim());
 
+    // Записи, которые уже в очереди: серии и одиночные запланированные. В сетке они рядом с новыми слотами.
+    const queuedStatuses = {scheduled: ['по расписанию', ''], queued: ['в очереди', ''], draft: ['ждёт проверки', ''], published: ['опубликовано', 'green'], partial: ['частично', 'red'], failed: ['ошибка', 'red'], cancelled: ['отменено', '']};
+    const seriesPosts = () => (publishingData?.series?.posts || []).filter(post => post.status !== 'cancelled');
     function seriesCalendar() {
-        if (!seriesSlots.length) return `<div class="vkt-info">Сетки пока нет. Выберите период, дни и время — и нажмите «Построить сетку».</div>`;
+        const queued = seriesPosts();
+        if (!seriesSlots.length && !queued.length) return `<div class="vkt-info">Сетки пока нет. Выберите период, дни и время — и нажмите «Построить сетку».</div>`;
         const byDay = new Map();
-        seriesSlots.forEach((slot, index) => {
-            const key = slot.at.slice(0, 10);
-            if (!byDay.has(key)) byDay.set(key, []);
-            byDay.get(key).push({slot, index});
-        });
+        const put = (key, item) => { if (!byDay.has(key)) byDay.set(key, []); byDay.get(key).push(item); };
+        seriesSlots.forEach((slot, index) => put(slot.at.slice(0, 10), {slot, index, at: slot.at.slice(11)}));
+        queued.forEach(post => { const at = localStamp(parseDate(post.scheduled_at)); put(at.slice(0, 10), {post, at: at.slice(11)}); });
+        byDay.forEach(items => items.sort((a, b) => a.at.localeCompare(b.at)));
         const keys = [...byDay.keys()].sort();
         const first = new Date(`${keys[0]}T00:00`);
         const last = new Date(`${keys[keys.length - 1]}T00:00`);
@@ -329,7 +335,11 @@
         for (let i = 0; i < total; ++i) {
             const cursor = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
             const items = byDay.get(localStamp(cursor).slice(0, 10)) || [];
-            cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index}) => {
+            cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index, post, at}) => {
+                if (post) {
+                    const [label, tone] = queuedStatuses[post.status] || [post.status, ''];
+                    return `<div class="vkt-cal-slot is-queued is-${esc(post.status)}" title="${esc(post.series_title || 'Запланированная запись')}${post.groups_names ? ' → ' + esc(post.groups_names) : ''}"><strong>${esc(at)}</strong><span>${esc(String(post.message || 'Запись с вложением').slice(0, 70))}</span>${badge(esc(label), tone)}</div>`;
+                }
                 const filled = slot.message.trim() || slot.media.length || slot.attachments.trim();
                 return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${slot.media.length ? `<small>${icon('layers')} ${slot.media.length}</small>` : ''}</button>`;
             }).join('')}</div>`);
@@ -337,6 +347,22 @@
         return `<div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
     }
 
+    function runningSeries() {
+        const list = publishingData?.series?.list || [];
+        if (!list.length) return '';
+        const cards = list.map(item => {
+            const counts = [
+                Number(item.waiting) ? badge(`ждут: ${num(item.waiting)}`) : '',
+                Number(item.published) ? badge(`опубликовано: ${num(item.published)}`, 'green') : '',
+                Number(item.failed) ? badge(`с ошибкой: ${num(item.failed)}`, 'red') : '',
+                Number(item.cancelled) ? badge(`отменено: ${num(item.cancelled)}`) : '',
+            ].join('');
+            const next = seriesPosts().find(post => post.series_id === item.series_id && ['scheduled', 'queued', 'draft'].includes(post.status));
+            const groups = [...new Set(seriesPosts().filter(post => post.series_id === item.series_id).map(post => post.groups_names).filter(Boolean))].join(', ');
+            return `<div class="vkt-series-run"><div><strong>${esc(item.title)}</strong><small class="vkt-muted">${num(item.total)} записей · ${date(item.first_at)} — ${date(item.last_at)}${groups ? ` · ${esc(groups)}` : ''}${next ? ` · следующая ${date(next.scheduled_at)}` : ''}</small><div class="vkt-series-counts">${counts}</div></div><div class="vkt-table-actions">${Number(item.failed) ? `<a class="vkt-button" href="#publishing">Ошибки — «Автопостинг»</a>` : ''}${Number(item.waiting) ? button('Отменить оставшиеся', 'series-cancel', `data-id="${esc(item.series_id)}"`) : ''}</div></div>`;
+        }).join('');
+        return `<div class="vkt-section-title"><h2>Запущенные серии</h2><span class="vkt-muted">Записи серий видны и в календаре выше — с их статусом.</span></div><section class="vkt-panel vkt-series-runs">${cards}</section>`;
+    }
     function series() {
         if (!publishingData) return heading('Серия постов', 'Загружаем свои сообщества…') + '<div class="vkt-loading">Загружаем…</div>';
         const groups = (publishingData.groups || []).filter(group => Number(group.enabled) && Number(group.can_post));
@@ -376,9 +402,9 @@
                 <p class="vkt-help">${state.settings.publishing_review ? 'Включена ручная проверка: записи серии сохранятся черновиками и будут ждать подтверждения.' : 'Каждая запись уйдёт в своё время. Слоты в прошлом сервер отклонит.'}</p></form>
             </section>
             <section class="vkt-panel">
-                <div class="vkt-panel-heading"><div><h2>Календарь</h2><p>${seriesSlots.length ? `${seriesSlots.length} слотов, заполнено ${filled}. Нажмите на слот, чтобы вписать текст или приложить файлы.` : 'Слотов пока нет.'}</p></div></div>
+                <div class="vkt-panel-heading"><div><h2>Календарь</h2><p>${seriesSlots.length ? `${seriesSlots.length} слотов, заполнено ${filled}. Нажмите на слот, чтобы вписать текст или приложить файлы.` : 'Новых слотов пока нет.'}${seriesPosts().length ? ` Уже в очереди: ${seriesPosts().filter(post => ['scheduled', 'queued', 'draft'].includes(post.status)).length} — отмечены статусом.` : ''}</p></div></div>
                 ${seriesCalendar()}
-            </section></div>`;
+            </section></div>` + runningSeries();
     }
 
     function seriesSlotDialog(index) {
@@ -808,6 +834,8 @@
         trigger.disabled = true;
         try {
             const result = await act('series_queue', {
+                // Название серии — начало темы промпта: по нему серию узнают в списке запущенных.
+                title: seriesPrompt.trim().slice(0, 120),
                 groups,
                 signed: !!form.querySelector('input[name="signed"]')?.checked,
                 close_comments: !!form.querySelector('input[name="close_comments"]')?.checked,
@@ -918,7 +946,7 @@
             (publishingData.status.community_only ? '<div class="vkt-info">Подключены только ключи сообществ. Группы с ключом уже в списке адресатов; каждый ключ публикует только на стене своей группы и только текст — медиа VK ему запрещает.</div>' : '') +
             `<div class="vkt-stats">${stat('Своих групп', num(enabled.length), 'Включены и доступны для записи', 'people')}${stat('В очереди', num((totals.queued || 0) + (totals.scheduled || 0) + (totals.draft || 0)), state.settings.publishing_review ? 'Черновики ждут подтверждения' : 'Отправка сразу или по расписанию', 'check', 'purple')}${stat('Опубликовано', num(totals.published || 0), 'Полностью во все адресаты', 'send', 'green')}${stat('С ошибкой', num((totals.failed || 0) + (totals.partial || 0)), 'Можно повторить только неудачные адресаты', 'list', 'orange')}</div>` +
             `<div class="vkt-publishing-layout"><section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Новая запись</h2><p>Один текст можно подготовить сразу для нескольких сообществ.</p></div></div>${enabled.length ? `<form data-form="publishing" class="vkt-form"><fieldset class="vkt-publishing-groups"><legend>Куда публикуем</legend>${groupChoices}</fieldset><label>Текст записи<textarea name="message" rows="9" maxlength="16000" placeholder="Напишите текст поста…"></textarea></label>${aiReady ? `<div class="vkt-ai-row">${button(`${icon('fire')} Сгенерировать текст`, 'ai-text')}<small class="vkt-help">Черновик уйдёт в модель как основа.</small></div>${quotaNote(publishingData.status.ai)}` : ''}<fieldset class="vkt-media"><legend>Файлы с сервера</legend>${nativeMedia ? `<div id="vkt-composer-media" class="vkt-media-chips">${composerMediaHtml()}</div><div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*,video/mp4" data-media-upload hidden>${icon('plus')} Загрузить файл</label>${button(`${icon('layers')} Из медиатеки`, 'media-library')}${publishingData.status?.ai?.media_configured ? button(`${icon('fire')} Картинка`, 'ai-image') + button(`${icon('play')} Видео`, 'ai-video') : ''}</div><small class="vkt-help">До 10 файлов. Файл уходит в VK прямо с сервера: ID вложения плагин получает сам, отдельно для каждого сообщества.</small>` : '<div class="vkt-info vkt-info-warning">VK не разрешает ключу сообщества прикладывать медиа: загрузка фото закрыта ошибкой 27, видео — ошибкой 5, а ссылка на файл отклоняется кодом 100. Обходного пути нет. Сохраните в настройках пользовательский токен VK ID с правами <code>wall</code>, <code>photos</code>, <code>groups</code> и <code>video</code> — тогда файлы и генерация картинок станут доступны. Текст публикуется и сейчас.</div>'}</fieldset><label>Вложения VK или ссылка<textarea name="attachments" rows="3" class="vkt-code-input" placeholder="photo-123_456, video-123_789 или https://example.com"></textarea><small class="vkt-help">Необязательное поле для уже существующих вложений VK. До 10 ID через запятую; внешняя ссылка — только одна, и она должна вести на страницу с превью: прямой адрес картинки VK отклоняет.</small></label><label>Дата и время публикации<input type="datetime-local" name="scheduled_at"><small class="vkt-help">Оставьте пустым — запись отправится сразу после нажатия кнопки. Время вводится в часовом поясе вашего устройства.</small></label><div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="signed">Подписать запись моим именем</label><label class="vkt-check"><input type="checkbox" name="close_comments">Закрыть комментарии</label></div><p class="vkt-help">${state.settings.publishing_review ? 'Включена ручная проверка: запись сначала сохранится черновиком.' : 'Ручная проверка выключена: запись без даты будет опубликована сразу.'}</p><button class="vkt-button vkt-primary">${icon('send')} ${state.settings.publishing_review ? 'Сохранить на проверку' : 'Опубликовать / запланировать'}</button></form>` : empty(groups.length ? 'Нет доступных групп' : 'Подключите свои сообщества', groups.length ? 'Обновите список: право редактора могло быть отозвано, либо все группы выключены.' : 'Нажмите «Обновить мои группы»: VK вернёт сообщества, где вы администратор или редактор.')}</section>` +
-            `<aside class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Мои сообщества</h2><p>Отдельный список: наблюдаемые источники не получают права записи.</p></div>${button(`${icon('plus')} Добавить группу`, 'community-key-add')}</div>${groups.length ? `<div class="vkt-own-groups">${groups.map(group => `<div><span>${safeUrl(group.photo || '') ? `<img src="${safeUrl(group.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<strong>${esc(group.name || `club${group.group_id}`)}</strong><small><a href="https://vk.com/${esc(group.screen_name || `club${group.group_id}`)}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a></small></span><span>${Number(group.can_post) ? badge(Number(group.enabled) ? 'Включено' : 'Выключено', Number(group.enabled) ? 'green' : '') : badge('Нет права записи', 'red')}${Number(group.can_post) ? button(Number(group.enabled) ? 'Выключить' : 'Включить', 'publishing-group-toggle', `data-id="${Number(group.id)}" data-enabled="${Number(group.enabled) ? 0 : 1}"`) : ''}</span></div>`).join('')}</div>` : '<p class="vkt-muted">Список ещё не загружен из VK.</p>'}</aside></div>` +
+            `<aside class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Мои сообщества</h2><p>Отдельный список: наблюдаемые источники не получают права записи.</p></div>${button(`${icon('plus')} Добавить группу`, 'community-key-add')}</div>${groups.length ? `<div class="vkt-own-groups">${groups.map(group => `<div><span>${safeUrl(group.photo || '') ? `<img src="${safeUrl(group.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<strong>${esc(group.name || `club${group.group_id}`)}</strong><small><a href="https://vk.com/${esc(group.screen_name || `club${group.group_id}`)}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a></small></span><span>${Number(group.can_post) ? badge(Number(group.enabled) ? 'Включено' : 'Выключено', Number(group.enabled) ? 'green' : '') : badge('Нет права записи', 'red')}${Number(group.can_post) ? button(Number(group.enabled) ? 'Выключить' : 'Включить', 'publishing-group-toggle', `data-id="${Number(group.id)}" data-enabled="${Number(group.enabled) ? 0 : 1}"`) : ''}${button(icon('settings'), 'group-settings', `data-id="${Number(group.group_id)}" title="Настройки группы: ключ и Callback" aria-label="Настройки группы"`)}</span></div>`).join('')}</div>` : '<p class="vkt-muted">Список ещё не загружен из VK.</p>'}</aside></div>` +
             `<div class="vkt-section-title"><h2>История и очередь</h2><span class="vkt-muted">Последняя проверка cron: ${date(publishingData.status.last)}</span></div>` +
             (posts.length ? `<section class="vkt-panel vkt-table-wrap"><table class="vkt-publishing-table"><thead><tr><th>Запись</th><th>Когда</th><th>Статус</th><th>Сообщества</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Публикаций пока нет', 'Создайте первую запись: она появится здесь со статусом для каждой выбранной группы.'));
     }
@@ -938,14 +966,25 @@
             commentsPosts = null; commentsPost = null; commentsThread = null;
             commentsSelected.clear();
         }
-        if (commentsGroup && !commentsPosts && commentsData.status?.reading) {
+        if (commentsGroup && commentsMode === 'feed') {
+            try { commentsFeed = await act('comments_inbox', {group_id: commentsGroup, filter: commentsFeedFilter}); }
+            catch (error) { commentsFeed = {comments: [], total: 0, error: error.message}; }
+            indexThread();
+        }
+        if (commentsGroup && commentsMode === 'posts' && !commentsPosts && commentsData.status?.reading) {
             try { commentsPosts = await act('comments_posts', {group_id: commentsGroup}); }
             catch (error) { commentsPosts = {posts: [], total: 0, offset: 0, error: error.message}; }
         }
     }
+    // После ответа или действия с очередью перечитываем то, что сейчас на экране.
+    async function refreshComments() {
+        if (commentsMode === 'feed') { await loadComments(); render(); return; }
+        if (commentsPost) await openCommentsPost(commentsPost.id);
+    }
     // Комментарии записи и ветки кладутся в общий индекс: по ключу «запись_комментарий» их находят форма ответа и выбор.
     function indexThread() {
         commentsIndex.clear();
+        (commentsFeed?.comments || []).forEach(item => commentsIndex.set(`${item.post_id}_${item.id}`, {post: {id: item.post_id, text: item.post_text || ''}, comment: item}));
         if (!commentsThread || !commentsPost) return;
         (commentsThread.comments || []).forEach(comment => {
             [comment, ...(comment.thread || [])].forEach(item => commentsIndex.set(`${commentsPost.id}_${item.id}`, {post: commentsPost, comment: item}));
@@ -993,6 +1032,50 @@
         const more = Number(commentsThread.total) > all.length ? button(`Ещё комментарии · ${num(Number(commentsThread.total) - all.length)}`, 'comments-more') : '';
         return `<section class="vkt-panel vkt-comments-thread">${head}${toolbar}<div class="vkt-comments-list">${list}</div>${more}</section>`;
     }
+    // ——— Лента комментариев и Callback группы ———
+    const callbackStatuses = {ok: ['Callback работает', 'green'], manual: ['Callback: ждёт подтверждения в VK', ''], wait: ['Callback: ждёт подтверждения', ''], failed: ['Callback: VK не достучался до сайта', 'red'], unconfigured: ['Callback не настроен в VK', 'red'], '': ['Callback не подключён', '']};
+    const callbackBadge = (status, ready) => badge(...(callbackStatuses[ready || status ? status : ''] || [esc(status), '']));
+    function commentsFeedPanel(group) {
+        const feed = commentsFeed;
+        const callback = group && Number(group.callback_ready)
+            ? `${callbackBadge(group.callback_status, true)}${group.callback_at ? ` <small class="vkt-muted">последнее событие ${ago(group.callback_at)}</small>` : ''}`
+            : `<span class="vkt-muted">Новые комментарии не приходят сами — подключите Callback в</span> ${button('настройках группы', 'group-settings', `data-id="${Number(group?.group_id)}"`)}`;
+        const head = `<div class="vkt-toolbar-row"><div class="vkt-chips"><button type="button" class="vkt-chip-button ${commentsFeedFilter === 'open' ? 'is-active' : ''}" data-command="comments-feed-filter" data-value="open">Без ответа</button><button type="button" class="vkt-chip-button ${commentsFeedFilter === 'all' ? 'is-active' : ''}" data-command="comments-feed-filter" data-value="all">Все</button></div><div class="vkt-toolbar-right">${button(`${icon('refresh')} Загрузить из VK`, 'comments-scan')}${(feed?.comments || []).some(commentOpen) ? button('Отметить все без ответа', 'comments-select-open') : ''}</div></div><div class="vkt-feed-callback">${callback}</div>`;
+        if (!feed) return `<section class="vkt-panel vkt-comments-thread">${head}<div class="vkt-loading">Загружаем ленту…</div></section>`;
+        if (feed.error) return `<section class="vkt-panel vkt-comments-thread">${head}<div class="vkt-info vkt-info-warning">${esc(feed.error)}</div></section>`;
+        const list = (feed.comments || []).map(comment => {
+            const link = `https://vk.com/wall-${commentsGroup}_${Number(comment.post_id)}?reply=${Number(comment.id)}`;
+            return `<div class="vkt-feed-item"><a class="vkt-feed-post" href="${link}" target="_blank" rel="noopener noreferrer">${comment.in_thread ? 'Ответ в ветке · ' : ''}${comment.post_text ? esc(String(comment.post_text).slice(0, 90)) : `Запись #${Number(comment.post_id)}`} ↗</a>${commentItem(comment, {id: comment.post_id, text: comment.post_text || ''})}</div>`;
+        }).join('');
+        const emptyText = Number(feed.total)
+            ? 'Все комментарии уже с ответом или в очереди. Переключитесь на «Все», чтобы увидеть их.'
+            : 'В ленте пока пусто. Нажмите «Загрузить из VK» — плагин соберёт комментарии последних записей. Новые будут приходить сами, когда подключён Callback.';
+        return `<section class="vkt-panel vkt-comments-thread">${head}<div class="vkt-comments-list">${list || `<p class="vkt-muted">${emptyText}</p>`}</div></section>`;
+    }
+    async function groupSettings(groupId) {
+        const info = await act('callback_info', {group_id: groupId});
+        const group = [...(commentsData?.groups || []), ...(publishingData?.groups || [])].find(item => Number(item.group_id) === Number(groupId)) || {};
+        const title = esc(group.name || `club${groupId}`);
+        const suggested = Array.from(crypto.getRandomValues(new Uint8Array(12)), byte => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[byte % 56]).join('');
+        const events = Object.values(info.events || {}).map(label => esc(label)).join(', ');
+        modal(`<h2>Настройки группы · ${title}</h2>
+            <h3>Ключ сообщества</h3>
+            ${info.has_key ? `<p>${badge('ключ сохранён', 'green')} <span class="vkt-muted">Заменить или убрать его можно в разделе «Публикация».</span></p>` : `<p class="vkt-muted">${esc(communityKeyHelp)}</p>${communityKeyForm().replace('placeholder="Необязательно: vk.com/club123 или 123"', `value="club${Number(groupId)}"`)}`}
+            <hr class="vkt-settings-sep">
+            <h3>Callback API — комментарии в реальном времени</h3>
+            <p>${callbackBadge(info.status, info.configured)}${info.last_event ? ` <span class="vkt-muted">последнее событие ${ago(info.last_event)}</span>` : ''}</p>
+            <p class="vkt-muted">VK сам присылает на сайт новые, изменённые и удалённые комментарии группы — они появляются в ленте «Комментариев» без обхода записей. События: ${events}.</p>
+            <div class="vkt-form-actions">${button(`${icon('check')} Подключить автоматически`, 'callback-setup', `data-id="${Number(groupId)}" ${info.has_key ? '' : 'disabled'}`, true)}${info.configured ? button('Отключить', 'callback-forget', `data-id="${Number(groupId)}"`) : ''}</div>
+            <small class="vkt-help">${info.has_key ? 'Нужно право ключа «управление сообществом»: плагин сам зарегистрирует сайт в группе, задаст секретный ключ и включит события.' : 'Для автоматического подключения нужен ключ группы. Или настройте вручную ниже.'}</small>
+            <details class="vkt-callback-manual"><summary>Настроить вручную</summary>
+                <ol class="vkt-muted"><li>В группе VK: Управление → Работа с API → Callback API → «Добавить сервер», версия API ${esc(state.settings.api_version || '5.199')}.</li><li>Адрес — скопируйте отсюда. Строку подтверждения из VK и секретный ключ впишите ниже и сохраните.</li><li>В VK впишите тот же секретный ключ, нажмите «Сохранить», затем «Подтвердить».</li><li>Во вкладке «Типы событий» отметьте комментарии на стене: добавление, редактирование, удаление, восстановление.</li></ol>
+                <form data-form="callback-manual" data-id="${Number(groupId)}" class="vkt-form">
+                    <label>Адрес сервера<input class="vkt-code-input" value="${esc(info.url)}" readonly data-select-all></label>
+                    <div class="vkt-form-row"><label>Строка подтверждения из VK<input name="code" class="vkt-code-input" required value="${esc(info.code || '')}" placeholder="12381946"></label><label>Секретный ключ<input name="secret" class="vkt-code-input" required value="${info.has_secret ? '' : esc(suggested)}" placeholder="${info.has_secret ? 'сохранён — впишите, чтобы заменить' : ''}"></label></div>
+                    <button type="submit" class="vkt-button">Сохранить</button>
+                </form>
+            </details>`);
+    }
     function comments() {
         if (!commentsData) return heading('Комментарии', 'Загружаем свои сообщества и очередь ответов…') + '<div class="vkt-loading">Загружаем…</div>';
         const groups = commentsData.groups || [];
@@ -1020,9 +1103,12 @@
         }).join('');
         const bar = commentsSelected.size ? `<div class="vkt-comments-bulkbar"><span>Выбрано комментариев: <strong>${num(commentsSelected.size)}</strong></span>${button(`${icon('send')} Ответить выбранным`, 'comments-bulk', '', true)}${button('Снять выбор', 'comments-clear')}</div>` : '';
         return heading('Комментарии', 'Ответы от имени своих сообществ: по одному или пачкой через очередь с паузами между ответами.', actions) +
-            `<section class="vkt-panel vkt-posts-toolbar"><div class="vkt-toolbar-row"><label class="vkt-comments-group">Сообщество<select data-comments-group>${groups.map(item => `<option value="${Number(item.group_id)}" ${Number(item.group_id) === commentsGroup ? 'selected' : ''}>${esc(item.name || `club${item.group_id}`)}</option>`).join('')}</select></label>${group ? `<a href="https://vk.com/${esc(group.screen_name || `club${group.group_id}`)}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a>` : ''}</div>${sender}</section>` +
+            `<section class="vkt-panel vkt-posts-toolbar"><div class="vkt-toolbar-row"><label class="vkt-comments-group">Сообщество<select data-comments-group>${groups.map(item => `<option value="${Number(item.group_id)}" ${Number(item.group_id) === commentsGroup ? 'selected' : ''}>${esc(item.name || `club${item.group_id}`)}</option>`).join('')}</select></label>${group ? `<a href="https://vk.com/${esc(group.screen_name || `club${group.group_id}`)}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a>` : ''}${group ? button(`${icon('settings')} Настройки группы`, 'group-settings', `data-id="${Number(group.group_id)}"`) : ''}</div>${sender}</section>` +
             `<div class="vkt-stats">${stat('В очереди', num((totals.pending || 0) + (totals.sending || 0)), `В группу не чаще раза в ${Math.round((status.min_gap || 60) / 60)} мин.`, 'clock', 'purple')}${stat('Отправлено', num(totals.sent || 0), 'Из последних 150 ответов', 'send', 'green')}${stat('С ошибкой', num(totals.failed || 0), 'Можно повторить', 'list', 'orange')}${stat('Выбрано', num(commentsSelected.size), 'Для ответа пачкой', 'check')}</div>` +
-            `<div class="vkt-comments-layout"><section class="vkt-panel vkt-comments-posts"><div class="vkt-panel-heading"><div><h2>Записи</h2><p>Последние записи стены.</p></div></div>${postList}</section>${commentsThreadPanel()}</div>` +
+            `<div class="vkt-chips vkt-comments-modes"><button type="button" class="vkt-chip-button ${commentsMode === 'feed' ? 'is-active' : ''}" data-command="comments-mode" data-value="feed">${icon('comment')} Лента комментариев</button><button type="button" class="vkt-chip-button ${commentsMode === 'posts' ? 'is-active' : ''}" data-command="comments-mode" data-value="posts">${icon('post')} По записям</button></div>` +
+            (commentsMode === 'feed'
+                ? commentsFeedPanel(group)
+                : `<div class="vkt-comments-layout"><section class="vkt-panel vkt-comments-posts"><div class="vkt-panel-heading"><div><h2>Записи</h2><p>Последние записи стены.</p></div></div>${postList}</section>${commentsThreadPanel()}</div>`) +
             bar +
             `<div class="vkt-section-title"><h2>Очередь ответов</h2><span class="vkt-muted">Последний разбор очереди: ${date(status.last)}${(totals.pending || 0) ? ` · ${button('Отменить все ожидающие', 'comments-cancel-all')}` : ''}</span></div>` +
             (queue.length ? `<section class="vkt-panel vkt-table-wrap"><table class="vkt-comments-table"><thead><tr><th>Комментарий</th><th>Ответ</th><th>Сообщество</th><th>Когда</th><th>Статус</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Ответов пока нет', 'Ответьте на комментарий или отметьте несколько и поставьте ответы в очередь.'));
@@ -1056,9 +1142,12 @@
         const key = el.dataset.key || '';
         if (command==='comments-reply-open') { commentsReplyKey = key; render(); $(`[data-form="comment-reply"] textarea`)?.focus(); return; }
         if (command==='comments-reply-close') { commentsReplyKey = ''; render(); return; }
+        if (command==='comments-mode') { commentsMode = el.dataset.value === 'posts' ? 'posts' : 'feed'; commentsReplyKey = ''; render(); try { await loadComments(); } catch (error) { toast(error.message, true, error.fix); } render(); return; }
+        if (command==='comments-feed-filter') { commentsFeedFilter = el.dataset.value === 'all' ? 'all' : 'open'; commentsFeed = null; render(); try { await loadComments(); } catch (error) { toast(error.message, true, error.fix); } render(); return; }
         if (command==='comments-filter') { commentsOnlyOpen = el.dataset.value === 'open'; render(); return; }
         if (command==='comments-select-open') {
-            (commentsThread?.comments || []).filter(commentOpen).forEach(comment => { const id = `${commentsPost.id}_${comment.id}`; commentsSelected.set(id, commentPayload(id)); });
+            if (commentsMode === 'feed') (commentsFeed?.comments || []).filter(commentOpen).forEach(comment => { const id = `${comment.post_id}_${comment.id}`; commentsSelected.set(id, commentPayload(id)); });
+            else (commentsThread?.comments || []).filter(commentOpen).forEach(comment => { const id = `${commentsPost.id}_${comment.id}`; commentsSelected.set(id, commentPayload(id)); });
             render(); return;
         }
         if (command==='comments-clear') { commentsSelected.clear(); render(); return; }
@@ -1072,6 +1161,12 @@
         el.disabled = true;
         try {
             if (command==='comments-post') { await openCommentsPost(el.dataset.id); return; }
+            if (command==='comments-scan') {
+                toast('Собираем комментарии последних записей — это до минуты…');
+                const result = await act('comments_scan', {group_id: commentsGroup});
+                toast(`Записей с комментариями: ${result.posts}, комментариев в ленте: ${result.comments}.${result.warning ? ' ' + result.warning : ''}`, !!result.warning);
+                await refreshComments(); return;
+            }
             if (command==='comments-more') { await openCommentsPost(commentsPost.id, (commentsThread?.comments || []).length); return; }
             if (command==='comments-posts-more') {
                 const result = await act('comments_posts', {group_id: commentsGroup, offset: (commentsPosts?.posts || []).length});
@@ -1107,7 +1202,7 @@
                 toast(`Отменено ответов: ${result.cancelled}.`);
             }
             await load();
-            if (commentsPost && ['comments-run', 'comments-cancel', 'comments-cancel-all', 'comments-retry'].includes(command)) await openCommentsPost(commentsPost.id);
+            if (['comments-run', 'comments-cancel', 'comments-cancel-all', 'comments-retry'].includes(command)) await refreshComments();
         } catch (error) { toast(error.message, true, error.fix); }
         finally { el.disabled = false; }
     }
@@ -1119,7 +1214,7 @@
         toast(result.status === 'sent' ? 'Ответ опубликован.' : result.status === 'failed' ? 'VK не принял ответ — причина в очереди ниже.' : result.message, result.status === 'failed');
         commentsDrafts.delete(key); commentsAiKeys.delete(key); commentsSelected.delete(key); commentsReplyKey = '';
         await load();
-        await openCommentsPost(commentsPost.id);
+        await refreshComments();
     }
     async function commentsQueue() {
         const entries = [...commentsSelected.entries()];
@@ -1138,7 +1233,7 @@
         dialog.close();
         toast(`В очереди ответов: ${result.created}. Первый — ${date(result.first_at)}, последний — ${date(result.last_at)}.${(result.skipped || []).length ? ` Пропущено: ${result.skipped.length} — ${result.skipped[0].error}` : ''}`, !!(result.skipped || []).length);
         await load();
-        if (commentsPost) await openCommentsPost(commentsPost.id);
+        await refreshComments();
     }
     // ——— Неполадки: что остановило работу и где это чинить ———
     const healthIssues = () => (state?.health || []).filter(issue => !issue.view || !adminViews.includes(issue.view) || isAdmin());
@@ -1282,6 +1377,21 @@
         if (command==='add-source') { modal('<h2>Новый источник</h2><form data-form="source" class="vkt-form"><label>Тип<select name="kind"><option value="domain">Короткое имя сообщества</option><option value="owner">Числовой ID</option></select></label><label>Сообщество<input name="value" required maxlength="200" placeholder="team или -22822305"></label><p class="vkt-help">Короткое имя — часть адреса: для vk.com/team это team. Числовой ID сообщества пишется со знаком минус, ID пользователя — положительный.</p><button class="vkt-button vkt-primary">Сохранить источник</button></form>'); return; }
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
         if (command==='health-toggle') { healthOpen = !healthOpen; render(); return; }
+        if (command==='group-settings' || command==='callback-setup' || command==='callback-forget') {
+            el.disabled = true;
+            try {
+                if (command==='callback-setup') {
+                    toast('Регистрируем сайт в группе VK…');
+                    const info = await act('callback_setup', {group_id: Number(el.dataset.id)});
+                    toast(info.status === 'ok' ? 'Callback подключён и подтверждён VK.' : `Сервер зарегистрирован, статус VK: ${callbackStatuses[info.status]?.[0] || info.status}.`, info.status === 'failed');
+                }
+                if (command==='callback-forget') { await act('callback_forget', {group_id: Number(el.dataset.id)}); toast('Callback отключён на сайте. Сервер в самой группе VK можно удалить там же.'); }
+                await groupSettings(Number(el.dataset.id));
+                if (command !== 'group-settings') { commentsData = null; if (view === 'comments') await loadComments(); }
+            } catch (error) { toast(error.message, true, error.fix); }
+            finally { el.disabled = false; }
+            return;
+        }
         if (command==='community-key-add') { modal(`<h2>Добавить группу по ключу</h2><p class="vkt-muted">${esc(communityKeyHelp)}</p>${communityKeyForm()}`); return; }
         if (command.startsWith('comments-')) { await commentsCommand(command, el); return; }
         if (command==='probe-matrix') {
@@ -1428,6 +1538,11 @@
             if (command==='posts-prev') postsPage = Math.max(1, postsPage - 1);
             if (command==='save-result') { await act('save_video',{video:el.dataset.id}); toast('Ролик сохранён. Первый замер записан.'); el.textContent='Сохранено'; await load(false); return; }
             if (command==='collect') { toast('Сбор запущен, ожидаем ответы VK…'); const result=await act('collect'); toast(result.message); }
+            if (command==='series-cancel') {
+                if (!confirm('Отменить все ещё не отправленные записи этой серии? Опубликованные останутся.')) return;
+                const result = await act('series_cancel', {series_id: el.dataset.id});
+                toast(`Отменено записей: ${result.cancelled}.`);
+            }
             if (command==='ai-model-default') { await act('ai_model_default', {model: el.dataset.id}); toast('Модель по умолчанию сменена.'); }
             if (command==='ai-model-check') { const result = await act('ai_model_check', {model: el.dataset.id}); toast(`Модель отвечает: «${result.answer}».`); return; }
             if (command==='ai-model-delete') {
@@ -1502,6 +1617,12 @@
                     const added = await act('ai_model_save', {preset: values.preset, model: values.model, base: values.base, key: values.key, title: values.title, default: !!values.default});
                     toast(`«${added.title}» подключена и ответила: «${added.answer}».`);
                     break;
+                }
+                case 'callback-manual': {
+                    await act('callback_save', {group_id: Number(form.dataset.id), code: values.code, secret: values.secret});
+                    toast('Сохранено. Теперь в VK впишите тот же секретный ключ и нажмите «Подтвердить».');
+                    await groupSettings(Number(form.dataset.id));
+                    return;
                 }
                 case 'community-key': {
                     const added = await act('community_key_add', {token: values.token, group: values.group});

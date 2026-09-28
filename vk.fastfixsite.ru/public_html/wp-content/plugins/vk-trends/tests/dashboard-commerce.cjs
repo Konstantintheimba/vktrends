@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setComments(d, p, post, thread) {commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -276,5 +276,18 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(!element.innerHTML.includes('<script>') && !element.innerHTML.includes('href='), 'Обычное сообщение без ссылки и экранировано');
     check(!api.hasSlot({tokens: [{slot: 'user', has_token: true, alive: false}]}, 'user') && api.hasSlot({tokens: [{slot: 'user', has_token: true, alive: true}]}, 'user'), 'Точка в меню зелёная только у живого ключа');
     state.health = [];
+    // Серия: уже поставленные записи видны в сетке со статусом, запущенные серии — списком.
+    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', enabled: 1, can_post: 1}], posts: [], status: {ai: {}}, series: {
+        list: [{series_id: 'sabc123def', title: 'Неделя <про> осень', total: 3, waiting: 2, published: 1, failed: 0, cancelled: 0, first_at: '2026-10-01 07:00:00', last_at: '2026-10-03 07:00:00'}],
+        posts: [{id: 1, series_id: 'sabc123def', series_title: 'Неделя <про> осень', scheduled_at: '2026-10-01 07:00:00', status: 'published', message: 'Первый', groups_names: 'Моя группа'}, {id: 2, series_id: 'sabc123def', scheduled_at: '2026-10-02 07:00:00', status: 'scheduled', message: 'Второй <b>', groups_names: 'Моя группа'}],
+    }});
+    const running = api.series();
+    check(running.includes('is-queued is-scheduled') && running.includes('по расписанию') && running.includes('Второй &lt;b&gt;'), 'Записи запущенной серии видны в сетке со статусом');
+    check(running.includes('Запущенные серии') && running.includes('Неделя &lt;про&gt; осень') && running.includes('data-command="series-cancel"') && running.includes('ждут: 2'), 'Список запущенных серий с отменой оставшихся');
+    // Лента комментариев группы.
+    api.setFeed({groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 0}], queue: [], status: {reading: true, ai: {}}}, {total: 1, comments: [{id: 60, post_id: 5, post_text: 'Пост <i>', from_id: 44, author: 'Ира', text: 'Вопрос?', answered: false, queued: '', thread: []}]});
+    html = api.comments();
+    check(html.includes('Лента комментариев') && html.includes('data-comments-pick="5_60"') && html.includes('Пост &lt;i&gt;'), 'Лента показывает комментарии всей группы с записью, к которой они оставлены');
+    check(html.includes('data-command="group-settings"') && html.includes('подключите Callback'), 'Без Callback лента подсказывает, где его подключить');
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

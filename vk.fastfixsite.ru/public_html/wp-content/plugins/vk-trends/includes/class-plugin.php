@@ -513,6 +513,18 @@ final class VKT_Plugin {
                 return VKT_AI::set_default_model( self::model_id( $data ) );
             case 'ai_model_check':
                 return VKT_AI::check_model( self::model_id( $data ) );
+            case 'callback_info':
+                return VKT_Community::callback_info( $data['group_id'] ?? 0 );
+            case 'callback_setup':
+                return VKT_Community::setup_callback( $data['group_id'] ?? 0 );
+            case 'callback_save':
+                return VKT_Community::save_callback( $data['group_id'] ?? 0, $data['code'] ?? '', $data['secret'] ?? '' );
+            case 'callback_forget':
+                return VKT_Community::forget_callback( $data['group_id'] ?? 0 );
+            case 'comments_inbox':
+                return VKT_Replies::inbox( $data['group_id'] ?? 0, sanitize_key( $data['filter'] ?? 'open' ), $data['offset'] ?? 0 );
+            case 'comments_scan':
+                return VKT_Replies::scan( $data['group_id'] ?? 0 );
             case 'community_key_add':
                 return VKT_Community::add_key( $data['token'] ?? '', $data['group'] ?? '' );
             case 'community_key_forget':
@@ -560,6 +572,8 @@ final class VKT_Plugin {
                 return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ) ) );
             case 'series_queue':
                 return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
+            case 'series_cancel':
+                return VKT_Publisher::cancel_series( $data['series_id'] ?? '' );
             case 'vkid_start':
                 return VKT_VKID::start( $data['return_to'] ?? '' );
             case 'ai_text':
@@ -590,7 +604,7 @@ final class VKT_Plugin {
                 return VKT_Publisher::toggle_group( $data['id'] ?? 0, ! empty( $data['enabled'] ) );
             case 'publishing_create':
                 // Режим проверки берётся только из серверной настройки.
-                unset( $data['approval_required'] );
+                unset( $data['approval_required'], $data['series_id'], $data['series_title'] );
                 $data['origin'] = 'manual';
                 return VKT_Publisher::create( $data );
             case 'publishing_run':

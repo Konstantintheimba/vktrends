@@ -11,6 +11,13 @@ defined( 'ABSPATH' ) || exit;
 final class VKT_Community {
     // Права ключа, без которых группа не годится для записи.
     const REQUIRED_RIGHT = 'wall';
+    // События Callback, которые плагин включает группе: комментарии для ленты и ответов.
+    const CALLBACK_EVENTS = array(
+        'wall_reply_new' => 'Новый комментарий',
+        'wall_reply_edit' => 'Комментарий изменён',
+        'wall_reply_delete' => 'Комментарий удалён',
+        'wall_reply_restore' => 'Комментарий восстановлен',
+    );
 
     /**
      * ID своего сообщества. У каждого кабинета оно своё; константа из
@@ -148,6 +155,12 @@ final class VKT_Community {
             'groups.getById' => array( 'group_id', 'fields' ),
             'wall.post' => array( 'owner_id', 'from_group', 'message', 'attachments', 'signed', 'close_comments', 'guid' ),
             'wall.createComment' => array( 'owner_id', 'post_id', 'from_group', 'message', 'reply_to_comment', 'guid' ),
+            // Настройка Callback ключом группы с правом «управление сообществом».
+            'groups.getCallbackConfirmationCode' => array( 'group_id' ),
+            'groups.getCallbackServers' => array( 'group_id', 'server_ids' ),
+            'groups.addCallbackServer' => array( 'group_id', 'url', 'title', 'secret_key' ),
+            'groups.editCallbackServer' => array( 'group_id', 'server_id', 'url', 'title', 'secret_key' ),
+            'groups.setCallbackSettings' => array( 'group_id', 'server_id', 'api_version', 'wall_reply_new', 'wall_reply_edit', 'wall_reply_delete', 'wall_reply_restore' ),
         );
         if ( ! isset( $allowed[ $method ] ) ) {
             return self::error( 'Метод не разрешён модулю сообщества.' );
@@ -346,26 +359,197 @@ final class VKT_Community {
         VKT_Account::act_as( VKT_Account::owner(), array( self::class, 'receive' ) );
     }
 
+    /**
+     * Принимает события любой группы, для которой в кабинете настроен
+     * Callback: строка подтверждения и секрет хранятся у группы. Прежняя
+     * настройка константами у хозяина сайта тоже работает.
+     */
     public static function receive() {
-        $raw = file_get_contents( 'php://input' );
-        if ( ! self::callback_configured() || ! is_string( $raw ) || strlen( $raw ) > 262144 ) {
-            self::respond( 'forbidden', 403 );
+        list( $body, $status ) = self::process( file_get_contents( 'php://input' ) );
+        self::respond( $body, $status );
+    }
+
+    /** Разбор запроса VK отдельно от ответа: так его можно проверить без HTTP. Возвращает тело ответа и код. */
+    public static function process( $raw ) {
+        global $wpdb;
+        $data = is_string( $raw ) && strlen( $raw ) <= 262144 ? json_decode( $raw, true ) : null;
+        if ( ! is_array( $data ) ) {
+            return array( 'forbidden', 403 );
         }
-        $data = json_decode( $raw, true );
-        $secret = is_array( $data ) && is_string( $data['secret'] ?? null ) ? $data['secret'] : '';
-        if ( ! is_array( $data )
-            || absint( $data['group_id'] ?? 0 ) !== self::group_id()
-            || ! hash_equals( (string) VKT_CALLBACK_SECRET, $secret ) ) {
-            self::respond( 'forbidden', 403 );
-        }
+        $group_id = absint( $data['group_id'] ?? 0 );
+        $secret = is_string( $data['secret'] ?? null ) ? $data['secret'] : '';
         $type = sanitize_key( (string) ( $data['type'] ?? '' ) );
-        if ( 'confirmation' === $type ) {
-            self::respond( (string) VKT_CALLBACK_CONFIRMATION );
+        $rows = $group_id ? (array) $wpdb->get_results( $wpdb->prepare(
+            'SELECT user_id,callback_code,callback_secret FROM ' . VKT_Store::table( 'publishing_groups' ) . " WHERE group_id=%d AND callback_code<>''",
+            $group_id
+        ), ARRAY_A ) : array();
+        if ( ! $rows ) {
+            if ( ! self::callback_configured() || $group_id !== self::group_id() || ! hash_equals( (string) VKT_CALLBACK_SECRET, $secret ) ) {
+                return array( 'forbidden', 403 );
+            }
+            if ( 'confirmation' === $type ) {
+                return array( (string) VKT_CALLBACK_CONFIRMATION, 200 );
+            }
+        } else {
+            // Строка подтверждения не секрет: VK спрашивает её и до того, как в группе сохранён секретный ключ.
+            if ( 'confirmation' === $type ) {
+                return array( (string) $rows[0]['callback_code'], 200 );
+            }
+            $trusted = false;
+            foreach ( $rows as $row ) {
+                $stored = VKT_Tokens::unseal( (string) $row['callback_secret'] );
+                if ( '' !== $stored && '' !== $secret && hash_equals( $stored, $secret ) ) {
+                    $trusted = true;
+                    break;
+                }
+            }
+            if ( ! $trusted ) {
+                return array( 'forbidden', 403 );
+            }
+            $wpdb->query( $wpdb->prepare( 'UPDATE ' . VKT_Store::table( 'publishing_groups' ) . " SET callback_status='ok',callback_at=%s WHERE group_id=%d AND callback_code<>''", gmdate( 'Y-m-d H:i:s' ), $group_id ) );
         }
         if ( '' !== $type ) {
+            self::handle_event( $group_id, $type, is_array( $data['object'] ?? null ) ? $data['object'] : array() );
             VKT_Store::log( 'callback.' . $type, 'callback', 'ok', 0, 'Событие сообщества получено', 0 );
         }
-        self::respond( 'ok' );
+        return array( 'ok', 200 );
+    }
+
+    /** Комментарии из событий ложатся в ленту группы; остальные события пока только отмечаются в журнале. */
+    private static function handle_event( $group_id, $type, $object ) {
+        if ( in_array( $type, array( 'wall_reply_new', 'wall_reply_edit', 'wall_reply_restore' ), true ) ) {
+            VKT_Replies::ingest( $group_id, $object, 'callback' );
+        } elseif ( 'wall_reply_delete' === $type ) {
+            VKT_Replies::forget_comment( $group_id, absint( $object['id'] ?? 0 ) );
+        }
+    }
+
+    /** Callback группы для интерфейса: адрес, состояние, когда было последнее событие. Секрет наружу не уходит. */
+    public static function callback_info( $group_id ) {
+        global $wpdb;
+        $row = (array) $wpdb->get_row( $wpdb->prepare(
+            'SELECT callback_code,callback_secret,callback_server,callback_status,callback_at FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d AND group_id=%d',
+            VKT_Account::id(), absint( $group_id )
+        ), ARRAY_A );
+        return array(
+            'group_id' => absint( $group_id ),
+            'url' => self::callback_url(),
+            'configured' => '' !== (string) ( $row['callback_code'] ?? '' ),
+            'code' => (string) ( $row['callback_code'] ?? '' ),
+            'has_secret' => '' !== (string) ( $row['callback_secret'] ?? '' ),
+            'server_id' => (int) ( $row['callback_server'] ?? 0 ),
+            'status' => (string) ( $row['callback_status'] ?? '' ),
+            'last_event' => $row['callback_at'] ?? null,
+            'has_key' => self::has_key( $group_id ),
+            'events' => self::CALLBACK_EVENTS,
+        );
+    }
+
+    /** Ручная настройка: строка подтверждения и секрет из «Управление → Работа с API → Callback API». */
+    public static function save_callback( $group_id, $code, $secret ) {
+        global $wpdb;
+        $group_id = absint( $group_id );
+        $code = trim( (string) $code );
+        $secret = trim( (string) $secret );
+        if ( ! preg_match( '/^[A-Za-z0-9]{4,32}$/', $code ) ) {
+            return self::error( 'Строка подтверждения — это короткий код из VK вида 12381946.' );
+        }
+        if ( ! preg_match( '/^[A-Za-z0-9]{1,50}$/', $secret ) ) {
+            return self::error( 'Задайте секретный ключ: латиница и цифры, до 50 символов. Этот же ключ сохраните в VK — без него события не принимаются.' );
+        }
+        $sealed = VKT_Tokens::seal( $secret );
+        if ( is_wp_error( $sealed ) ) {
+            return $sealed;
+        }
+        $updated = $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'callback_code' => $code, 'callback_secret' => $sealed, 'callback_status' => 'manual' ), array( 'user_id' => VKT_Account::id(), 'group_id' => $group_id ) );
+        if ( ! $updated && false !== $updated && ! $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d AND group_id=%d', VKT_Account::id(), $group_id ) ) ) {
+            return self::error( 'Группа не найдена в вашем кабинете.', 404 );
+        }
+        return self::callback_info( $group_id );
+    }
+
+    public static function forget_callback( $group_id ) {
+        global $wpdb;
+        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'callback_code' => '', 'callback_secret' => '', 'callback_server' => 0, 'callback_status' => '' ), array( 'user_id' => VKT_Account::id(), 'group_id' => absint( $group_id ) ) );
+        return self::callback_info( $group_id );
+    }
+
+    /**
+     * Подключает Callback сам: ключ группы с правом «управление сообществом»
+     * берёт строку подтверждения, регистрирует наш адрес с новым секретом
+     * (или обновляет уже зарегистрированный) и включает события комментариев.
+     * Строка подтверждения сохраняется до регистрации — VK спрашивает её сразу.
+     */
+    public static function setup_callback( $group_id ) {
+        global $wpdb;
+        $group_id = absint( $group_id );
+        if ( ! self::has_key( $group_id ) ) {
+            return self::error( 'Сначала добавьте ключ этой группы — Callback подключается им.' );
+        }
+        $table = VKT_Store::table( 'publishing_groups' );
+        if ( ! $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $table WHERE user_id=%d AND group_id=%d", VKT_Account::id(), $group_id ) ) ) {
+            return self::error( 'Группа не найдена в вашем кабинете.', 404 );
+        }
+        $rights = static function ( $result ) {
+            $code = (int) ( ( (array) $result->get_error_data() )['vk_code'] ?? 0 );
+            return in_array( $code, array( 7, 15, 27 ), true )
+                ? self::error( 'У ключа группы нет права «управление сообществом». Создайте ключ с этим правом или настройте Callback вручную ниже.', 422 )
+                : $result;
+        };
+        $confirmation = self::request( 'groups.getCallbackConfirmationCode', array( 'group_id' => $group_id ), $group_id );
+        if ( is_wp_error( $confirmation ) ) {
+            return $rights( $confirmation );
+        }
+        $code = preg_replace( '/[^A-Za-z0-9]/', '', (string) ( $confirmation['code'] ?? '' ) );
+        if ( '' === $code ) {
+            return self::error( 'VK не выдал строку подтверждения.', 502 );
+        }
+        $secret = wp_generate_password( 32, false );
+        $sealed = VKT_Tokens::seal( $secret );
+        if ( is_wp_error( $sealed ) ) {
+            return $sealed;
+        }
+        $wpdb->update( $table, array( 'callback_code' => $code, 'callback_secret' => $sealed, 'callback_status' => 'wait' ), array( 'user_id' => VKT_Account::id(), 'group_id' => $group_id ) );
+        $url = self::callback_url();
+        $servers = self::request( 'groups.getCallbackServers', array( 'group_id' => $group_id ), $group_id );
+        if ( is_wp_error( $servers ) ) {
+            return $rights( $servers );
+        }
+        $server_id = 0;
+        foreach ( (array) ( $servers['items'] ?? array() ) as $server ) {
+            if ( (string) ( $server['url'] ?? '' ) === $url ) {
+                $server_id = absint( $server['id'] ?? 0 );
+            }
+        }
+        $params = array( 'group_id' => $group_id, 'url' => $url, 'title' => 'VK Trends', 'secret_key' => $secret );
+        if ( $server_id ) {
+            $saved = self::request( 'groups.editCallbackServer', array_merge( $params, array( 'server_id' => $server_id ) ), $group_id );
+        } else {
+            $saved = self::request( 'groups.addCallbackServer', $params, $group_id );
+            $server_id = is_wp_error( $saved ) ? 0 : absint( $saved['server_id'] ?? 0 );
+        }
+        if ( is_wp_error( $saved ) ) {
+            return $rights( $saved );
+        }
+        if ( ! $server_id ) {
+            return self::error( 'VK не вернул ID сервера Callback.', 502 );
+        }
+        $events = array( 'group_id' => $group_id, 'server_id' => $server_id, 'api_version' => VKT_Plugin::settings()['api_version'] );
+        foreach ( self::CALLBACK_EVENTS as $event => $label ) {
+            $events[ $event ] = 1;
+        }
+        $settings = self::request( 'groups.setCallbackSettings', $events, $group_id );
+        if ( is_wp_error( $settings ) ) {
+            return $rights( $settings );
+        }
+        // Подтверждение VK проходит сразу после регистрации — смотрим, чем кончилось.
+        $status = 'wait';
+        $check = self::request( 'groups.getCallbackServers', array( 'group_id' => $group_id, 'server_ids' => (string) $server_id ), $group_id );
+        if ( ! is_wp_error( $check ) ) {
+            $status = sanitize_key( (string) ( $check['items'][0]['status'] ?? 'wait' ) );
+        }
+        $wpdb->update( $table, array( 'callback_server' => $server_id, 'callback_status' => $status ), array( 'user_id' => VKT_Account::id(), 'group_id' => $group_id ) );
+        return self::callback_info( $group_id );
     }
 
     private static function respond( $body, $status = 200 ) {

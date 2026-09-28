@@ -75,6 +75,9 @@ const DAY_IN_SECONDS = 86400;
 const YEAR_IN_SECONDS = 31536000;
 function apply_filters( $name, $value ) { return $value; }
 function do_action() {}
+function wp_generate_password( $length = 12, $special = true ) { return substr( str_repeat( 'abc123xyz9', 5 ), 0, $length ); }
+function sanitize_text_field( $value ) { return trim( strip_tags( (string) $value ) ); }
+function wp_date( $format, $timestamp = null ) { return gmdate( $format, $timestamp ?? time() ); }
 function wp_generate_uuid4() { return '11111111-2222-3333-4444-555555555555'; }
 function wp_strip_all_tags( $value ) { return strip_tags( (string) $value ); }
 // Ни один тест очереди не должен дойти до сети: вызов записывается и виден в проверке.

@@ -492,3 +492,29 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-sidebar nav a.has-issue::after { content: ''; flex: 0 0 8px; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: #d65c5c; }
 .vkt-toast-fix { color: #fff !important; font-weight: 600; text-decoration: underline !important; white-space: nowrap; margin-left: 6px; }
 @media (max-width: 760px) { .vkt-health-item { flex-wrap: wrap; }.vkt-health-item > .vkt-button { margin-left: 38px; } }
+/* Серия: записи, которые уже в очереди, и список запущенных серий */
+.vkt-cal-slot.is-queued { cursor: default; background: #f4f0ff; border-color: #ddd2fb; }
+.vkt-cal-slot.is-queued .vkt-badge { align-self: flex-start; margin-top: 4px; }
+.vkt-cal-slot.is-published { background: #eefaf4; border-color: #c9ecd9; }
+.vkt-cal-slot.is-failed, .vkt-cal-slot.is-partial { background: #fff3f3; border-color: #f3c4c4; }
+.vkt-series-runs { display: flex; flex-direction: column; gap: 0; padding-top: 8px; padding-bottom: 8px; }
+.vkt-series-run { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--vkt-line); }
+.vkt-series-run:last-child { border-bottom: 0; }
+.vkt-series-run > div:first-child { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.vkt-series-run small { overflow-wrap: anywhere; }
+.vkt-series-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 760px) { .vkt-series-run { flex-direction: column; align-items: flex-start; } }
+.vkt-cal-slot span.vkt-badge { display: inline-block; font-size: 9px; padding: 2px 6px; -webkit-line-clamp: unset; }
+/* Лента комментариев группы и настройки Callback */
+.vkt-comments-modes { margin: 0 0 16px; }
+.vkt-feed-callback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.vkt-feed-callback .vkt-button { min-height: 30px; padding: 4px 10px; font-size: 11px; }
+.vkt-feed-item { border-bottom: 1px solid var(--vkt-line); padding-top: 10px; }
+.vkt-feed-item:last-child { border-bottom: 0; }
+.vkt-feed-item .vkt-comment { border-bottom: 0; padding-top: 6px; }
+.vkt-feed-post { display: inline-block; font-size: 11px; color: var(--vkt-muted) !important; overflow-wrap: anywhere; }
+.vkt-feed-post:hover { color: var(--vkt-blue) !important; }
+.vkt-callback-manual { margin-top: 18px; border: 1px solid var(--vkt-line); border-radius: 9px; padding: 12px 14px; }
+.vkt-callback-manual summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.vkt-callback-manual ol { padding-left: 18px; font-size: 12px; line-height: 1.8; }
+.vkt-dialog h3 { font-size: 14px; margin: 16px 0 8px; }
