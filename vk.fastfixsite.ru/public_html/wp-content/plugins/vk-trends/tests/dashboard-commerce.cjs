@@ -279,10 +279,15 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     // Серия: уже поставленные записи видны в сетке со статусом, запущенные серии — списком.
     api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', enabled: 1, can_post: 1}], posts: [], status: {ai: {}}, series: {
         list: [{series_id: 'sabc123def', title: 'Неделя <про> осень', total: 3, waiting: 2, published: 1, failed: 0, cancelled: 0, first_at: '2026-10-01 07:00:00', last_at: '2026-10-03 07:00:00'}],
-        posts: [{id: 1, series_id: 'sabc123def', series_title: 'Неделя <про> осень', scheduled_at: '2026-10-01 07:00:00', status: 'published', message: 'Первый', groups_names: 'Моя группа'}, {id: 2, series_id: 'sabc123def', scheduled_at: '2026-10-02 07:00:00', status: 'scheduled', message: 'Второй <b>', groups_names: 'Моя группа'}],
+        posts: [{id: 1, series_id: 'sabc123def', series_title: 'Неделя <про> осень', scheduled_at: '2026-10-01 07:00:00', status: 'published', message: 'Первый', groups_names: 'Моя группа', group_ids: [3], editable: false, media_count: 0}, {id: 2, series_id: 'sabc123def', scheduled_at: '2026-10-02 07:00:00', status: 'scheduled', message: 'Второй <b>', groups_names: 'Моя группа', group_ids: [3], editable: true, media_count: 2}, {id: 5, series_id: '', scheduled_at: '2026-10-02 09:00:00', status: 'scheduled', message: 'Чужая группа', groups_names: 'Другая', group_ids: [4], editable: true, media_count: 0}],
     }});
     const running = api.series();
-    check(running.includes('is-queued is-scheduled') && running.includes('по расписанию') && running.includes('Второй &lt;b&gt;'), 'Записи запущенной серии видны в сетке со статусом');
+    check(running.includes('is-queued is-editable is-scheduled') && running.includes('по расписанию') && running.includes('Второй &lt;b&gt;'), 'Записи запущенной серии видны в сетке со статусом');
+    check(running.includes('data-command="series-post" data-id="2"') && !running.includes('data-command="series-post" data-id="1"'), 'Ждущая запись открывается на правку, опубликованная — нет');
+    check(!running.includes('Чужая группа'), 'В сетке только записи выбранного сообщества');
+    check(running.includes('data-series-group') && !running.includes('name="groups"') && running.includes('value="sabc123def"'), 'Серия привязана к одному сообществу, запущенную можно выбрать для дополнения');
+    check(running.includes('data-command="series-open"') && running.includes('Фото к записям'), 'Серию можно открыть в сетке, есть блок фото');
+    check(running.includes('Подключить токен'), 'Без пользовательского токена фото не предлагаются');
     check(running.includes('Запущенные серии') && running.includes('Неделя &lt;про&gt; осень') && running.includes('data-command="series-cancel"') && running.includes('ждут: 2'), 'Список запущенных серий с отменой оставшихся');
     // Лента комментариев группы.
     api.setFeed({groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 0}], queue: [], status: {reading: true, ai: {}}}, {total: 1, comments: [{id: 60, post_id: 5, post_text: 'Пост <i>', from_id: 44, author: 'Ира', text: 'Вопрос?', answered: false, queued: '', thread: []}]});

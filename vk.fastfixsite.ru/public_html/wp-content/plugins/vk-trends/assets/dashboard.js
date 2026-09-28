@@ -98,6 +98,13 @@
     // Выбранная модель для текстов: пусто — модель по умолчанию из «Настроек».
     let aiModel = '';
     let seriesSetup = {span: 'week', start: '', weekdays: ['1','2','3','4','5'], times: '10:00, 19:00'}, seriesSlots = [], seriesSlotTarget = null, seriesPrompt = '';
+    // Серия привязана к одному сообществу: его сетку и видно в календаре.
+    // seriesTarget — ID серии, которую дополняем; пусто — новая серия.
+    let seriesGroup = 0, seriesTarget = '';
+    // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
+    let seriesEdit = null;
+    // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
+    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true}, seriesImageRun = null;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
@@ -315,8 +322,20 @@
     // Записи, которые уже в очереди: серии и одиночные запланированные. В сетке они рядом с новыми слотами.
     const queuedStatuses = {scheduled: ['по расписанию', ''], queued: ['в очереди', ''], draft: ['ждёт проверки', ''], published: ['опубликовано', 'green'], partial: ['частично', 'red'], failed: ['ошибка', 'red'], cancelled: ['отменено', '']};
     const seriesPosts = () => (publishingData?.series?.posts || []).filter(post => post.status !== 'cancelled');
+    const seriesGroupsList = () => (publishingData?.groups || []).filter(group => Number(group.enabled) && Number(group.can_post));
+    // В календаре — только выбранное сообщество: у каждой группы своя сетка.
+    const seriesGroupPosts = () => seriesPosts().filter(post => (post.group_ids || []).map(Number).includes(Number(seriesGroup)));
+    // Сообщество серии по её записям. У серий до 0.26 групп могло быть несколько — тогда привязки нет.
+    function seriesGroupOf(seriesId) {
+        const ids = new Set();
+        seriesPosts().filter(post => post.series_id === seriesId).forEach(post => (post.group_ids || []).forEach(id => ids.add(Number(id))));
+        return 1 === ids.size ? [...ids][0] : 0;
+    }
+    const seriesTitle = seriesId => (publishingData?.series?.list || []).find(item => item.series_id === seriesId)?.title || '';
+    const validStamp = value => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value || ''));
+
     function seriesCalendar() {
-        const queued = seriesPosts();
+        const queued = seriesGroupPosts();
         if (!seriesSlots.length && !queued.length) return `<div class="vkt-info">Сетки пока нет. Выберите период, дни и время — и нажмите «Построить сетку».</div>`;
         const byDay = new Map();
         const put = (key, item) => { if (!byDay.has(key)) byDay.set(key, []); byDay.get(key).push(item); };
@@ -331,6 +350,7 @@
         const gridStart = new Date(first.getFullYear(), first.getMonth(), first.getDate() - ((first.getDay() + 6) % 7));
         const span = Math.round((last - gridStart) / 86400000) + 1;
         const total = Math.min(70, Math.max(7, Math.ceil(span / 7) * 7));
+        const files = count => Number(count) ? `<small>${icon('layers')} ${Number(count)}</small>` : '';
         const cells = [];
         for (let i = 0; i < total; ++i) {
             const cursor = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
@@ -338,10 +358,16 @@
             cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index, post, at}) => {
                 if (post) {
                     const [label, tone] = queuedStatuses[post.status] || [post.status, ''];
-                    return `<div class="vkt-cal-slot is-queued is-${esc(post.status)}" title="${esc(post.series_title || 'Запланированная запись')}${post.groups_names ? ' → ' + esc(post.groups_names) : ''}"><strong>${esc(at)}</strong><span>${esc(String(post.message || 'Запись с вложением').slice(0, 70))}</span>${badge(esc(label), tone)}</div>`;
+                    // При дополнении серии чужие записи приглушены: видно, что именно правим.
+                    const other = seriesTarget && post.series_id !== seriesTarget ? ' is-other' : '';
+                    const inner = `<strong>${esc(at)}</strong><span>${esc(String(post.message || 'Запись с вложением').slice(0, 70))}</span>${files(post.media_count)}${badge(esc(label), tone)}`;
+                    const title = `${esc(post.series_title || 'Запланированная запись')}${post.groups_names ? ' → ' + esc(post.groups_names) : ''}`;
+                    return post.editable
+                        ? `<button type="button" class="vkt-cal-slot is-queued is-editable is-${esc(post.status)}${other}" data-command="series-post" data-id="${Number(post.id)}" title="${title}">${inner}</button>`
+                        : `<div class="vkt-cal-slot is-queued is-${esc(post.status)}${other}" title="${title}">${inner}</div>`;
                 }
                 const filled = slot.message.trim() || slot.media.length || slot.attachments.trim();
-                return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${slot.media.length ? `<small>${icon('layers')} ${slot.media.length}</small>` : ''}</button>`;
+                return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${files(slot.media.length)}</button>`;
             }).join('')}</div>`);
         }
         return `<div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
@@ -350,6 +376,7 @@
     function runningSeries() {
         const list = publishingData?.series?.list || [];
         if (!list.length) return '';
+        const groups = seriesGroupsList();
         const cards = list.map(item => {
             const counts = [
                 Number(item.waiting) ? badge(`ждут: ${num(item.waiting)}`) : '',
@@ -358,24 +385,140 @@
                 Number(item.cancelled) ? badge(`отменено: ${num(item.cancelled)}`) : '',
             ].join('');
             const next = seriesPosts().find(post => post.series_id === item.series_id && ['scheduled', 'queued', 'draft'].includes(post.status));
-            const groups = [...new Set(seriesPosts().filter(post => post.series_id === item.series_id).map(post => post.groups_names).filter(Boolean))].join(', ');
-            return `<div class="vkt-series-run"><div><strong>${esc(item.title)}</strong><small class="vkt-muted">${num(item.total)} записей · ${date(item.first_at)} — ${date(item.last_at)}${groups ? ` · ${esc(groups)}` : ''}${next ? ` · следующая ${date(next.scheduled_at)}` : ''}</small><div class="vkt-series-counts">${counts}</div></div><div class="vkt-table-actions">${Number(item.failed) ? `<a class="vkt-button" href="#publishing">Ошибки — «Автопостинг»</a>` : ''}${Number(item.waiting) ? button('Отменить оставшиеся', 'series-cancel', `data-id="${esc(item.series_id)}"`) : ''}</div></div>`;
+            const names = [...new Set(seriesPosts().filter(post => post.series_id === item.series_id).map(post => post.groups_names).filter(Boolean))].join(', ');
+            const group = seriesGroupOf(item.series_id);
+            const open = group && groups.some(row => Number(row.id) === group) ? button(item.series_id === seriesTarget ? 'Открыта в сетке' : 'Открыть в сетке', 'series-open', `data-id="${esc(item.series_id)}" ${item.series_id === seriesTarget ? 'disabled' : ''}`) : '';
+            return `<div class="vkt-series-run"><div><strong>${esc(item.title)}</strong><small class="vkt-muted">${num(item.total)} записей · ${date(item.first_at)} — ${date(item.last_at)}${names ? ` · ${esc(names)}` : ''}${next ? ` · следующая ${date(next.scheduled_at)}` : ''}</small><div class="vkt-series-counts">${counts}</div></div><div class="vkt-table-actions">${open}${Number(item.failed) ? `<a class="vkt-button" href="#publishing">Ошибки — «Автопостинг»</a>` : ''}${Number(item.waiting) ? button('Отменить оставшиеся', 'series-cancel', `data-id="${esc(item.series_id)}"`) : ''}</div></div>`;
         }).join('');
-        return `<div class="vkt-section-title"><h2>Запущенные серии</h2><span class="vkt-muted">Записи серий видны и в календаре выше — с их статусом.</span></div><section class="vkt-panel vkt-series-runs">${cards}</section>`;
+        return `<div class="vkt-section-title"><h2>Запущенные серии</h2><span class="vkt-muted">«Открыть в сетке» — дополнить серию, поправить или убрать её записи.</span></div><section class="vkt-panel vkt-series-runs">${cards}</section>`;
     }
+
+    // ——— Фото к записям серии: по одной из окна слота или пачкой ———
+    // Чем рисовать: xAI доступен всем кабинетам, BFL — только хозяину сайта (ключ и кредиты его).
+    function imageProviders() {
+        const list = [];
+        const ai = state?.settings?.ai || {};
+        if (ai.media_configured) list.push(['xai', `xAI · ${ai.image_model || 'Grok'}`]);
+        if (isAdmin() && state?.settings?.flux?.configured) Object.entries(state.settings.flux.models || {}).forEach(([id, model]) => list.push([`bfl:${id}`, `BFL · ${model.title}`]));
+        if (list.length && !list.some(([id]) => id === seriesImage.provider)) seriesImage.provider = list[0][0];
+        return list;
+    }
+    // Фото в VK кладёт только пользовательский токен: без него рисовать к записи бессмысленно.
+    const imagesReady = () => !!publishingData?.status?.media_native && imageProviders().length > 0;
+    // Стороны кратны 32 — иначе BFL отвечает 422.
+    const fluxSizes = {portrait: [768, 1024], square: [1024, 1024], landscape: [1344, 768], story: [768, 1344]};
+    function seriesImagePrompt(text, own = '') {
+        const style = seriesImage.style.trim();
+        return [
+            own.trim() || `Иллюстрация к посту в соцсети. Содержание поста: ${String(text || '').trim().slice(0, 1800)}`,
+            style ? `Стиль: ${style}` : '',
+            'Без текста, надписей и логотипов на изображении.',
+        ].filter(Boolean).join('\n\n').slice(0, 5000);
+    }
+    async function drawImage(prompt, report = null) {
+        if (seriesImage.provider.startsWith('bfl:')) {
+            const [width, height] = fluxSizes[seriesImage.ratio] || fluxSizes.portrait;
+            const started = await act('flux_start', {model: seriesImage.provider.slice(4), prompt, width, height, safety_tolerance: 2, output_format: 'jpeg'});
+            return (await fluxAwait(started.id, report)).media;
+        }
+        return act('ai_image', {prompt, ratio: seriesImage.ratio});
+    }
+    // Пачкой идут только записи с текстом и без файлов: готовые фото не перерисовываем.
+    const seriesImageTargets = () => [
+        ...(seriesImage.slots ? seriesSlots.filter(slot => slot.message.trim() && !slot.media.length).map(slot => ({slot})) : []),
+        ...(seriesImage.queued ? seriesGroupPosts().filter(post => post.editable && !Number(post.media_count) && String(post.message || '').trim() && (!seriesTarget || post.series_id === seriesTarget)).map(post => ({post})) : []),
+    ];
+    const seriesImageProgress = run => `Готово ${run.done} из ${run.total}${run.failed ? `, не вышло ${run.failed}` : ''}${run.stop ? ' — останавливаемся' : ''}. Не закрывайте вкладку.`;
+    function seriesImagesPanel() {
+        if (!publishingData?.status?.media_native) return `<div class="vkt-info">Фото к записям прикладывает только пользовательский токен VK ID: ключу сообщества VK запрещает загрузку файлов. <a href="#posting">Подключить токен — «Публикация» →</a></div>`;
+        const providers = imageProviders();
+        if (!providers.length) return `<div class="vkt-info">Рисовать нечем: не задан ключ xAI${isAdmin() ? ' и ключ BFL' : ''}. ${isAdmin() ? 'Ключ BFL сохраняется в «Генерации фото».' : 'Генерацию подключает администратор.'}</div>`;
+        const ai = state.settings.ai || {};
+        const ratios = seriesImage.provider.startsWith('bfl:') ? Object.keys(fluxSizes) : (ai.image_ratios || Object.keys(fluxSizes));
+        if (!ratios.includes(seriesImage.ratio)) seriesImage.ratio = ratios[0];
+        const run = seriesImageRun;
+        return `<form data-form="series-images" class="vkt-form">
+            <label>Общий стиль<textarea data-series-image="style" rows="3" maxlength="1500" placeholder="Например: фотореалистично, мягкий дневной свет, тёплые тона">${esc(seriesImage.style)}</textarea><small class="vkt-help">Добавляется к каждой картинке. Сюжет берётся из текста записи.</small></label>
+            <div class="vkt-form-row">
+                <label>Чем рисуем<select data-series-image="provider">${providers.map(([id, label]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+                <label>Формат<select data-series-image="ratio">${ratios.map(value => `<option value="${esc(value)}" ${value === seriesImage.ratio ? 'selected' : ''}>${esc(ratioLabels[value] || value)}</option>`).join('')}</select></label>
+            </div>
+            <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label></div>
+            <div class="vkt-form-actions">${run ? button('Остановить', 'series-images-stop') : `<button class="vkt-button">${icon('fire')} Нарисовать фото · <span data-series-images-count>${seriesImageTargets().length}</span></button>`}</div>
+            <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов. Готовое фото сразу прикрепляется к записи; убрать или заменить его можно в окне записи.'}</p>
+            ${seriesImage.provider === 'xai' ? quotaNote(ai) : ''}
+        </form>`;
+    }
+    async function seriesImagesRun() {
+        if (seriesImageRun) return;
+        const targets = seriesImageTargets();
+        if (!targets.length) { toast('Нечего рисовать: нужны записи с текстом и без файлов.', true); return; }
+        if (!confirm(`Нарисовать ${targets.length} картинок и прикрепить их к записям?`)) return;
+        const run = seriesImageRun = {total: targets.length, done: 0, failed: 0, stop: false, error: ''};
+        render();
+        const progress = () => { const el = $('#vkt-series-image-progress'); if (el) el.textContent = seriesImageProgress(run); };
+        const queue = targets.slice();
+        const worker = async () => {
+            while (queue.length && !run.stop) {
+                const target = queue.shift();
+                try {
+                    if (target.slot) {
+                        const media = await drawImage(seriesImagePrompt(target.slot.message, target.slot.imagePrompt || ''));
+                        // Пока рисовали, слот могли убрать или приложить к нему файл руками.
+                        if (seriesSlots.includes(target.slot) && !target.slot.media.length) target.slot.media.push(media);
+                    } else {
+                        // В сетке только начало текста — для сюжета нужен весь.
+                        const full = await act('publishing_get', {id: Number(target.post.id)});
+                        if (full.editable && !(full.media_items || []).length) {
+                            const media = await drawImage(seriesImagePrompt(full.message));
+                            await act('publishing_update', {id: Number(target.post.id), post: {media: [Number(media.id)]}});
+                            target.post.media_count = 1;
+                        }
+                    }
+                    run.done += 1;
+                } catch (error) {
+                    run.failed += 1;
+                    run.error = error.message;
+                    // Кончился лимит, кредиты или ключ — следующие упадут так же.
+                    if (429 === Number(error.payload?.data?.status) || 402 === Number(error.payload?.data?.status) || /лимит|не настроен|не сохранён|кредит/i.test(error.message)) run.stop = true;
+                }
+                progress();
+            }
+        };
+        // Два потока: быстрее одного и не упирается в лимит одновременных задач BFL.
+        await Promise.all([worker(), worker()]);
+        seriesImageRun = null;
+        toast(run.failed ? `Нарисовано ${run.done} из ${run.total}. Ошибка: ${run.error}` : `Готово: ${run.done} картинок прикреплены к записям.`, run.failed > 0);
+        await load();
+    }
+
     function series() {
         if (!publishingData) return heading('Серия постов', 'Загружаем свои сообщества…') + '<div class="vkt-loading">Загружаем…</div>';
-        const groups = (publishingData.groups || []).filter(group => Number(group.enabled) && Number(group.can_post));
+        const groups = seriesGroupsList();
         const aiReady = !!state.settings.ai?.configured;
         const filled = seriesFilled().length;
         const today = localStamp(new Date()).slice(0, 10);
+        const subtitle = 'График на неделю или месяц в одно сообщество: даты, время, текст и фото — и всё сразу в очередь.';
         if (!groups.length) {
-            return heading('Серия постов', 'График на неделю или месяц: даты, время, текст и файлы — и всё сразу в очередь.') +
+            return heading('Серия постов', subtitle) +
                 empty('Нет доступных сообществ', 'Включите хотя бы одно сообщество в «Автопостинге»: серия отправляется туда же, куда и одиночная запись.', 'publishing', 'Открыть автопостинг');
         }
-        return heading('Серия постов', 'График на неделю или месяц: даты, время, текст и файлы — и всё сразу в очередь.', (seriesSlots.length ? button(`${icon('send')} Поставить в очередь · ${filled}`, 'series-queue', '', true) + button('Очистить сетку', 'series-clear') : '')) +
+        if (!groups.some(group => Number(group.id) === Number(seriesGroup))) { seriesGroup = Number(groups[0].id); seriesTarget = ''; }
+        // Дополнять можно только серию этого сообщества.
+        const own = (publishingData.series?.list || []).filter(item => seriesGroupOf(item.series_id) === Number(seriesGroup));
+        if (seriesTarget && !own.some(item => item.series_id === seriesTarget)) seriesTarget = '';
+        const queueLabel = seriesTarget ? `${icon('send')} Добавить в серию · ${filled}` : `${icon('send')} Поставить в очередь · ${filled}`;
+        const waiting = seriesGroupPosts().filter(post => ['scheduled', 'queued', 'draft'].includes(post.status)).length;
+        return heading('Серия постов', subtitle, (seriesSlots.length ? button(queueLabel, 'series-queue', '', true) + button('Очистить сетку', 'series-clear') : '')) +
             `<div class="vkt-series-layout"><section class="vkt-panel">
-                <div class="vkt-panel-heading"><div><h2>Период и время</h2><p>Слоты создаются на выбранные дни недели в указанные часы. Прошедшее время пропускается.</p></div></div>
+                <div class="vkt-panel-heading"><div><h2>Сообщество и серия</h2><p>Серия привязана к одному сообществу. Выберите запущенную, чтобы дополнить её новыми слотами.</p></div></div>
+                <form data-form="series-bind" class="vkt-form">
+                    <label>Сообщество<select data-series-group>${groups.map(group => `<option value="${Number(group.id)}" ${Number(group.id) === Number(seriesGroup) ? 'selected' : ''}>${esc(group.name || `club${group.group_id}`)}</option>`).join('')}</select></label>
+                    <label>Серия<select data-series-target><option value="">Новая серия</option>${own.map(item => `<option value="${esc(item.series_id)}" ${item.series_id === seriesTarget ? 'selected' : ''}>${esc(item.title)} · ${num(item.total)} зап.</option>`).join('')}</select></label>
+                </form>
+                <hr class="vkt-settings-sep">
+                <h2>Период и время</h2>
+                <p class="vkt-muted">Слоты создаются на выбранные дни недели в указанные часы. Прошедшее время пропускается.</p>
                 <form data-form="series-setup" class="vkt-form">
                     <div class="vkt-form-row">
                         <label>Период<select name="span"><option value="week" ${'month' === seriesSetup.span ? '' : 'selected'}>Неделя — 7 дней</option><option value="month" ${'month' === seriesSetup.span ? 'selected' : ''}>Месяц — 30 дней</option></select></label>
@@ -390,37 +533,121 @@
                 <p class="vkt-muted">Один запрос на весь период: модель видит, сколько нужно текстов, и не повторяет себя. Тексты разложатся по пустым слотам по порядку.</p>
                 <form data-form="series-prompt" class="vkt-form">
                     ${modelPicker(state.settings.ai)}
-                    <label>Тема серии<textarea name="prompt" rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
+                    <label>Тема серии<textarea name="prompt" data-series-prompt rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
                     <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
                     ${quotaNote(state.settings.ai)}
                     <p class="vkt-help">${seriesSlots.length ? 'Заполнятся только пустые слоты — написанное руками останется.' : 'Сначала постройте сетку: модели нужно знать количество.'}</p>
                 </form>` : `<hr class="vkt-settings-sep"><div class="vkt-info">Не подключена ни одна модель для текстов, поэтому промпта на серию нет. ${isAdmin() ? '<a href="#settings">Добавить модель — «Настройки» →</a>' : 'Её подключает администратор.'} Текст можно вписать в каждый слот руками.</div>`}
                 <hr class="vkt-settings-sep">
-                <h2>Куда публикуем</h2>
-                <form data-form="series-groups" class="vkt-form"><fieldset class="vkt-publishing-groups"><legend>Сообщества серии</legend>${groups.map(group => `<label class="vkt-check"><input type="checkbox" name="groups" value="${Number(group.id)}" ${1 === groups.length ? 'checked' : ''}>${esc(group.name || `club${group.group_id}`)}</label>`).join('')}</fieldset>
+                <h2>Фото к записям</h2>
+                <p class="vkt-muted">Когда тексты утверждены — картинки ко всей сетке одной кнопкой. К отдельной записи — из её окна.</p>
+                ${seriesImagesPanel()}
+                <hr class="vkt-settings-sep">
+                <h2>Публикация</h2>
+                <form data-form="series-groups" class="vkt-form">
                 <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="signed">Подписать записи моим именем</label><label class="vkt-check"><input type="checkbox" name="close_comments">Закрыть комментарии</label></div>
                 <p class="vkt-help">${state.settings.publishing_review ? 'Включена ручная проверка: записи серии сохранятся черновиками и будут ждать подтверждения.' : 'Каждая запись уйдёт в своё время. Слоты в прошлом сервер отклонит.'}</p></form>
             </section>
             <section class="vkt-panel">
-                <div class="vkt-panel-heading"><div><h2>Календарь</h2><p>${seriesSlots.length ? `${seriesSlots.length} слотов, заполнено ${filled}. Нажмите на слот, чтобы вписать текст или приложить файлы.` : 'Новых слотов пока нет.'}${seriesPosts().length ? ` Уже в очереди: ${seriesPosts().filter(post => ['scheduled', 'queued', 'draft'].includes(post.status)).length} — отмечены статусом.` : ''}</p></div></div>
+                <div class="vkt-panel-heading"><div><h2>Календарь${seriesTarget ? ` · ${esc(seriesTitle(seriesTarget))}` : ''}</h2><p>${seriesSlots.length ? `${seriesSlots.length} новых слотов, заполнено ${filled}. ` : 'Новых слотов пока нет. '}${waiting ? `В очереди этого сообщества: ${waiting} — нажмите на запись, чтобы поправить текст, фото или время либо убрать её.` : ''}</p></div></div>
                 ${seriesCalendar()}
             </section></div>` + runningSeries();
     }
+
+    // Окно слота и окно записи перерисовываются после выбора файла или
+    // генерации — набранное сначала сохраняем, иначе оно пропадёт.
+    function captureSeriesDialog() {
+        const form = $('#vkt-dialog-content [data-form="series-slot"], #vkt-dialog-content [data-form="series-post"]');
+        if (!form) return;
+        const target = form.dataset.form === 'series-slot' ? seriesSlots[Number(form.elements.index.value)] : seriesEdit?.draft;
+        if (!target) return;
+        target.message = form.elements.message.value;
+        target.attachments = form.elements.attachments.value;
+        target.imagePrompt = form.elements.image_prompt?.value || '';
+        if (validStamp(form.elements.at?.value)) target.at = form.elements.at.value;
+    }
+    const imageField = value => imagesReady() ? `<label>Промпт для фото<input name="image_prompt" value="${esc(value || '')}" maxlength="3000" placeholder="Пусто — по тексту записи и общему стилю"></label>` : '';
 
     function seriesSlotDialog(index) {
         const slot = seriesSlots[index];
         if (!slot) return;
         seriesSlotTarget = index;
+        seriesEdit = null;
+        mediaTarget = 'series';
         const [day, time] = slot.at.split('T');
         modal(`<h2>Слот · ${esc(day)} в ${esc(time)}</h2>
             <form data-form="series-slot" class="vkt-form">
                 <input type="hidden" name="index" value="${Number(index)}">
+                <label>Время публикации<input type="datetime-local" name="at" value="${esc(slot.at)}" min="${esc(localStamp(new Date()))}" required></label>
                 <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(slot.message)}</textarea></label>
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
+                ${imageField(slot.imagePrompt)}
                 <div class="vkt-media-chips">${slot.media.length ? slot.media.map(mediaChip).join('') : '<p class="vkt-muted">Файлы не выбраны.</p>'}</div>
-                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}</div>
+                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} Нарисовать фото`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
+                <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить слот</button></div>
             </form>`);
+    }
+
+    // Запись из очереди: правка текста, фото и времени до отправки.
+    async function seriesPostDialog(id, fresh = true) {
+        if (fresh) {
+            modal('<h2>Запись серии</h2><p class="vkt-muted">Загружаем запись…</p>');
+            const post = await act('publishing_get', {id: Number(id)});
+            seriesEdit = {id: Number(post.id), post, draft: {message: post.message || '', attachments: post.attachments || '', media: post.media_items || [], at: localStamp(parseDate(post.scheduled_at)), imagePrompt: ''}};
+        }
+        if (!seriesEdit) return;
+        const {post, draft} = seriesEdit;
+        seriesSlotTarget = null;
+        mediaTarget = 'series-post';
+        const [label, tone] = queuedStatuses[post.status] || [post.status, ''];
+        if (!post.editable) {
+            modal(`<h2>${esc(post.series_title || 'Запланированная запись')}</h2><p>${badge(esc(label), tone)}</p><div class="vkt-info">Запись уже уходит в VK или опубликована — править её поздно.</div><div class="vkt-review-copy">${esc(post.message || 'Без текста')}</div>`);
+            return;
+        }
+        modal(`<h2>${esc(post.series_title || 'Запланированная запись')}</h2>
+            <p class="vkt-muted">${badge(esc(label), tone)} Правка сохранится в очереди и уйдёт в VK в указанное время.${post.media_missing ? ' Часть файлов удалена из медиатеки — выберите их заново.' : ''}</p>
+            <form data-form="series-post" class="vkt-form">
+                <label>Время публикации<input type="datetime-local" name="at" value="${esc(draft.at)}" min="${esc(localStamp(new Date()))}" required></label>
+                <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(draft.message)}</textarea></label>
+                <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
+                ${imageField(draft.imagePrompt)}
+                <div class="vkt-media-chips">${draft.media.length ? draft.media.map(mediaChip).join('') : '<p class="vkt-muted">Файлы не выбраны.</p>'}</div>
+                <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}${imagesReady() ? button(`${icon('fire')} ${draft.media.length ? 'Нарисовать ещё' : 'Нарисовать фото'}`, 'series-post-image') : ''}</div>
+                <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button>${button('Убрать из серии', 'series-post-delete', `data-id="${Number(post.id)}"`)}</div>
+            </form>`);
+    }
+
+    // Картинка к одному слоту или записи — из их окна.
+    async function seriesDialogImage(trigger) {
+        captureSeriesDialog();
+        const slot = trigger.dataset.index !== undefined ? seriesSlots[Number(trigger.dataset.index)] : null;
+        const target = slot || seriesEdit?.draft;
+        if (!target) return;
+        if (!String(target.message || '').trim() && !String(target.imagePrompt || '').trim()) { toast('Нужен текст записи или свой промпт для фото.', true); return; }
+        if (target.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return; }
+        const note = $('#vkt-series-dialog-progress');
+        const say = text => { if (note) { note.hidden = false; note.textContent = text; } };
+        trigger.disabled = true;
+        say('Рисуем… Обычно это 10–40 секунд.');
+        try {
+            const media = await drawImage(seriesImagePrompt(target.message, target.imagePrompt || ''), text => say(text));
+            target.media.push(media);
+            toast(slot ? 'Фото прикреплено к слоту.' : 'Фото прикреплено. Нажмите «Сохранить», чтобы запись в очереди его получила.');
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { trigger.disabled = false; }
+        // Пока рисовали, окно могли закрыть — тогда не открываем его заново.
+        if (!dialog.open) return;
+        if (slot) seriesSlotDialog(seriesSlots.indexOf(slot)); else seriesPostDialog(0, false);
+    }
+    function addSeriesPostMedia(item) {
+        const draft = seriesEdit?.draft;
+        if (!draft || !item || !item.id) return false;
+        if (draft.media.some(media => Number(media.id) === Number(item.id))) { toast('Этот файл в записи уже есть.'); return false; }
+        if (draft.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return false; }
+        draft.media.push(item);
+        return true;
     }
 
     // Остаток суточного лимита генерации. У администратора лимита нет — строки тоже.
@@ -826,19 +1053,19 @@
     }
     async function seriesQueue(trigger) {
         const form = $('[data-form="series-groups"]');
-        const groups = [...(form ? form.querySelectorAll('input[name="groups"]:checked') : [])].map(input => Number(input.value));
-        if (!groups.length) { toast('Выберите хотя бы одно сообщество серии.', true); return; }
+        if (!seriesGroup) { toast('Выберите сообщество серии.', true); return; }
         const slots = seriesFilled();
         if (!slots.length) { toast('Заполните хотя бы один слот: текст, файл или вложение.', true); return; }
-        if (!confirm(`Поставить в очередь ${slots.length} записей?`)) return;
+        if (!confirm(seriesTarget ? `Добавить ${slots.length} записей в серию «${seriesTitle(seriesTarget)}»?` : `Поставить в очередь ${slots.length} записей?`)) return;
         trigger.disabled = true;
         try {
             const result = await act('series_queue', {
                 // Название серии — начало темы промпта: по нему серию узнают в списке запущенных.
                 title: seriesPrompt.trim().slice(0, 120),
-                groups,
-                signed: !!form.querySelector('input[name="signed"]')?.checked,
-                close_comments: !!form.querySelector('input[name="close_comments"]')?.checked,
+                groups: [Number(seriesGroup)],
+                series_id: seriesTarget,
+                signed: !!form?.querySelector('input[name="signed"]')?.checked,
+                close_comments: !!form?.querySelector('input[name="close_comments"]')?.checked,
                 slots: slots.map(slot => ({scheduled_at: new Date(slot.at).toISOString(), message: slot.message, attachments: slot.attachments, media: slot.media.map(item => Number(item.id))})),
             });
             const failed = result.failed || [];
@@ -846,6 +1073,8 @@
             // с текстами: иначе работа пропадёт, а причину уже не увидеть.
             const queued = new Set((result.posts || []).map(post => String(post.scheduled_at)));
             seriesSlots = seriesSlots.filter(slot => !queued.has(new Date(slot.at).toISOString()));
+            // Следующие слоты дополняют эту же серию, а не заводят новую.
+            if (result.series_id) seriesTarget = result.series_id;
             toast(failed.length
                 ? `В очередь встало ${result.created}, отклонено ${failed.length}. Первая причина: ${failed[0].error}`
                 : `Серия в очереди: ${result.created} записей.`, failed.length > 0);
@@ -868,17 +1097,17 @@
         return true;
     }
     // Задача у BFL асинхронная: ставим её и опрашиваем статус до ответа.
-    async function fluxAwait(id) {
+    async function fluxAwait(id, report = null) {
         const progress = $('#vkt-flux-progress');
         const stages = {Pending: 'в очереди', Reasoning: 'обдумывает', Generating: 'рисует'};
         for (let attempt = 0; attempt < 80; attempt += 1) {
             await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 2000 : 3000));
             const status = await act('flux_status', {id});
             if (status.status === 'done') return status;
-            if (progress) {
-                progress.hidden = false;
-                progress.textContent = `Сервис ${stages[status.stage] || 'работает'}${status.progress ? `: ${status.progress}%` : ''}. Не закрывайте вкладку.`;
-            }
+            const text = `Сервис ${stages[status.stage] || 'работает'}${status.progress ? `: ${status.progress}%` : ''}. Не закрывайте вкладку.`;
+            // Серия рисует не на стенде: прогресс показывает там, откуда запросили.
+            if (report) report(text);
+            else if (progress) { progress.hidden = false; progress.textContent = text; }
         }
         throw new Error('Задача считается дольше четырёх минут. Ответ придёт в журнал — попробуйте позже ещё раз.');
     }
@@ -1446,12 +1675,20 @@
         if (command==='media-remove') {
             // Медиатека одна на конструктор, слоты серии и стенд, поэтому цель
             // выбора хранится отдельно: иначе файл уходит не туда.
-            if (mediaTarget === 'flux') {
+            const inDialog = !!el.closest('#vkt-dialog');
+            if (el.closest('#vkt-flux-media')) {
                 fluxMedia = fluxMedia.filter(item => Number(item.id) !== Number(el.dataset.id));
                 renderFluxMedia();
                 return;
             }
-            if (null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) {
+            if (inDialog && seriesEdit && $('#vkt-dialog-content [data-form="series-post"]')) {
+                captureSeriesDialog();
+                seriesEdit.draft.media = seriesEdit.draft.media.filter(item => Number(item.id) !== Number(el.dataset.id));
+                seriesPostDialog(0, false);
+                return;
+            }
+            if (inDialog && null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) {
+                captureSeriesDialog();
                 const slot = seriesSlots[seriesSlotTarget];
                 slot.media = slot.media.filter(item => Number(item.id) !== Number(el.dataset.id));
                 seriesSlotDialog(seriesSlotTarget);
@@ -1467,6 +1704,10 @@
                 if (addFluxMedia(item)) dialog.close();
                 return;
             }
+            if (mediaTarget === 'series-post') {
+                if (addSeriesPostMedia(item)) seriesPostDialog(0, false);
+                return;
+            }
             if (null !== seriesSlotTarget) {
                 if (addSeriesMedia(seriesSlotTarget, item)) seriesSlotDialog(seriesSlotTarget);
                 return;
@@ -1475,7 +1716,28 @@
             return;
         }
         if (command==='series-slot') { seriesSlotDialog(Number(el.dataset.index)); return; }
-        if (command==='series-media') { mediaTarget = 'series'; seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
+        if (command==='series-media') { captureSeriesDialog(); mediaTarget = 'series'; seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
+        if (command==='series-post-media') { captureSeriesDialog(); mediaTarget = 'series-post'; seriesSlotTarget = null; await mediaLibrary(); return; }
+        if (command==='series-slot-image' || command==='series-post-image') { await seriesDialogImage(el); return; }
+        if (command==='series-post') {
+            try { await seriesPostDialog(el.dataset.id); } catch (error) { if (dialog.open) dialog.close(); toast(error.message, true, error.fix); }
+            return;
+        }
+        if (command==='series-slot-remove') {
+            seriesSlots.splice(Number(el.dataset.index), 1);
+            seriesSlotTarget = null;
+            dialog.close();
+            render();
+            return;
+        }
+        if (command==='series-open') {
+            seriesGroup = seriesGroupOf(el.dataset.id) || seriesGroup;
+            seriesTarget = el.dataset.id;
+            render();
+            content.querySelector('.vkt-series-layout')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+            return;
+        }
+        if (command==='series-images-stop') { if (seriesImageRun) { seriesImageRun.stop = true; el.disabled = true; } return; }
         if (command==='flux-media') { mediaTarget = 'flux'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='series-apply-media') {
             const source = seriesSlots[Number(el.dataset.index)];
@@ -1538,6 +1800,13 @@
             if (command==='posts-prev') postsPage = Math.max(1, postsPage - 1);
             if (command==='save-result') { await act('save_video',{video:el.dataset.id}); toast('Ролик сохранён. Первый замер записан.'); el.textContent='Сохранено'; await load(false); return; }
             if (command==='collect') { toast('Сбор запущен, ожидаем ответы VK…'); const result=await act('collect'); toast(result.message); }
+            if (command==='series-post-delete') {
+                if (!confirm('Убрать запись из серии? Она не уйдёт в VK; остальные записи серии останутся.')) return;
+                await act('publishing_cancel', {id: Number(el.dataset.id)});
+                seriesEdit = null;
+                if (dialog.open) dialog.close();
+                toast('Запись убрана из серии.');
+            }
             if (command==='series-cancel') {
                 if (!confirm('Отменить все ещё не отправленные записи этой серии? Опубликованные останутся.')) return;
                 const result = await act('series_cancel', {series_id: el.dataset.id});
@@ -1718,14 +1987,32 @@
                 case 'series-slot': {
                     const slot = seriesSlots[Number(values.index)];
                     if (!slot) throw new Error('Слот не найден.');
+                    if (!validStamp(values.at) || new Date(values.at).getTime() < Date.now() + 60000) throw new Error('Время слота должно быть в будущем.');
+                    slot.at = values.at;
+                    seriesSlots.sort((a, b) => a.at < b.at ? -1 : 1);
                     slot.message = values.message || '';
                     slot.attachments = values.attachments || '';
+                    slot.imagePrompt = values.image_prompt || '';
                     seriesSlotTarget = null;
                     dialog.close();
                     render();
                     return;
                 }
                 case 'series-groups': return;
+                case 'series-bind': return;
+                case 'series-images': seriesImagesRun().catch(error => { seriesImageRun = null; toast(error.message, true, error.fix); render(); }); return;
+                case 'series-post': {
+                    if (!seriesEdit) throw new Error('Запись не найдена.');
+                    if (!validStamp(values.at)) throw new Error('Укажите дату и время публикации.');
+                    const post = {message: values.message || '', attachments: values.attachments || '', media: seriesEdit.draft.media.map(item => Number(item.id))};
+                    // Время шлём, только если его сдвинули: иначе запись за минуту до выхода не сохранить.
+                    if (values.at !== localStamp(parseDate(seriesEdit.post.scheduled_at))) post.scheduled_at = new Date(values.at).toISOString();
+                    await act('publishing_update', {id: seriesEdit.id, post});
+                    seriesEdit = null;
+                    dialog.close();
+                    toast('Запись обновлена.');
+                    break;
+                }
                 case 'video': await act('save_video',values); dialog.close(); toast('Ролик добавлен, замер сохранён.'); break;
                 case 'product': await act('product',values); dialog.close(); toast('Товар добавлен. Привяжите его к ролику через меню ролика.'); break;
                 case 'source': await act('source',values); dialog.close(); toast('Источник сохранён.'); break;
@@ -1886,6 +2173,17 @@
             return;
         }
         if (event.target.matches('[data-ai-model]')) { aiModel = event.target.value; return; }
+        if (event.target.matches('[data-series-group]')) { seriesGroup = Number(event.target.value) || 0; seriesTarget = ''; render(); return; }
+        if (event.target.matches('[data-series-target]')) { seriesTarget = event.target.value; render(); return; }
+        if (event.target.matches('[data-series-image]')) {
+            const key = event.target.dataset.seriesImage;
+            seriesImage[key] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
+            // Смена поставщика меняет список форматов — панель перерисовываем целиком.
+            if (key === 'provider') { render(); return; }
+            const count = $('[data-series-images-count]');
+            if (count) count.textContent = seriesImageTargets().length;
+            return;
+        }
         if (event.target.matches('[data-ai-preset]')) {
             const preset = (state.settings.ai?.presets || {})[event.target.value] || {};
             const form = event.target.form;
@@ -1898,6 +2196,9 @@
     });
     root.addEventListener('input',event=> {
         if(event.target.id==='vkt-params') apiDraft=event.target.value;
+        // Тема серии и стиль картинок переживают перерисовку раздела.
+        if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
+        if(event.target.dataset.seriesImage==='style') seriesImage.style=event.target.value;
         // Черновики ответов переживают перерисовку: форма собирается заново после каждого действия.
         if(event.target.dataset.draft) { commentsDrafts.set(event.target.dataset.draft, event.target.value); commentsAiKeys.delete(event.target.dataset.draft); }
         if(event.target.dataset.bulk && event.target.type !== 'checkbox') commentsBulk[event.target.dataset.bulk]=event.target.value;

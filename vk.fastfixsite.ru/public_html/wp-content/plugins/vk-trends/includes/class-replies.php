@@ -264,6 +264,30 @@ final class VKT_Replies {
         );
     }
 
+    /**
+     * Комментарии записи. VK закрыл wall.getComments для сервисного ключа
+     * (код 1051), поэтому порядок такой: живой пользовательский токен, затем
+     * сервисный ключ, при 1051 — ключ сообщества. Если отказали все, ошибка
+     * ведёт туда, где подключается пользовательский токен.
+     */
+    private static function read_comments( $group_id, $params ) {
+        $result = VKT_API::request( 'wall.getComments', $params, 'comments' );
+        if ( ! is_wp_error( $result ) || 1051 !== (int) ( $result->get_error_data()['vk_code'] ?? 0 ) ) {
+            return $result;
+        }
+        if ( VKT_Community::has_key( $group_id ) ) {
+            $fallback = VKT_Community::comments( $group_id, $params );
+            if ( ! is_wp_error( $fallback ) ) {
+                return $fallback;
+            }
+        }
+        return new WP_Error(
+            'vkt_replies_read',
+            'VK больше не отдаёт комментарии сервисному ключу (код 1051)' . ( VKT_Community::has_key( $group_id ) ? ', ключу сообщества тоже' : '' ) . '. Подключите пользовательский токен VK ID — комментарии будут читаться им. Новые комментарии приходят и без него, через Callback в ленте.',
+            array( 'status' => 422, 'fix' => array( 'view' => 'posting', 'label' => 'Пользовательский токен — «Публикация»' ) )
+        );
+    }
+
     /** Последние записи стены группы с числом комментариев. */
     public static function posts( $group_id, $offset = 0 ) {
         $group = self::group( $group_id );
@@ -333,7 +357,7 @@ final class VKT_Replies {
         if ( ! $post_id ) {
             return self::error( 'Не указана запись.' );
         }
-        $result = VKT_API::request( 'wall.getComments', array(
+        $result = self::read_comments( $group_id, array(
             'owner_id' => -$group_id,
             'post_id' => $post_id,
             'count' => 100,

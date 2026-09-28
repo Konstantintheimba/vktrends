@@ -155,6 +155,8 @@ final class VKT_Community {
             'groups.getById' => array( 'group_id', 'fields' ),
             'wall.post' => array( 'owner_id', 'from_group', 'message', 'attachments', 'signed', 'close_comments', 'guid' ),
             'wall.createComment' => array( 'owner_id', 'post_id', 'from_group', 'message', 'reply_to_comment', 'guid' ),
+            // Запасное чтение комментариев, когда сервисному ключу VK отказал.
+            'wall.getComments' => array( 'owner_id', 'post_id', 'count', 'offset', 'sort', 'extended', 'fields', 'thread_items_count', 'preview_length' ),
             // Настройка Callback ключом группы с правом «управление сообществом».
             'groups.getCallbackConfirmationCode' => array( 'group_id' ),
             'groups.getCallbackServers' => array( 'group_id', 'server_ids' ),
@@ -333,6 +335,18 @@ final class VKT_Community {
     }
 
     /** Публикует только в группу, чей ключ сохранён: ключ другой группы VK не примет. */
+    /** Комментарии записи ключом её группы. Только чтение одной стены. */
+    public static function comments( $group_id, $params ) {
+        if ( ! self::has_key( $group_id ) || -absint( $group_id ) !== (int) ( $params['owner_id'] ?? 0 ) ) {
+            return self::error( 'Для этой группы не сохранён ключ сообщества.' );
+        }
+        // Ключ передаём явно, как при проверке: отказ в чтении — не поломка
+        // ключа, и отмечать его в неполадках кабинета нельзя.
+        $response = self::request( 'wall.getComments', $params, $group_id, self::keys()[ absint( $group_id ) ] ?? '' );
+        // Ответ приводим к виду VKT_API::request — с обёрткой response.
+        return is_wp_error( $response ) ? $response : array( 'response' => $response );
+    }
+
     public static function publish( $params ) {
         $owner = is_array( $params ) ? (int) ( $params['owner_id'] ?? 0 ) : 0;
         if ( ! is_array( $params ) || $owner >= 0 || ! self::has_key( -$owner ) || 1 !== (int) ( $params['from_group'] ?? 0 ) ) {

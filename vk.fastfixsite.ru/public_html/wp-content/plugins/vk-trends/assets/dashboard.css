@@ -518,3 +518,8 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-callback-manual summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .vkt-callback-manual ol { padding-left: 18px; font-size: 12px; line-height: 1.8; }
 .vkt-dialog h3 { font-size: 14px; margin: 16px 0 8px; }
+/* Серия: записи в очереди открываются на правку, чужие серии приглушены */
+.vkt-cal-slot.is-queued.is-editable { cursor: pointer; }
+.vkt-cal-slot.is-queued.is-editable:hover { border-color: #b9a6f5; }
+.vkt-cal-slot.is-other { opacity: .45; }
+.vkt-cal-slot.is-other:hover { opacity: 1; }

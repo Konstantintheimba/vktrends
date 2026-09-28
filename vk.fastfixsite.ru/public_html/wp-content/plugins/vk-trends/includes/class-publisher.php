@@ -378,20 +378,12 @@ final class VKT_Publisher {
         return implode( ',', $result );
     }
 
-    public static function create( $data ) {
-        global $wpdb;
-        $user_id = VKT_Account::id();
-        if ( ! $user_id ) {
-            return self::error( 'Запись создаётся только вошедшему пользователю.', 401 );
-        }
-        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::any_key() ) {
-            return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
-        }
-        // Будущий адаптер агентов проходит через те же проверки входных данных.
-        $data = apply_filters( 'vkt_publisher_prepare_draft', $data );
-        if ( ! is_array( $data ) ) {
-            return self::error( 'Модуль подготовки вернул неверный формат записи.', 500 );
-        }
+    /**
+     * Текст, вложения и файлы записи с проверками VK. Общая точка для новой
+     * записи и для правки поставленной: правка не должна пропустить то, что
+     * create() отклонил бы.
+     */
+    private static function content( $data ) {
         $message = is_string( $data['message'] ?? null ) ? trim( $data['message'] ) : '';
         if ( mb_strlen( $message ) > 16000 ) {
             return self::error( 'Текст записи должен быть не длиннее 16 000 символов.' );
@@ -420,6 +412,28 @@ final class VKT_Publisher {
         if ( '' === $message && ! $media && ! preg_match( '~(?:^|,)(?:photo|video)-?[1-9]\d{0,18}_[1-9]\d{0,18}(?:_[a-zA-Z0-9_-]{1,255})?(?:,|$)|https?://~i', $attachments ) ) {
             return self::error( 'Запись без текста должна содержать фото, видео или внешнюю ссылку.' );
         }
+        return array( $message, $attachments, $media );
+    }
+
+    public static function create( $data ) {
+        global $wpdb;
+        $user_id = VKT_Account::id();
+        if ( ! $user_id ) {
+            return self::error( 'Запись создаётся только вошедшему пользователю.', 401 );
+        }
+        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::any_key() ) {
+            return self::error( 'Для автопостинга нужен ключ своего сообщества либо пользовательский токен с правами wall и groups.' );
+        }
+        // Будущий адаптер агентов проходит через те же проверки входных данных.
+        $data = apply_filters( 'vkt_publisher_prepare_draft', $data );
+        if ( ! is_array( $data ) ) {
+            return self::error( 'Модуль подготовки вернул неверный формат записи.', 500 );
+        }
+        $content = self::content( $data );
+        if ( is_wp_error( $content ) ) {
+            return $content;
+        }
+        list( $message, $attachments, $media ) = $content;
         $group_ids = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $data['groups'] ?? array() ) ) ) ) );
         if ( ! $group_ids || count( $group_ids ) > self::MAX_GROUPS_PER_POST ) {
             return self::error( 'Выберите от 1 до ' . self::MAX_GROUPS_PER_POST . ' сообществ.' );
@@ -658,11 +672,30 @@ final class VKT_Publisher {
         if ( count( $slots ) > self::MAX_SERIES_SLOTS ) {
             return self::error( 'За один раз в серию можно поставить не больше ' . self::MAX_SERIES_SLOTS . ' записей.' );
         }
+        // Серия живёт в одном сообществе: так её сетку можно дополнять и
+        // править, не гадая, в какую из групп ушла каждая запись.
+        $groups = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $data['groups'] ?? array() ) ) ) ) );
+        if ( 1 !== count( $groups ) ) {
+            return self::error( 'Серия публикуется в одно сообщество — выберите его.' );
+        }
         $created = array();
         $failed = array();
-        $series_id = 's' . strtolower( wp_generate_password( 12, false ) );
-        $title = trim( sanitize_text_field( (string) ( $data['title'] ?? '' ) ) );
-        $series_title = mb_substr( '' !== $title ? $title : 'Серия от ' . wp_date( 'd.m H:i' ), 0, 255 );
+        $series_id = (string) ( $data['series_id'] ?? '' );
+        if ( '' !== $series_id ) {
+            // Дополнение: новые слоты встают в ту же серию и только в её сообщество.
+            $existing = self::series_group( $series_id );
+            if ( is_wp_error( $existing ) ) {
+                return $existing;
+            }
+            if ( $existing['group'] && $existing['group'] !== $groups[0] ) {
+                return self::error( 'Серия «' . $existing['title'] . '» привязана к другому сообществу. Новые записи встают только туда.' );
+            }
+            $series_title = $existing['title'];
+        } else {
+            $series_id = 's' . strtolower( wp_generate_password( 12, false ) );
+            $title = trim( sanitize_text_field( (string) ( $data['title'] ?? '' ) ) );
+            $series_title = mb_substr( '' !== $title ? $title : 'Серия от ' . wp_date( 'd.m H:i' ), 0, 255 );
+        }
         foreach ( $slots as $index => $slot ) {
             $when = is_array( $slot ) ? (string) ( $slot['scheduled_at'] ?? '' ) : '';
             $timestamp = '' === $when ? false : strtotime( $when );
@@ -678,7 +711,7 @@ final class VKT_Publisher {
                 'message' => $slot['message'] ?? '',
                 'attachments' => $slot['attachments'] ?? '',
                 'media' => $slot['media'] ?? array(),
-                'groups' => $data['groups'] ?? array(),
+                'groups' => $groups,
                 'scheduled_at' => $when,
                 'signed' => $data['signed'] ?? false,
                 'close_comments' => $data['close_comments'] ?? false,
@@ -716,12 +749,132 @@ final class VKT_Publisher {
         $ids = array_map( static fn( $row ) => $row['series_id'], $series );
         $filter = $ids ? " OR p.series_id IN ('" . implode( "','", array_map( 'esc_sql', $ids ) ) . "')" : '';
         $posts = (array) $wpdb->get_results( $wpdb->prepare(
-            "SELECT p.id,p.series_id,p.series_title,p.scheduled_at,p.published_at,p.status,LEFT(p.message,140) AS message,
-                (SELECT GROUP_CONCAT(COALESCE(NULLIF(g.name,''),CONCAT('club',d.group_id)) SEPARATOR ', ') FROM " . VKT_Store::table( 'outbound_deliveries' ) . ' d LEFT JOIN ' . VKT_Store::table( 'publishing_groups' ) . " g ON g.group_id=d.group_id AND g.user_id=p.user_id WHERE d.outbound_post_id=p.id) AS groups_names
+            "SELECT p.id,p.series_id,p.series_title,p.scheduled_at,p.published_at,p.status,LEFT(p.message,140) AS message,p.media,p.attachments<>'' AS has_attachments,
+                (SELECT GROUP_CONCAT(COALESCE(NULLIF(g.name,''),CONCAT('club',d.group_id)) SEPARATOR ', ') FROM " . VKT_Store::table( 'outbound_deliveries' ) . ' d LEFT JOIN ' . VKT_Store::table( 'publishing_groups' ) . " g ON g.group_id=d.group_id AND g.user_id=p.user_id WHERE d.outbound_post_id=p.id) AS groups_names,
+                (SELECT GROUP_CONCAT(g.id) FROM " . VKT_Store::table( 'outbound_deliveries' ) . ' d JOIN ' . VKT_Store::table( 'publishing_groups' ) . " g ON g.group_id=d.group_id AND g.user_id=p.user_id WHERE d.outbound_post_id=p.id) AS group_ids,
+                (SELECT COUNT(*) FROM " . VKT_Store::table( 'outbound_deliveries' ) . " d WHERE d.outbound_post_id=p.id AND d.status IN ('publishing','published')) AS started
              FROM $posts_table p WHERE p.user_id=%d AND (p.status IN ('scheduled','queued','draft')$filter) ORDER BY p.scheduled_at LIMIT 1500",
             $user_id
         ), ARRAY_A );
+        foreach ( $posts as &$post ) {
+            // Сетке хватает числа файлов: сами файлы грузятся при открытии записи.
+            $post['media_count'] = '' === (string) $post['media'] ? 0 : count( array_filter( explode( ',', (string) $post['media'] ) ) );
+            $post['group_ids'] = array_map( 'intval', array_filter( explode( ',', (string) $post['group_ids'] ) ) );
+            $post['editable'] = self::editable_status( $post['status'] ) && ! (int) $post['started'];
+            unset( $post['media'], $post['started'] );
+        }
+        unset( $post );
         return array( 'list' => $series, 'posts' => $posts );
+    }
+
+    /** Править можно то, что ещё ждёт своего времени или проверки. */
+    private static function editable_status( $status ) {
+        return in_array( (string) $status, array( 'scheduled', 'queued', 'draft' ), true );
+    }
+
+    /** Сообщество серии (локальный ID) и её название. Серия чужого кабинета не находится. */
+    private static function series_group( $series_id ) {
+        global $wpdb;
+        if ( ! preg_match( '/^s[0-9a-z]{6,39}$/', (string) $series_id ) ) {
+            return self::error( 'Серия не найдена.', 404 );
+        }
+        $posts = VKT_Store::table( 'outbound_posts' );
+        $title = $wpdb->get_var( $wpdb->prepare( "SELECT MAX(series_title) FROM $posts WHERE user_id=%d AND series_id=%s", VKT_Account::id(), $series_id ) );
+        if ( null === $title ) {
+            return self::error( 'Серия не найдена.', 404 );
+        }
+        // Серии до 0.26 могли уходить в несколько групп: тогда привязки нет.
+        $groups = (array) $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT g.id FROM $posts p JOIN " . VKT_Store::table( 'outbound_deliveries' ) . ' d ON d.outbound_post_id=p.id JOIN ' . VKT_Store::table( 'publishing_groups' ) . " g ON g.group_id=d.group_id AND g.user_id=p.user_id
+             WHERE p.user_id=%d AND p.series_id=%s AND d.status<>'cancelled'",
+            VKT_Account::id(), $series_id
+        ) );
+        return array( 'title' => (string) $title, 'group' => 1 === count( $groups ) ? (int) $groups[0] : 0 );
+    }
+
+    /** Запись целиком для окна правки: сетка знает только начало текста. */
+    public static function get( $post_id ) {
+        global $wpdb;
+        $post = $wpdb->get_row( $wpdb->prepare( 'SELECT id,message,attachments,media,status,scheduled_at,series_id,series_title FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE id=%d AND user_id=%d', absint( $post_id ), VKT_Account::id() ), ARRAY_A );
+        if ( ! $post ) {
+            return self::error( 'Запись не найдена в вашем кабинете.', 404 );
+        }
+        $media = '' === (string) $post['media'] ? array() : VKT_Media::public_items( explode( ',', (string) $post['media'] ) );
+        $post['media_items'] = is_wp_error( $media ) ? array() : $media;
+        $post['media_missing'] = is_wp_error( $media );
+        $post['editable'] = self::editable_status( $post['status'] ) && ! self::started( $post['id'] );
+        unset( $post['media'] );
+        return $post;
+    }
+
+    private static function started( $post_id ) {
+        global $wpdb;
+        return (bool) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'outbound_deliveries' ) . " WHERE outbound_post_id=%d AND status IN ('publishing','published')", absint( $post_id ) ) );
+    }
+
+    /**
+     * Правка поставленной записи: текст, вложения, файлы и время. Поле, которого
+     * нет в запросе, остаётся прежним — пакетная генерация фото шлёт только файлы.
+     *
+     * Идёт под замком очереди: run_due держит его всю отправку и читает текст
+     * до захвата задания, так что без замка в VK мог бы уйти прежний текст.
+     */
+    public static function update( $post_id, $data ) {
+        global $wpdb;
+        $post_id = absint( $post_id );
+        $posts = VKT_Store::table( 'outbound_posts' );
+        $deliveries = VKT_Store::table( 'outbound_deliveries' );
+        $post = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $posts WHERE id=%d AND user_id=%d", $post_id, VKT_Account::id() ), ARRAY_A );
+        if ( ! $post ) {
+            return self::error( 'Запись не найдена в вашем кабинете.', 404 );
+        }
+        $data = is_array( $data ) ? $data : array();
+        $merged = array(
+            'message' => array_key_exists( 'message', $data ) ? $data['message'] : $post['message'],
+            'attachments' => array_key_exists( 'attachments', $data ) ? $data['attachments'] : $post['attachments'],
+            'media' => array_key_exists( 'media', $data ) ? $data['media'] : array_filter( explode( ',', (string) $post['media'] ) ),
+        );
+        $content = self::content( $merged );
+        if ( is_wp_error( $content ) ) {
+            return $content;
+        }
+        list( $message, $attachments, $media ) = $content;
+        $scheduled_at = $post['scheduled_at'];
+        if ( ! empty( $data['scheduled_at'] ) ) {
+            $timestamp = is_string( $data['scheduled_at'] ) ? strtotime( $data['scheduled_at'] ) : false;
+            if ( false === $timestamp || $timestamp > time() + YEAR_IN_SECONDS ) {
+                return self::error( 'Укажите корректную дату публикации не дальше одного года.' );
+            }
+            // Перенос в прошлое отправил бы запись немедленно — это уже не перенос.
+            if ( $timestamp < time() + 60 ) {
+                return self::error( 'Новое время уже прошло: переносить можно только на будущее.' );
+            }
+            $scheduled_at = gmdate( 'Y-m-d H:i:s', $timestamp );
+        }
+        if ( ! VKT_Store::lock( 'publisher', 120 ) ) {
+            return self::error( 'Сейчас идёт отправка очереди. Повторите через минуту.', 409 );
+        }
+        try {
+            // Статус перечитываем под замком: за время проверок запись могла уйти.
+            $status = (string) $wpdb->get_var( $wpdb->prepare( "SELECT status FROM $posts WHERE id=%d", $post_id ) );
+            if ( ! self::editable_status( $status ) || self::started( $post_id ) ) {
+                return self::error( 'Запись уже публикуется или опубликована — править её поздно.', 409 );
+            }
+            $now = gmdate( 'Y-m-d H:i:s' );
+            $changes = array( 'message' => $message, 'attachments' => $attachments, 'media' => implode( ',', $media ), 'scheduled_at' => $scheduled_at, 'updated_at' => $now );
+            if ( 'draft' !== $status ) {
+                $changes['status'] = strtotime( $scheduled_at . ' UTC' ) > time() + 30 ? 'scheduled' : 'queued';
+            }
+            $wpdb->update( $posts, $changes, array( 'id' => $post_id ) );
+            // Загруженные в VK копии прежних файлов больше не годятся: сбрасываем их.
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE $deliveries SET available_at=%s,media_attachments='',updated_at=%s WHERE outbound_post_id=%d AND status IN ('pending','waiting_approval')",
+                $scheduled_at, $now, $post_id
+            ) );
+        } finally {
+            VKT_Store::unlock( 'publisher' );
+        }
+        return self::get( $post_id );
     }
 
     /** Отменяет всё ещё не отправленное в серии; опубликованное остаётся. */

@@ -616,6 +616,10 @@ final class VKT_Plugin {
                 return VKT_Publisher::retry( $data['id'] ?? 0 );
             case 'publishing_cancel':
                 return VKT_Publisher::cancel( $data['id'] ?? 0 );
+            case 'publishing_get':
+                return VKT_Publisher::get( $data['id'] ?? 0 );
+            case 'publishing_update':
+                return VKT_Publisher::update( $data['id'] ?? 0, is_array( $data['post'] ?? null ) ? $data['post'] : array() );
             case 'comments_posts':
                 return VKT_Replies::posts( $data['group_id'] ?? 0, $data['offset'] ?? 0 );
             case 'comments_thread':

@@ -25,8 +25,16 @@ final class VKT_API {
      */
     const USER_ONLY = array( 'video.get', 'groups.get', 'wall.post', 'wall.createComment', 'photos.getWallUploadServer', 'photos.saveWallPhoto', 'video.save' );
 
+    // Методы, которые VK перестал отдавать сервисному ключу: код 1051
+    // «method is unavailable with current profile type». Им нужен живой
+    // пользовательский токен, а сервисный ключ остаётся запасным.
+    const USER_FIRST = array( 'wall.getComments' );
+
     public static function slot_for( $method ) {
         if ( in_array( $method, self::USER_ONLY, true ) && VKT_Tokens::has( 'user' ) ) {
+            return 'user';
+        }
+        if ( in_array( $method, self::USER_FIRST, true ) && VKT_Tokens::alive( 'user' ) ) {
             return 'user';
         }
         if ( VKT_Tokens::has( 'service' ) ) {
