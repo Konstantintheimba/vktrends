@@ -21,6 +21,7 @@ final class VKT_Subscriptions {
             'subscriptions' => "user_id bigint unsigned NOT NULL,
                 source_id bigint unsigned NOT NULL,
                 enabled tinyint NOT NULL DEFAULT 1,
+                own tinyint NOT NULL DEFAULT 0,
                 created_at datetime NOT NULL,
                 PRIMARY KEY  (user_id,source_id),
                 KEY source (source_id,enabled)",
@@ -52,9 +53,44 @@ final class VKT_Subscriptions {
         return $wpdb->prepare( 'SELECT video_id FROM ' . VKT_Store::table( 'user_videos' ) . ' WHERE user_id=%d', self::user( $user_id ) );
     }
 
+    /** Сколько источников занято в лимите. Свои группы из «Моих сообществ» лимит не расходуют. */
     public static function count( $user_id = null ) {
         global $wpdb;
-        return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'subscriptions' ) . ' WHERE user_id=%d', self::user( $user_id ) ) );
+        return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'subscriptions' ) . ' WHERE user_id=%d AND own=0', self::user( $user_id ) ) );
+    }
+
+    /**
+     * Слежение за своей группой для «Моих сообществ». Отметка own держит её
+     * вне лимита и вне списков чужих источников. Если та же группа уже в
+     * «Источниках», подписка остаётся ручной: её пользователь хотел сам.
+     */
+    public static function track_own( $value, $title = '', $user_id = null ) {
+        global $wpdb;
+        $user_id = self::user( $user_id );
+        $sources = VKT_Store::table( 'sources' );
+        $source_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $sources WHERE kind='owner' AND value=%s", $value ) );
+        if ( ! $source_id ) {
+            if ( (int) $wpdb->get_var( "SELECT COUNT(*) FROM $sources" ) >= self::GLOBAL_LIMIT ) {
+                return self::error( 'На сайте уже ' . self::GLOBAL_LIMIT . ' источников — свои группы сборщик пока не обойдёт. Обратитесь к администратору.', 422 );
+            }
+            $ok = $wpdb->query( $wpdb->prepare(
+                "INSERT INTO $sources (kind,value,title,photo,next_run) VALUES ('owner',%s,%s,'',%s) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)",
+                $value, $title, gmdate( 'Y-m-d H:i:s' )
+            ) );
+            $source_id = (int) $wpdb->insert_id;
+            if ( false === $ok || ! $source_id ) {
+                return self::error( 'Не удалось завести источник для своей группы.', 500 );
+            }
+        }
+        $ok = $wpdb->query( $wpdb->prepare(
+            'INSERT INTO ' . VKT_Store::table( 'subscriptions' ) . ' (user_id,source_id,enabled,own,created_at) VALUES (%d,%d,1,1,%s) ON DUPLICATE KEY UPDATE enabled=1',
+            $user_id, $source_id, gmdate( 'Y-m-d H:i:s' )
+        ) );
+        if ( false === $ok ) {
+            return self::error( 'Не удалось включить сбор своей группы.', 500 );
+        }
+        self::refresh( $source_id );
+        return array( 'id' => $source_id );
     }
 
     public static function has_source( $source_id, $user_id = null ) {
@@ -129,7 +165,19 @@ final class VKT_Subscriptions {
             $wpdb->update( $sources, array( 'title' => $title ), array( 'id' => $source_id ) );
         }
         if ( $source_id && self::has_source( $source_id, $user_id ) ) {
-            return array( 'id' => $source_id, 'added' => false );
+            // Своя группа из «Моих сообществ», которую теперь добавляют руками,
+            // становится обычным источником: видна в списке и занимает лимит.
+            $own = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT own FROM ' . VKT_Store::table( 'subscriptions' ) . ' WHERE user_id=%d AND source_id=%d', $user_id, $source_id ) );
+            if ( ! $own ) {
+                return array( 'id' => $source_id, 'added' => false );
+            }
+            $limit = VKT_Account::source_limit( $user_id );
+            if ( self::count( $user_id ) >= $limit ) {
+                return self::error( 'Достигнут предел: ' . $limit . ' источников в кабинете. Удалите ненужные или попросите администратора поднять лимит.', 422 );
+            }
+            $wpdb->update( VKT_Store::table( 'subscriptions' ), array( 'own' => 0, 'enabled' => 1 ), array( 'user_id' => $user_id, 'source_id' => $source_id ) );
+            self::refresh( $source_id );
+            return array( 'id' => $source_id, 'added' => true );
         }
         $limit = VKT_Account::source_limit( $user_id );
         if ( self::count( $user_id ) >= $limit ) {

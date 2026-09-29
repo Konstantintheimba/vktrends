@@ -17,6 +17,7 @@ $vkt_pending = $vkt_admin ? VKT_Account::pending_count() : 0;
             <a href="#discover" data-nav="discover"><span data-icon="search"></span>Поиск трендов</a>
             <a href="#posts" data-nav="posts"><span data-icon="post"></span>Посты<span id="vkt-post-count" class="vkt-nav-count">0</span></a>
             <a href="#communities" data-nav="communities"><span data-icon="people"></span>Сообщества</a>
+            <a href="#groups" data-nav="groups"><span data-icon="heart"></span>Мои сообщества</a>
             <a href="#publishing" data-nav="publishing"><span data-icon="send"></span>Автопостинг</a>
             <a href="#series" data-nav="series"><span data-icon="clock"></span>Серия постов</a>
             <a href="#comments" data-nav="comments"><span data-icon="comment"></span>Комментарии</a>

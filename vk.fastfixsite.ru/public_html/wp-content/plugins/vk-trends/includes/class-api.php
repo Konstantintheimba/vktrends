@@ -28,7 +28,7 @@ final class VKT_API {
     // Методы, которые VK перестал отдавать сервисному ключу: код 1051
     // «method is unavailable with current profile type». Им нужен живой
     // пользовательский токен, а сервисный ключ остаётся запасным.
-    const USER_FIRST = array( 'wall.getComments' );
+    const USER_FIRST = array( 'wall.getComments', 'stats.get' );
 
     public static function slot_for( $method ) {
         if ( in_array( $method, self::USER_ONLY, true ) && VKT_Tokens::has( 'user' ) ) {

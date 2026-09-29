@@ -1024,5 +1024,57 @@
         }
       }
     ]
+  },
+  "stats.get": {
+    "description": "Returns statistics of a community: reach, visitors and activity by period. Available to community administrators.",
+    "tokens": [
+      "user"
+    ],
+    "parameters": [
+      {
+        "name": "group_id",
+        "description": "Community ID.",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "timestamp_from",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "timestamp_to",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "interval",
+        "type": "string",
+        "enum": [
+          "day",
+          "week",
+          "month",
+          "year",
+          "all"
+        ]
+      },
+      {
+        "name": "intervals_count",
+        "type": "integer",
+        "minimum": 0
+      },
+      {
+        "name": "filters",
+        "type": "string"
+      },
+      {
+        "name": "stats_groups",
+        "type": "string"
+      },
+      {
+        "name": "extended",
+        "type": "boolean"
+      }
+    ]
   }
 }

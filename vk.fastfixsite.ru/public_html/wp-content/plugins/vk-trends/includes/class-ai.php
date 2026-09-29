@@ -303,7 +303,13 @@ final class VKT_AI {
         return $data;
     }
 
-    public static function generate_text( $prompt, $current = '', $model = '' ) {
+    /** Блок о группе в конце запроса: паспорт владельца и история постов. */
+    private static function with_group( $input, $context ) {
+        $context = is_string( $context ) ? trim( $context ) : '';
+        return '' === $context ? $input : $input . "\n\nО сообществе, для которого пишешь:\n" . $context;
+    }
+
+    public static function generate_text( $prompt, $current = '', $model = '', $context = '' ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
@@ -313,7 +319,7 @@ final class VKT_AI {
         if ( '' !== $current ) {
             $input .= "\n\nТекущий черновик, который можно улучшить:\n" . $current;
         }
-        $result = self::chat( $input, 90, $model );
+        $result = self::chat( self::with_group( $input, $context ), 90, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
@@ -326,7 +332,7 @@ final class VKT_AI {
      * не знает, о чём уже написала, и посты повторяли бы друг друга. Поэтому
      * просим сразу список и разбираем ответ.
      */
-    public static function generate_series( $prompt, $count, $model = '' ) {
+    public static function generate_series( $prompt, $count, $model = '', $context = '' ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
@@ -337,7 +343,7 @@ final class VKT_AI {
             . ' Ровно ' . $count . ' элементов, каждый не длиннее 3000 символов. Не выдумывай факты, цены, ссылки и обещания.'
             . "\n\nТема серии: " . $prompt;
         // Серия из десятков текстов пишется дольше одиночного поста.
-        $result = self::chat( $input, 180, $model );
+        $result = self::chat( self::with_group( $input, $context ), 180, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
@@ -392,7 +398,7 @@ final class VKT_AI {
      * спрашивают, а по номерам ответ сверяется с комментарием, даже если
      * модель пропустит один или переставит их.
      */
-    public static function generate_replies( $instruction, $items, $model = '' ) {
+    public static function generate_replies( $instruction, $items, $model = '', $context = '' ) {
         $instruction = is_string( $instruction ) ? trim( wp_strip_all_tags( $instruction ) ) : '';
         if ( mb_strlen( $instruction ) > 2000 ) {
             return self::error( 'Указания для ответов — не длиннее 2000 символов.' );
@@ -419,7 +425,7 @@ final class VKT_AI {
             . ' Верни строго JSON вида {"replies":[{"id":1,"text":"ответ"}]} — по одному элементу на каждый id, без пояснений.'
             . ( '' !== $instruction ? "\n\nУказания владельца сообщества: " . $instruction : '' )
             . "\n\nКомментарии (post — текст записи, под которой оставлен комментарий):\n" . wp_json_encode( $list, JSON_UNESCAPED_UNICODE );
-        $result = self::chat( $input, 180, $model );
+        $result = self::chat( self::with_group( $input, $context ), 180, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
@@ -433,6 +439,32 @@ final class VKT_AI {
             $out[] = array( 'index' => $entry['id'] - 1, 'text' => $replies[ $position + 1 ] ?? '' );
         }
         return array( 'replies' => $out );
+    }
+
+    /**
+     * Черновик паспорта группы по её постам. Поля, которых из постов не
+     * узнать (кто ведёт, за кем закреплена), модель оставляет пустыми —
+     * выдуманный ответственный хуже пустой строки.
+     */
+    public static function draft_passport( $template, $current, $name, $digest, $model = '' ) {
+        $facts = array(
+            'posts' => $digest['posts'], 'per_week' => $digest['per_week'], 'avg_length' => $digest['avg_length'],
+            'avg_views' => $digest['avg_views'], 'media_share_percent' => $digest['media_share'], 'link_share_percent' => $digest['link_share'],
+            'best_hours' => array_column( $digest['best_hours'], 'key' ), 'best_days' => array_column( $digest['best_days'], 'label' ), 'hashtags' => $digest['hashtags'],
+        );
+        $samples = array_map( static fn( $post ) => $post['text'] . ( null !== $post['views'] ? ' [просмотры: ' . $post['views'] . ']' : '' ), array_merge( $digest['top'], $digest['recent'] ) );
+        $input = 'Составь паспорт сообщества VK «' . sanitize_text_field( $name ) . '» по шаблону ниже. Опиши тему, аудиторию, рубрики, длину и визуал, тон, эмодзи и хештеги, призывы к действию — так, как это видно по постам и цифрам.'
+            . ' Раздел «Кто ведёт» и всё, чего не видно из постов, оставь пустым. Сохрани заголовки шаблона. Верни только Markdown паспорта, без пояснений.'
+            . "\n\nШаблон:\n" . $template
+            . ( '' !== trim( (string) $current ) ? "\n\nТекущий паспорт — уже заполненное владельцем сохрани дословно:\n" . mb_substr( $current, 0, 8000 ) : '' )
+            . "\n\nЦифры сборщика за " . $digest['days'] . " дней:\n" . wp_json_encode( $facts, JSON_UNESCAPED_UNICODE )
+            . "\n\nПосты (лучшие по просмотрам и последние):\n- " . implode( "\n- ", array_slice( array_unique( $samples ), 0, 25 ) );
+        $result = self::chat( $input, 120, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $text = trim( preg_replace( '/^```(?:markdown|md)?\s*|```\s*$/m', '', (string) $result ) );
+        return '' === $text ? self::error( 'Модель не вернула паспорт.', 502, true ) : array( 'passport' => mb_substr( wp_strip_all_tags( $text ), 0, VKT_Groups::PASSPORT_MAX ) );
     }
 
     /** Ответ модели в карту «номер → текст». Если номеров нет, опираемся на порядок. */

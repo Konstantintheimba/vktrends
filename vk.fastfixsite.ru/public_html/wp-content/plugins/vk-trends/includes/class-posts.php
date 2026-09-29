@@ -477,7 +477,7 @@ final class VKT_Posts {
     }
 
     // Сводка по сообществам для отдельной вкладки: агрегаты считаются по колонкам постов.
-    // Только свои источники; пауза — своя, из подписки.
+    // Только свои источники; пауза — своя, из подписки. Свои группы живут в «Моих сообществах».
     public static function communities() {
         global $wpdb;
         $posts = VKT_Store::table( 'posts' );
@@ -495,7 +495,7 @@ final class VKT_Posts {
                 AVG(p.err) AS err,AVG(p.viral) AS viral,
                 MAX(p.published_at) AS last_post,MAX(p.measured_at) AS last_measurement
             FROM $subscriptions sub JOIN $sources s ON s.id=sub.source_id LEFT JOIN $posts p ON p.source_id=s.id
-            WHERE sub.user_id=%d
+            WHERE sub.user_id=%d AND sub.own=0
             GROUP BY s.id ORDER BY views DESC,s.id DESC LIMIT 500",
             VKT_Account::id()
         ), ARRAY_A );

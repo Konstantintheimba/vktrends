@@ -359,8 +359,9 @@ final class VKT_Store {
             'page' => max( 1, (int) $page ),
             'products' => $wpdb->get_results( $wpdb->prepare( "SELECT p.*,COUNT(l.video_id) AS videos,COALESCE(SUM(v.views),0) AS views,SUM(v.velocity) AS velocity FROM $p p LEFT JOIN $l l ON l.product_id=p.id LEFT JOIN $v v ON v.id=l.video_id WHERE p.user_id=%d GROUP BY p.id ORDER BY p.id DESC LIMIT 500", $user_id ), ARRAY_A ),
             // Пауза — своя, у подписки: общий источник обходится, пока он нужен хоть кому-то.
+            // Свои группы собираются для «Моих сообществ» и в списке источников не нужны.
             'sources' => $wpdb->get_results( $wpdb->prepare(
-                'SELECT s.id,s.kind,s.value,s.title,s.photo,s.members,s.next_run,s.synced_at,sub.enabled FROM ' . self::table( 'subscriptions' ) . ' sub JOIN ' . self::table( 'sources' ) . ' s ON s.id=sub.source_id WHERE sub.user_id=%d ORDER BY s.id DESC LIMIT 500',
+                'SELECT s.id,s.kind,s.value,s.title,s.photo,s.members,s.next_run,s.synced_at,sub.enabled FROM ' . self::table( 'subscriptions' ) . ' sub JOIN ' . self::table( 'sources' ) . ' s ON s.id=sub.source_id WHERE sub.user_id=%d AND sub.own=0 ORDER BY s.id DESC LIMIT 500',
                 $user_id
             ), ARRAY_A ),
             // Название источника или ролика рядом с заданием: «Источник #10» ни о чём не говорит.

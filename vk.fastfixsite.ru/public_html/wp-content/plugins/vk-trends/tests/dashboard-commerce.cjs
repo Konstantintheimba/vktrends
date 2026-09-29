@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -289,6 +289,25 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(running.includes('data-command="series-open"') && running.includes('Фото к записям'), 'Серию можно открыть в сетке, есть блок фото');
     check(running.includes('Подключить токен'), 'Без пользовательского токена фото не предлагаются');
     check(running.includes('Запущенные серии') && running.includes('Неделя &lt;про&gt; осень') && running.includes('data-command="series-cancel"') && running.includes('ждут: 2'), 'Список запущенных серий с отменой оставшихся');
+    // Мои сообщества: список, скрытые, карточка с паспортом и охватами; серия видит паспорт и лучшее время.
+    const metrics = {members: 2000, posts: 11, posts30: 11, avg_views30: 550, g1: 10, g7: 120, err: 1.5, last_post: '2026-09-27 10:00:00', measured_at: '2026-09-28 10:00:00', source_id: 9};
+    api.setGroups({template: '# Паспорт сообщества\n', warning: '', groups: [
+        {id: 3, group_id: 987, name: 'Моя <группа>', screen_name: 'mine', can_post: 1, hidden: 0, has_passport: true, metrics, stats: {week: {reach: 1200}}, best_times: [{key: '19:00', avg: 1000}, {key: '10:00', avg: 100}]},
+        {id: 4, group_id: 988, name: 'Скрытая', screen_name: '', can_post: 1, hidden: 1, has_passport: false, metrics: {}, stats: null, best_times: []},
+    ]});
+    html = api.groups();
+    check(html.includes('Моя &lt;группа&gt;') && !html.includes('Моя <группа>') && html.includes('паспорт заполнен') && html.includes('1.2k'), 'Карточка своей группы: имя экранировано, паспорт и охват видны');
+    check(html.includes('Скрытые · 1') && html.includes('data-command="group-hide" data-id="4" data-hidden="0"') && html.includes('data-command="group-open" data-id="3"'), 'Скрытые группы свёрнуты отдельно и возвращаются кнопкой');
+    api.openGroup(3, {id: 3, group_id: 987, name: 'Моя <группа>', screen_name: 'mine', passport: '', passport_at: null, metrics, posts: [{id: 70, owner_id: -987, post_id: 5, text: 'Пост <b>', published_at: '2026-09-25 19:00:00', views: 1000, g1: 5, g7: 50, err: 1.2, is_pinned: 0, is_ad: 0}],
+        stats: {error: 'VK не отдал статистику: <нет прав>', at: '2026-09-28 10:00:00'},
+        digest: {posts: 11, days: 60, per_week: 1.3, avg_views: 550, median_views: 500, avg_err: 1.5, avg_length: 40, media_share: 0, link_share: 0, best_hours: [{key: '19:00', avg: 1000}], best_days: [{label: 'пн', avg: 900}], hashtags: ['осень'], top: [{text: 'Лучший <i>', views: 1009, err: 1, published_at: '2026-09-20 19:00:00'}], weak: [], recent: []}});
+    html = api.groups();
+    check(html.includes('Паспорт сообщества «Моя &lt;группа&gt;»') && html.includes('data-form="group-passport"'), 'Пустой паспорт открывается шаблоном с названием группы');
+    check(html.includes('&lt;нет прав&gt;') && html.includes('data-command="group-stats"') && html.includes('Пост &lt;b&gt;') && html.includes('Лучший &lt;i&gt;') && html.includes('#осень'), 'Отказ в охватах, посты и сводка показаны и экранированы');
+    check(html.includes('data-command="community-posts" data-id="9"') && html.includes('data-command="group-series" data-id="3"'), 'Из группы — к её постам и к серии для неё');
+    api.openGroup(0, null);
+    const bound = api.series();
+    check(bound.includes('паспорт группы «Моя &lt;группа&gt;»') && bound.includes('19:00, 10:00') && bound.includes('data-command="series-best-times"'), 'Серия знает паспорт группы и предлагает её лучшее время');
     // Лента комментариев группы.
     api.setFeed({groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 0}], queue: [], status: {reading: true, ai: {}}}, {total: 1, comments: [{id: 60, post_id: 5, post_text: 'Пост <i>', from_id: 44, author: 'Ира', text: 'Вопрос?', answered: false, queued: '', thread: []}]});
     html = api.comments();

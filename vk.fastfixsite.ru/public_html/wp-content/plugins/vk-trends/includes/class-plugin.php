@@ -221,6 +221,12 @@ final class VKT_Plugin {
             $response->header( 'Cache-Control', 'no-store, private' );
             return $response;
         } ) );
+        // «Мои сообщества»: заодно сверяет, какие свои группы собирает сборщик.
+        register_rest_route( 'vk-trends/v1', '/groups', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function () {
+            $response = new WP_REST_Response( VKT_Groups::state() );
+            $response->header( 'Cache-Control', 'no-store, private' );
+            return $response;
+        } ) );
         register_rest_route( 'vk-trends/v1', '/comments', array( 'methods' => 'GET', 'permission_callback' => $permission, 'callback' => static function () {
             $response = new WP_REST_Response( VKT_Replies::state() );
             $response->header( 'Cache-Control', 'no-store, private' );
@@ -569,7 +575,8 @@ final class VKT_Plugin {
             case 'probe_matrix':
                 return VKT_API::probe_matrix();
             case 'series_generate':
-                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ) ) );
+                // Серия пишется под своё сообщество: паспорт и история постов уходят в модель.
+                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
             case 'series_queue':
                 return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
             case 'series_cancel':
@@ -577,7 +584,7 @@ final class VKT_Plugin {
             case 'vkid_start':
                 return VKT_VKID::start( $data['return_to'] ?? '' );
             case 'ai_text':
-                return self::metered( 'text', static fn() => VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '', self::model_id( $data ) ) );
+                return self::metered( 'text', static fn() => VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '', self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
             case 'ai_image':
                 return self::metered( 'media', static fn() => VKT_AI::generate_image( $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' ) );
             case 'ai_video_start': {
@@ -616,6 +623,16 @@ final class VKT_Plugin {
                 return VKT_Publisher::retry( $data['id'] ?? 0 );
             case 'publishing_cancel':
                 return VKT_Publisher::cancel( $data['id'] ?? 0 );
+            case 'group_detail':
+                return VKT_Groups::detail( $data['id'] ?? 0 );
+            case 'group_hide':
+                return VKT_Groups::hide( $data['id'] ?? 0, ! empty( $data['hidden'] ) );
+            case 'group_passport':
+                return VKT_Groups::save_passport( $data['id'] ?? 0, $data['passport'] ?? '' );
+            case 'group_passport_draft':
+                return self::metered( 'text', static fn() => VKT_Groups::draft_passport( $data['id'] ?? 0, self::model_id( $data ) ) );
+            case 'group_stats':
+                return VKT_Groups::refresh_stats( $data['id'] ?? 0 );
             case 'publishing_get':
                 return VKT_Publisher::get( $data['id'] ?? 0 );
             case 'publishing_update':
@@ -625,7 +642,9 @@ final class VKT_Plugin {
             case 'comments_thread':
                 return VKT_Replies::thread( $data['group_id'] ?? 0, $data['post_id'] ?? 0, $data['offset'] ?? 0 );
             case 'comments_generate':
-                return self::metered( 'text', static fn() => VKT_AI::generate_replies( $data['instruction'] ?? '', $data['items'] ?? array(), self::model_id( $data ) ) );
+                // Ответам нужен тон и призывы из паспорта, история постов им ни к чему.
+                $context = empty( $data['group_id'] ) ? '' : VKT_Groups::context( VKT_Groups::by_vk( $data['group_id'] ), false );
+                return self::metered( 'text', static fn() => VKT_AI::generate_replies( $data['instruction'] ?? '', $data['items'] ?? array(), self::model_id( $data ), $context ) );
             case 'comments_reply':
                 return VKT_Replies::reply_now( $data );
             case 'comments_queue':
@@ -707,6 +726,11 @@ final class VKT_Plugin {
             default:
                 return self::error( 'Неизвестное действие.' );
         }
+    }
+
+    /** Паспорт и история своей группы для модели. Чужая или пустая группа — пустая строка. */
+    private static function group_context( $id ) {
+        return absint( $id ) ? VKT_Groups::context( VKT_Groups::group( absint( $id ) ) ) : '';
     }
 
     /** Генерация xAI с суточным лимитом кабинета: списывается только удачная. */

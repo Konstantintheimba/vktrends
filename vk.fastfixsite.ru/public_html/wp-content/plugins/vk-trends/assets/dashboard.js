@@ -6,7 +6,7 @@
     const $ = (selector, parent = root) => parent.querySelector(selector);
     const content = $('#vkt-content');
     const dialog = $('#vkt-dialog');
-    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
+    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', groups: 'Мои сообщества', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
     // Кабинет пользователя: общий сбор, журнал и ключи сайта видит только администратор.
     // Сервер эти разделы участнику всё равно не отдаст — здесь их просто не рисуем.
     let account = config.account || {};
@@ -101,6 +101,8 @@
     // Серия привязана к одному сообществу: его сетку и видно в календаре.
     // seriesTarget — ID серии, которую дополняем; пусто — новая серия.
     let seriesGroup = 0, seriesTarget = '';
+    // Мои сообщества: список, открытая группа и несохранённый паспорт.
+    let groupsData = null, groupOpen = 0, groupDetail = null, groupPassportDraft = null, groupShowHidden = false;
     // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
     let seriesEdit = null;
     // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
@@ -194,6 +196,9 @@
             if (view === 'communities') communitiesData = (await request('communities')).communities || [];
             // Серия берёт группы и уже запущенные записи из тех же данных, что и автопостинг.
             if (view === 'publishing' || view === 'series') publishingData = await request('publishing');
+            // Серии нужны паспорт и лучшие часы групп — те же данные, что у «Моих сообществ».
+            if (view === 'groups' || view === 'series') groupsData = await request('groups');
+            if (view === 'groups' && groupOpen) groupDetail = await act('group_detail', {id: groupOpen});
             if (view === 'comments') await loadComments();
             if (view === 'users' && isAdmin()) usersData = (await request('users')).users || [];
         } catch (error) { toast(error.message, true, error.fix); }
@@ -507,6 +512,8 @@
         // Дополнять можно только серию этого сообщества.
         const own = (publishingData.series?.list || []).filter(item => seriesGroupOf(item.series_id) === Number(seriesGroup));
         if (seriesTarget && !own.some(item => item.series_id === seriesTarget)) seriesTarget = '';
+        // Своя группа серии в «Моих сообществах»: паспорт и лучшие часы.
+        const bound = (groupsData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
         const queueLabel = seriesTarget ? `${icon('send')} Добавить в серию · ${filled}` : `${icon('send')} Поставить в очередь · ${filled}`;
         const waiting = seriesGroupPosts().filter(post => ['scheduled', 'queued', 'draft'].includes(post.status)).length;
         return heading('Серия постов', subtitle, (seriesSlots.length ? button(queueLabel, 'series-queue', '', true) + button('Очистить сетку', 'series-clear') : '')) +
@@ -526,12 +533,14 @@
                     </div>
                     <fieldset class="vkt-weekdays"><legend>Дни недели</legend>${weekdayNames.map(([value, label]) => `<label class="vkt-check"><input type="checkbox" name="weekdays" value="${value}" ${seriesSetup.weekdays.includes(value) ? 'checked' : ''}>${label}</label>`).join('')}</fieldset>
                     <label>Время публикации<input name="times" value="${esc(seriesSetup.times)}" placeholder="10:00, 19:00"><small class="vkt-help">Через запятую. Каждое время даёт по слоту в каждый выбранный день, всего не больше 60 слотов.</small></label>
+                    ${bound?.best_times?.length ? `<p class="vkt-help">Лучше всего у группы заходили посты в ${esc(bestTimes(bound.best_times))}. ${button('Подставить это время', 'series-best-times')}</p>` : ''}
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('clock')} Построить сетку</button></div>
                 </form>
                 ${aiReady ? `<hr class="vkt-settings-sep">
                 <h2>Промпт на всю серию</h2>
                 <p class="vkt-muted">Один запрос на весь период: модель видит, сколько нужно текстов, и не повторяет себя. Тексты разложатся по пустым слотам по порядку.</p>
                 <form data-form="series-prompt" class="vkt-form">
+                    <p class="vkt-help">${bound?.has_passport ? `Модель учтёт паспорт группы «${esc(bound.name)}» и её последние посты — темы не повторятся.` : `Модель учтёт последние посты группы. Паспорта у неё нет — ${button('Заполнить паспорт', 'group-open', `data-id="${Number(seriesGroup)}"`)}`}</p>
                     ${modelPicker(state.settings.ai)}
                     <label>Тема серии<textarea name="prompt" data-series-prompt rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
                     <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
@@ -1001,6 +1010,113 @@
                 + `<div class="vkt-pagination">${button('← Назад', 'posts-prev', postsPage <= 1 ? 'disabled' : '')}<span>Страница ${postsPage} из ${Math.max(1, postsData.pages)}</span>${button('Далее →', 'posts-next', postsPage >= postsData.pages ? 'disabled' : '')}</div>`
                 : empty(state.sources.length ? 'Постов пока нет' : 'Сначала добавьте сообщества', state.sources.length ? 'Запустите сбор — посты появятся после первого обхода стены. Если фильтры узкие, ослабьте их.' : 'Посты собираются со стен источников. Добавьте сообщества и запустите сбор.', state.sources.length ? (isAdmin() ? 'collector' : 'sources') : 'sources', state.sources.length ? (isAdmin() ? 'Перейти к сбору' : 'Мои источники') : 'Добавить источники'));
     }
+    // ——— Мои сообщества: свои группы, их динамика, охваты и паспорт ———
+    const groupLink = group => group.screen_name ? `https://vk.com/${encodeURIComponent(group.screen_name)}` : `https://vk.com/club${Number(group.group_id)}`;
+    const groupAvatar = group => {
+        const photo = safeUrl(group.photo || group.metrics?.source_photo || '');
+        return photo ? `<img src="${photo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="vkt-post-avatar">${esc(String(group.name || group.group_id).slice(0, 1))}</span>`;
+    };
+    const bestTimes = list => (list || []).map(item => item.key).join(', ');
+    function groupCard(group) {
+        const m = group.metrics || {};
+        const week = group.stats && !group.stats.error ? group.stats.week : null;
+        const collecting = m.measured_at ? `собрано ${ago(m.measured_at)}` : 'ждёт первого сбора';
+        return `<article class="vkt-panel vkt-group-card">
+            <div class="vkt-group-head">${groupAvatar(group)}<div><strong>${esc(group.name || `club${group.group_id}`)}</strong><small><a href="${esc(groupLink(group))}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a> · ${esc(collecting)}</small></div></div>
+            <div class="vkt-group-badges">${group.has_passport ? badge('паспорт заполнен', 'green') : badge('нет паспорта')}${Number(group.can_post) ? '' : badge('нет права публикации', 'red')}</div>
+            <div class="vkt-group-numbers">
+                <span>Подписчики<strong>${short(m.members)}</strong></span>
+                <span>Постов за 30 дн.<strong>${num(m.posts30 || 0)}</strong></span>
+                <span>Ср. просмотры<strong>${short(m.avg_views30 === null ? null : Math.round(m.avg_views30))}</strong></span>
+                <span>Прирост 7 дн.<strong class="vkt-growth">${signed(m.g7)}</strong></span>
+                <span>ERR<strong>${m.err === null || m.err === undefined ? '—' : decimal(m.err, 2) + '%'}</strong></span>
+                <span>Охват 7 дн.<strong>${week && week.reach !== null ? short(week.reach) : '—'}</strong></span>
+            </div>
+            <small class="vkt-muted">${m.last_post ? `Последний пост ${ago(m.last_post)}` : 'Постов ещё нет в базе'}${group.best_times?.length ? ` · лучше заходят в ${esc(bestTimes(group.best_times))}` : ''}</small>
+            <div class="vkt-table-actions">${button('Открыть', 'group-open', `data-id="${Number(group.id)}"`, true)}${button('Скрыть', 'group-hide', `data-id="${Number(group.id)}" data-hidden="1"`)}</div>
+        </article>`;
+    }
+    function groups() {
+        if (!groupsData) return heading('Мои сообщества', 'Загружаем свои группы…') + '<div class="vkt-loading">Загружаем…</div>';
+        if (groupOpen) return groupPage();
+        const list = groupsData.groups || [];
+        const visible = list.filter(group => !Number(group.hidden));
+        const hidden = list.filter(group => Number(group.hidden));
+        const sum = key => visible.reduce((total, group) => total + (Number(group.metrics?.[key]) || 0), 0);
+        const subtitle = 'Только свои группы: последние посты, их движение, охваты и паспорт — кто ведёт, формат, тон и призывы. Паспорт учитывается, когда нейросеть пишет посты, серии и ответы.';
+        if (!list.length) return heading('Мои сообщества', subtitle) + empty('Своих групп пока нет', 'Добавьте группу ключом сообщества или обновите список в «Автопостинге» — она появится здесь и начнёт собираться.', 'publishing', 'Открыть автопостинг');
+        return heading('Мои сообщества', subtitle, button(`${icon('refresh')} Обновить`, 'groups-reload')) +
+            (groupsData.warning ? `<div class="vkt-info vkt-info-warning">${esc(groupsData.warning)}</div>` : '') +
+            `<div class="vkt-stats">${stat('Сообществ', num(visible.length), hidden.length ? `ещё скрыто: ${num(hidden.length)}` : 'Все на виду', 'people')}${stat('Подписчиков', short(sum('members')), 'Сумма по группам', 'heart', 'purple')}${stat('Постов за 30 дней', num(sum('posts30')), 'Без рекламных', 'post', 'green')}${stat('Прирост за 7 дней', signed(sum('g7')), 'Просмотры постов', 'arrow', 'orange')}</div>` +
+            (visible.length ? `<div class="vkt-group-grid">${visible.map(groupCard).join('')}</div>` : '<div class="vkt-info">Все группы скрыты — верните нужные из списка ниже.</div>') +
+            (hidden.length ? `<details class="vkt-panel vkt-group-hidden"${groupShowHidden ? ' open' : ''}><summary data-command="groups-hidden-toggle">Скрытые · ${num(hidden.length)}</summary><p class="vkt-muted">Скрытые группы не собираются, история сохраняется. В автопостинге и сериях они доступны как раньше.</p>${hidden.map(group => `<div class="vkt-group-hidden-row">${groupAvatar(group)}<strong>${esc(group.name || `club${group.group_id}`)}</strong>${button('Вернуть в список', 'group-hide', `data-id="${Number(group.id)}" data-hidden="0"`)}</div>`).join('')}</details>` : '');
+    }
+    function groupStatsPanel(group) {
+        const stats = group.stats;
+        const refresh = button(`${icon('refresh')} ${stats ? 'Обновить охваты' : 'Получить охваты'}`, 'group-stats', `data-id="${Number(group.id)}"`);
+        if (!stats) return `<p class="vkt-muted">Охват и посетителей VK отдаёт методом stats.get администраторам группы. Плагин попробует ключ сообщества, затем пользовательский токен.</p>${refresh}`;
+        if (stats.error) return `<div class="vkt-info vkt-info-warning">${esc(stats.error)}</div><p class="vkt-muted">Запрошено ${date(stats.at)}. Просмотры постов ниже собираются и без этого.</p>${refresh}`;
+        const days = stats.days || [];
+        const peak = Math.max(1, ...days.map(day => Number(day.reach) || 0));
+        const week = stats.week || {};
+        const bars = days.length ? `<div class="vkt-group-bars">${days.map(day => `<span title="${esc(day.day)}: охват ${num(day.reach)}, посетители ${num(day.visitors)}"><i style="height:${Math.max(2, Math.round(100 * (Number(day.reach) || 0) / peak))}%"></i><small>${esc(day.day.slice(8))}</small></span>`).join('')}</div>` : '<p class="vkt-muted">VK вернул пустую статистику: у небольших групп она появляется не сразу.</p>';
+        return `<div class="vkt-group-numbers">
+                <span>Охват 7 дн.<strong>${short(week.reach)}</strong></span>
+                <span>Из них подписчики<strong>${short(week.reach_subscribers)}</strong></span>
+                <span>Посетители<strong>${short(week.visitors)}</strong></span>
+                <span>Подписались<strong class="vkt-growth">${week.subscribed === null || week.subscribed === undefined ? '—' : '+' + num(week.subscribed)}</strong></span>
+                <span>Отписались<strong>${week.unsubscribed === null || week.unsubscribed === undefined ? '—' : '−' + num(week.unsubscribed)}</strong></span>
+            </div>${bars}<p class="vkt-muted">Охват по дням за две недели · ${stats.via === 'community' ? 'ключом сообщества' : 'пользовательским токеном'} · ${date(stats.at)}</p>${refresh}`;
+    }
+    function groupDigestPanel(digest) {
+        if (!digest || !digest.posts) return '<div class="vkt-info">Сборщик ещё не собрал посты группы. Первый обход обычно через несколько минут после появления группы здесь.</div>';
+        const chips = list => list.length ? `<div class="vkt-chips">${list.join('')}</div>` : '<span class="vkt-muted">мало данных</span>';
+        const postLine = post => `<li><span>${esc(post.text || 'Запись без текста')}</span><small>${num(post.views)} просм.${post.err !== null ? ` · ERR ${decimal(post.err, 2)}%` : ''} · ${date(post.published_at)}</small></li>`;
+        return `<div class="vkt-group-numbers">
+                <span>Постов за ${num(digest.days)} дн.<strong>${num(digest.posts)}</strong></span>
+                <span>В неделю<strong>${digest.per_week === null ? '—' : decimal(digest.per_week, 1)}</strong></span>
+                <span>Ср. просмотры<strong>${short(digest.avg_views)}</strong></span>
+                <span>Медиана<strong>${short(digest.median_views)}</strong></span>
+                <span>ERR<strong>${digest.avg_err === null ? '—' : decimal(digest.avg_err, 2) + '%'}</strong></span>
+                <span>Длина текста<strong>${num(digest.avg_length)}</strong></span>
+                <span>С фото/видео<strong>${num(digest.media_share)}%</strong></span>
+                <span>Со ссылкой<strong>${num(digest.link_share)}%</strong></span>
+            </div>
+            <div class="vkt-group-facts">
+                <div><h3>Лучшие часы</h3>${chips(digest.best_hours.map(item => `<span class="vkt-chip-button">${esc(item.key)} · ${short(item.avg)}</span>`))}</div>
+                <div><h3>Лучшие дни</h3>${chips(digest.best_days.map(item => `<span class="vkt-chip-button">${esc(item.label)} · ${short(item.avg)}</span>`))}</div>
+                <div><h3>Хештеги</h3>${chips(digest.hashtags.map(tag => `<span class="vkt-chip-button">#${esc(tag)}</span>`))}</div>
+            </div>
+            ${digest.top.length ? `<h3>Лучше всего зашли</h3><ul class="vkt-group-posts">${digest.top.map(postLine).join('')}</ul>` : ''}
+            ${digest.weak.length ? `<h3>Слабее всего</h3><ul class="vkt-group-posts">${digest.weak.map(postLine).join('')}</ul>` : ''}
+            <p class="vkt-muted">Средние и лучшее время — по постам старше двух суток: свежие ещё набирают просмотры. Часы — по времени сайта.</p>`;
+    }
+    function groupPage() {
+        const group = groupDetail;
+        if (!group) return heading('Мои сообщества', 'Загружаем группу…', button('← Все сообщества', 'group-close')) + '<div class="vkt-loading">Собираем сводку по группе…</div>';
+        const m = group.metrics || {};
+        const passport = groupPassportDraft !== null ? groupPassportDraft : (group.passport || (groupsData?.template || '').replace('# Паспорт сообщества', `# Паспорт сообщества «${group.name || 'club' + group.group_id}»`));
+        const aiReady = !!state.settings.ai?.configured;
+        const actions = button('← Все сообщества', 'group-close') + (m.source_id ? button('Все посты группы', 'community-posts', `data-id="${Number(m.source_id)}"`) : '') + button(`${icon('clock')} Серия для группы`, 'group-series', `data-id="${Number(group.id)}"`, true);
+        const posts = group.posts || [];
+        return heading(esc(group.name || `club${group.group_id}`), `<a href="${esc(groupLink(group))}" target="_blank" rel="noopener noreferrer">${esc(groupLink(group).replace('https://', ''))} ↗</a>${m.measured_at ? ` · собрано ${esc(ago(m.measured_at))}` : ' · ждёт первого сбора'}`, `<div class="vkt-table-actions">${actions}</div>`) +
+            `<div class="vkt-stats">${stat('Подписчики', short(m.members), 'По последнему обходу', 'people')}${stat('Постов за 30 дней', num(m.posts30 || 0), `всего в базе ${num(m.posts || 0)}`, 'post', 'purple')}${stat('Прирост за 7 дней', signed(m.g7), `за сутки ${signed(m.g1)}`, 'arrow', 'green')}${stat('ERR', m.err === null || m.err === undefined ? '—' : decimal(m.err, 2) + '%', 'Среднее по постам', 'heart', 'orange')}</div>` +
+            `<div class="vkt-group-layout">
+                <section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Охваты</h2><p>Кто видел группу, а не только посты.</p></div></div>${groupStatsPanel(group)}</section>
+                <section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Как заходят посты</h2><p>Сводка сборщика: её же видит нейросеть, когда пишет для группы.</p></div></div>${groupDigestPanel(group.digest)}</section>
+            </div>` +
+            `<section class="vkt-panel vkt-group-passport"><div class="vkt-panel-heading"><div><h2>Паспорт группы</h2><p>Markdown: кто ведёт и за кем закреплена, аудитория, формат, тон, призывы, запреты. Уходит в модель вместе с историей постов, когда пишутся посты, серии и ответы на комментарии.${group.passport_at ? ` Сохранён ${esc(date(group.passport_at))}.` : ' Ещё не сохранён.'}</p></div></div>
+                <form data-form="group-passport" class="vkt-form">
+                    <textarea name="passport" data-group-passport rows="24" maxlength="20000" class="vkt-code-input">${esc(passport)}</textarea>
+                    ${aiReady ? `<div class="vkt-ai-row">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Черновик по постам`, 'group-passport-draft', `data-id="${Number(group.id)}"`)}<small class="vkt-help">Нейросеть заполнит формат, тон и призывы по постам. Уже вписанное сохранит, «Кто ведёт» оставит вам.</small></div>${quotaNote(state.settings.ai)}` : ''}
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить паспорт</button>${groupPassportDraft !== null ? '<span class="vkt-muted">Есть несохранённые правки.</span>' : ''}</div>
+                </form>
+            </section>` +
+            `<div class="vkt-section-title"><h2>Последние посты</h2><span class="vkt-muted">Замеры сборщика: просмотры и их прирост.</span></div>` +
+            (posts.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Пост</th><th>Вышел</th><th>Просмотры</th><th>24 часа</th><th>7 дней</th><th>ERR</th><th></th></tr></thead><tbody>${posts.map(post => `<tr><td><strong>${esc(String(post.text || 'Запись без текста').slice(0, 160))}</strong>${Number(post.is_pinned) ? ' ' + badge('закреплён') : ''}${Number(post.is_ad) ? ' ' + badge('реклама') : ''}</td><td>${date(post.published_at)}<small class="vkt-muted">${ago(post.published_at)}</small></td><td><strong>${short(post.views)}</strong></td><td class="vkt-growth">${signed(post.g1)}</td><td class="vkt-growth">${signed(post.g7)}</td><td>${post.err === null ? '—' : decimal(post.err, 2) + '%'}</td><td class="vkt-table-actions">${button('Динамика', 'post-history', `data-id="${Number(post.id)}"`)}<a class="vkt-button" href="https://vk.com/wall${Number(post.owner_id)}_${Number(post.post_id)}" target="_blank" rel="noopener noreferrer">VK ↗</a></td></tr>`).join('')}</tbody></table></section>`
+                : '<div class="vkt-info">Постов группы в базе пока нет — сборщик обойдёт её в ближайшие минуты.</div>');
+    }
+
     function communities() {
         if (!communitiesData) return heading('Сообщества', 'Загружаем сводку…') + '<div class="vkt-loading">Считаем агрегаты по сообществам…</div>';
         const rows = [...communitiesData].sort((a, b) => (Number(b[communitiesSort]) || 0) - (Number(a[communitiesSort]) || 0));
@@ -1357,7 +1473,7 @@
     }
     async function commentsGenerate(keys) {
         const items = keys.map(key => commentPayload(key)).filter(Boolean);
-        const result = await act('comments_generate', {model: aiModel, instruction: commentsBulk.instruction, items: items.map(item => ({author: item.author, post: item.post_text, comment: item.comment_text}))});
+        const result = await act('comments_generate', {model: aiModel, group_id: Number(commentsGroup), instruction: commentsBulk.instruction, items: items.map(item => ({author: item.author, post: item.post_text, comment: item.comment_text}))});
         let filled = 0;
         (result.replies || []).forEach(reply => {
             const key = keys[Number(reply.index)];
@@ -1487,7 +1603,7 @@
         });
         if (adminViews.includes(view) && !isAdmin()) view = 'overview';
         if (view === 'users' && !usersData) { content.innerHTML = heading('Пользователи', 'Загружаем список…') + '<div class="vkt-loading">Загружаем…</div>'; return; }
-        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,settings})[view]();
+        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,settings})[view]();
     }
     function modal(html) {
         $('#vkt-dialog-content').innerHTML = html;
@@ -1737,6 +1853,25 @@
             content.querySelector('.vkt-series-layout')?.scrollIntoView({behavior: 'smooth', block: 'start'});
             return;
         }
+        if (command==='group-open') {
+            groupOpen = Number(el.dataset.id); groupDetail = null; groupPassportDraft = null;
+            if (dialog.open) dialog.close();
+            if (view !== 'groups') { location.hash = '#groups'; return; }
+            render();
+            try { groupDetail = await act('group_detail', {id: groupOpen}); } catch (error) { groupOpen = 0; toast(error.message, true, error.fix); }
+            render();
+            content.scrollIntoView({block: 'start'});
+            return;
+        }
+        if (command==='group-close') { groupOpen = 0; groupDetail = null; groupPassportDraft = null; render(); return; }
+        if (command==='groups-hidden-toggle') { groupShowHidden = !groupShowHidden; return; }
+        if (command==='group-series') { seriesGroup = Number(el.dataset.id); seriesTarget = ''; location.hash = '#series'; return; }
+        if (command==='series-best-times') {
+            const bound = (groupsData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
+            const input = $('[data-form="series-setup"] input[name="times"]');
+            if (bound && input) { input.value = bestTimes(bound.best_times); seriesSetup.times = input.value; toast('Время подставлено — постройте сетку.'); }
+            return;
+        }
         if (command==='series-images-stop') { if (seriesImageRun) { seriesImageRun.stop = true; el.disabled = true; } return; }
         if (command==='flux-media') { mediaTarget = 'flux'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='series-apply-media') {
@@ -1800,6 +1935,23 @@
             if (command==='posts-prev') postsPage = Math.max(1, postsPage - 1);
             if (command==='save-result') { await act('save_video',{video:el.dataset.id}); toast('Ролик сохранён. Первый замер записан.'); el.textContent='Сохранено'; await load(false); return; }
             if (command==='collect') { toast('Сбор запущен, ожидаем ответы VK…'); const result=await act('collect'); toast(result.message); }
+            if (command==='groups-reload') { toast('Обновляем свои группы…'); }
+            if (command==='group-hide') {
+                const hide = el.dataset.hidden === '1';
+                await act('group_hide', {id: Number(el.dataset.id), hidden: hide});
+                if (hide && Number(el.dataset.id) === groupOpen) { groupOpen = 0; groupDetail = null; }
+                toast(hide ? 'Группа скрыта и больше не собирается. История сохранена.' : 'Группа снова в списке и собирается.');
+            }
+            if (command==='group-stats') {
+                const stats = await act('group_stats', {id: Number(el.dataset.id)});
+                toast(stats?.error ? stats.error : 'Охваты обновлены.', !!stats?.error);
+            }
+            if (command==='group-passport-draft') {
+                toast('Нейросеть читает посты группы…');
+                const draft = await act('group_passport_draft', {id: Number(el.dataset.id), model: aiModel});
+                groupPassportDraft = draft.passport;
+                toast('Черновик паспорта готов — проверьте и сохраните.');
+            }
             if (command==='series-post-delete') {
                 if (!confirm('Убрать запись из серии? Она не уйдёт в VK; остальные записи серии останутся.')) return;
                 await act('publishing_cancel', {id: Number(el.dataset.id)});
@@ -1975,7 +2127,7 @@
                     seriesPrompt = values.prompt || '';
                     const empties = seriesSlots.filter(slot => !slot.message.trim());
                     const targets = empties.length ? empties : seriesSlots;
-                    const result = await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: targets.length});
+                    const result = await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: targets.length, group_id: Number(seriesGroup)});
                     const texts = result.posts || [];
                     targets.forEach((slot, index) => { if (texts[index]) slot.message = String(texts[index]); });
                     render();
@@ -2000,6 +2152,12 @@
                 }
                 case 'series-groups': return;
                 case 'series-bind': return;
+                case 'group-passport': {
+                    await act('group_passport', {id: groupOpen, passport: values.passport || ''});
+                    groupPassportDraft = null;
+                    toast('Паспорт сохранён: нейросеть учтёт его в постах, сериях и ответах этой группы.');
+                    break;
+                }
                 case 'series-images': seriesImagesRun().catch(error => { seriesImageRun = null; toast(error.message, true, error.fix); render(); }); return;
                 case 'series-post': {
                     if (!seriesEdit) throw new Error('Запись не найдена.');
@@ -2087,7 +2245,9 @@
                 case 'ai-text': {
                     aiPrompt = values.prompt;
                     const target = $('[data-form="publishing"] textarea[name="message"]');
-                    const result = await act('ai_text',{model: aiModel, prompt:values.prompt,current:target?.value || ''});
+                    // Одна выбранная группа — пишем под неё: паспорт и её недавние темы.
+                    const picked = [...($('[data-form="publishing"]')?.querySelectorAll('input[name="groups"]:checked') || [])];
+                    const result = await act('ai_text',{model: aiModel, prompt:values.prompt,current:target?.value || '', group_id: 1 === picked.length ? Number(picked[0].value) : 0});
                     if (target) { target.value = result.text; target.dispatchEvent(new Event('input',{bubbles:true})); }
                     dialog.close();
                     toast('Текст готов — проверьте его перед отправкой.');
@@ -2198,6 +2358,8 @@
         if(event.target.id==='vkt-params') apiDraft=event.target.value;
         // Тема серии и стиль картинок переживают перерисовку раздела.
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
+        // Паспорт переживает перерисовку после обновления охватов и других действий.
+        if(event.target.matches('[data-group-passport]')) groupPassportDraft=event.target.value;
         if(event.target.dataset.seriesImage==='style') seriesImage.style=event.target.value;
         // Черновики ответов переживают перерисовку: форма собирается заново после каждого действия.
         if(event.target.dataset.draft) { commentsDrafts.set(event.target.dataset.draft, event.target.value); commentsAiKeys.delete(event.target.dataset.draft); }
@@ -2209,6 +2371,8 @@
         $('#vkt-toast').hidden = true;
         if(dialog.open) dialog.close();
         if(view==='overview') { page=1; localSearch=''; sort='velocity'; }
+        // Из раздела ушли — в следующий раз «Мои сообщества» открываются списком.
+        if(view!=='groups') { groupOpen=0; groupDetail=null; groupPassportDraft=null; }
         render();
         content.focus({preventScroll:true});
         try { await load(); } catch(error) { toast(error.message, true, error.fix); }
