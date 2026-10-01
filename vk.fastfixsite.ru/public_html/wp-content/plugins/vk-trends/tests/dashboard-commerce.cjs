@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -307,11 +307,12 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     // Мои сообщества: список, скрытые, карточка с паспортом и охватами; серия видит паспорт и лучшее время.
     const metrics = {members: 2000, posts: 11, posts30: 11, avg_views30: 550, g1: 10, g7: 120, err: 1.5, last_post: '2026-09-27 10:00:00', measured_at: '2026-09-28 10:00:00', source_id: 9};
     api.setGroups({template: '# Паспорт сообщества\n', warning: '', groups: [
-        {id: 3, group_id: 987, name: 'Моя <группа>', screen_name: 'mine', can_post: 1, hidden: 0, has_passport: true, metrics, stats: {week: {reach: 1200}}, best_times: [{key: '19:00', avg: 1000}, {key: '10:00', avg: 100}]},
+        {id: 3, group_id: 987, name: 'Моя <группа>', screen_name: 'mine', can_post: 1, hidden: 0, has_passport: true, materials_count: 2, is_news: true, metrics, stats: {week: {reach: 1200}}, best_times: [{key: '19:00', avg: 1000}, {key: '10:00', avg: 100}]},
         {id: 4, group_id: 988, name: 'Скрытая', screen_name: '', can_post: 1, hidden: 1, has_passport: false, metrics: {}, stats: null, best_times: []},
     ]});
     html = api.groups();
     check(html.includes('Моя &lt;группа&gt;') && !html.includes('Моя <группа>') && html.includes('паспорт заполнен') && html.includes('1.2k'), 'Карточка своей группы: имя экранировано, паспорт и охват видны');
+    check(html.includes('новостная'), 'Новостная группа помечена в списке');
     check(html.includes('Скрытые · 1') && html.includes('data-command="group-hide" data-id="4" data-hidden="0"') && html.includes('data-command="group-open" data-id="3"'), 'Скрытые группы свёрнуты отдельно и возвращаются кнопкой');
     api.openGroup(3, {id: 3, group_id: 987, name: 'Моя <группа>', screen_name: 'mine', passport: '', passport_at: null, metrics, posts: [{id: 70, owner_id: -987, post_id: 5, text: 'Пост <b>', published_at: '2026-09-25 19:00:00', views: 1000, g1: 5, g7: 50, err: 1.2, is_pinned: 0, is_ad: 0}],
         stats: {error: 'VK не отдал статистику: <нет прав>', at: '2026-09-28 10:00:00'},
@@ -320,9 +321,49 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(html.includes('Паспорт сообщества «Моя &lt;группа&gt;»') && html.includes('data-form="group-passport"'), 'Пустой паспорт открывается шаблоном с названием группы');
     check(html.includes('&lt;нет прав&gt;') && html.includes('data-command="group-stats"') && html.includes('Пост &lt;b&gt;') && html.includes('Лучший &lt;i&gt;') && html.includes('#осень'), 'Отказ в охватах, посты и сводка показаны и экранированы');
     check(html.includes('data-command="community-posts" data-id="9"') && html.includes('data-command="group-series" data-id="3"'), 'Из группы — к её постам и к серии для неё');
+    // База ведения: без материалов — предложение из библиотеки, с материалами — галочки назначения и правка.
+    check(html.includes('База ведения') && html.includes('Материалов пока нет') && html.includes('data-command="group-material-new"') && !html.includes('data-form="group-material"'), 'Пустая база ведения предлагает добавить материал');
+    const groupWith = extra => api.openGroup(3, {id: 3, group_id: 987, name: 'Моя группа', screen_name: 'mine', passport: 'п', passport_at: null, metrics, posts: [], stats: null, digest: {posts: 0}, ...extra});
+    groupWith({materials: [], library: [{file: 'vk-shops', title: 'Методика <VK Shops>', description: 'Как писать', chars: 2500}]});
+    html = api.groups();
+    check(html.includes('data-command="group-material-add" data-file="vk-shops"') && html.includes('Методика &lt;VK Shops&gt;'), 'Готовый материал плагина подключается кнопкой');
+    groupWith({library: [{file: 'vk-shops', title: 'Методика VK Shops', description: '', chars: 2500}], materials: [
+        {id: 'm0000000a', file: 'vk-shops', title: 'Методика VK Shops', text: 'Формула', chars: 2500, posts: true, replies: false},
+        {id: 'm0000000b', file: '', title: 'Ответы <о цене>', text: 'Зовём в сообщения', chars: 7000, posts: false, replies: false},
+    ]});
+    html = api.groups();
+    check(!html.includes('data-command="group-material-add"') && html.includes('data-command="group-material-view" data-id="m0000000a"') && html.includes('data-command="group-material-edit" data-id="m0000000b"'), 'Подключённый файл не предлагается повторно; файл смотрят, свой текст правят');
+    check(html.includes('data-material-use="posts" data-id="m0000000a" checked') && html.includes('data-material-use="replies" data-id="m0000000a" >') && html.includes('Ответы &lt;о цене&gt;'), 'У материала галочки «посты» и «ответы», название экранировано');
+    check(html.includes('в модель уйдут первые') && html.includes('не используется'), 'Длинный и выключенный материалы помечены');
+    api.editMaterial('m0000000b', {title: 'Ответы <о цене>', text: 'Зовём </textarea> в сообщения'});
+    html = api.groups();
+    check(html.includes('data-form="group-material"') && html.includes('Зовём &lt;/textarea&gt; в сообщения') && html.includes('Сохранить материал') && !html.includes('name="replies"'), 'Правка своего материала: текст экранирован, галочки остаются в списке');
+    api.editMaterial('new', {title: '', text: ''});
+    html = api.groups();
+    check(html.includes('Добавить материал') && html.includes('name="replies"') && html.includes('data-material-file'), 'Новый материал: назначение и загрузка из файла');
+    api.editMaterial(null, null);
+    // Новости: опция группы, настройки, проверка источников, собранные записи и раскладка в серию.
+    check(html.includes('Это новостная группа') && !html.includes('data-news="sources"') && !html.includes('group-news-collect'), 'У обычной группы от новостей только галочка');
+    api.setNews({enabled: true}, null, null);
+    html = api.groups();
+    check(html.includes('data-news="sources"') && html.includes('data-news="topic"') && html.includes('<option value="10" selected>') && html.includes('Один пост-дайджест') && html.includes('data-command="group-news-check"'), 'Галочка раскрывает источники, выборку, число, свежесть и формат');
+    api.setNews(null, {groupId: 3, fresh: 4, sources: [{url: 'https://a.test/rss', ok: true, total: 20, fresh: 4}, {url: 'https://b.test/<x>', ok: false, message: 'сайт ответил кодом 403'}], sample: [{title: 'Свежая <b>', source: 'a.test', link: 'https://a.test/1'}]},
+        {groupId: 3, mode: 'posts', offered: 4, posts: [{title: 'Обмен <игроков>', source: 'a.test', text: 'Текст <i>\n\nИсточник: https://a.test/1'}, {title: 'Вторая', source: 'a.test', text: 'Второй текст'}]});
+    groupWith({materials: [], library: [], news: {enabled: true, sources: ['https://a.test/rss', 'https://b.test/x'], topic: 'Только <НБА>', count: 15, days: 3, mode: 'digest', used: 7, counts: [5, 10, 15, 20, 30], day_options: [1, 3, 7], max_sources: 15}});
+    html = api.groups();
+    check(html.includes('https://a.test/rss\nhttps://b.test/x') && html.includes('Только &lt;НБА&gt;') && html.includes('<option value="15" selected>') && html.includes('<option value="3" selected>') && html.includes('<option value="digest" selected>'), 'Сохранённые настройки новостей показаны в форме');
+    check(html.includes('в ленте 20, свежих 4') && html.includes('сайт ответил кодом 403') && html.includes('https://b.test/&lt;x&gt;') && html.includes('Свежая &lt;b&gt;'), 'Итог проверки источников: что читается, что нет');
+    check(html.includes('Обмен &lt;игроков&gt;') && html.includes('Текст &lt;i&gt;') && html.includes('data-command="group-news-series"') && html.includes('data-command="group-news-drop" data-index="1"') && html.includes('Уже использовано: 7') && html.includes('data-command="group-news-reset"'), 'Собранные записи экранированы, их можно убрать или разложить в серию');
+    api.setSeries([{at: '2026-10-05T10:00', message: 'Занято', attachments: '', media: []}, {at: '2026-10-05T19:00', message: '', attachments: '', media: []}]);
+    await listeners.click({target: {closest: () => ({dataset: {command: 'group-news-series'}})}});
+    check(api.getSeries()[0].message === 'Занято' && api.getSeries()[1].message.startsWith('Текст <i>') && api.getNews().posts.length === 1 && api.getSeriesGroup() === 3 && context.location.hash === '#series', 'Раскладка: занятый слот не тронут, свободный заполнен, остаток ждёт в группе');
+    context.location.hash = '#posts';
+    api.setSeries([]);
+    api.setNews(null, null, null);
     api.openGroup(0, null);
     const bound = api.series();
     check(bound.includes('паспорт группы «Моя &lt;группа&gt;»') && bound.includes('19:00, 10:00') && bound.includes('data-command="series-best-times"'), 'Серия знает паспорт группы и предлагает её лучшее время');
+    check(bound.includes('базе ведения группы — материалов: 2'), 'Серия показывает, что пишет по базе ведения');
     // Лента комментариев группы.
     api.setFeed({groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 0}], queue: [], status: {reading: true, ai: {}}}, {total: 1, comments: [{id: 60, post_id: 5, post_text: 'Пост <i>', from_id: 44, author: 'Ира', text: 'Вопрос?', answered: false, queued: '', thread: []}]});
     html = api.comments();

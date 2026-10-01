@@ -37,6 +37,8 @@ final class VKT_Publisher {
                 hidden tinyint unsigned NOT NULL DEFAULT 0,
                 passport mediumtext NULL,
                 passport_at datetime DEFAULT NULL,
+                materials longtext NULL,
+                news longtext NULL,
                 stats mediumtext NULL,
                 stats_at datetime DEFAULT NULL,
                 synced_at datetime NOT NULL,
@@ -545,6 +547,11 @@ final class VKT_Publisher {
         global $wpdb;
         $user_id = VKT_Account::id();
         $groups = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY enabled DESC,can_post DESC,name,id LIMIT 1000', $user_id ), ARRAY_A );
+        // Паспорт, материалы и охваты живут в карточке группы, секреты Callback — на сервере: списку они только утяжеляют ответ.
+        foreach ( $groups as &$group ) {
+            unset( $group['passport'], $group['materials'], $group['news'], $group['stats'], $group['callback_code'], $group['callback_secret'] );
+        }
+        unset( $group );
         $posts = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE user_id=%d ORDER BY id DESC LIMIT 100', $user_id ), ARRAY_A );
         $deliveries_table = VKT_Store::table( 'outbound_deliveries' );
         $groups_table = VKT_Store::table( 'publishing_groups' );

@@ -49,8 +49,14 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) {
         $prompt = (string) end( $body['messages'] )['content'];
         $GLOBALS['vkt_prompts'][] = $prompt;
         // Паспорт узнаём первым: в его запросе тоже есть JSON с ключом posts — цифры сводки.
+        if ( str_contains( $prompt, 'редактор новостного сообщества' ) ) {
+            return $reply( array( 'choices' => array( array( 'message' => array( 'content' => '{"news":[{"id":1,"text":"Новость дня"}]}' ) ) ) ) );
+        }
         $content = str_contains( $prompt, 'Составь паспорт' ) ? "```markdown\n# Паспорт\n## Тон общения\n- На «вы», тепло\n```" : ( str_contains( $prompt, '{"posts"' ) ? wp_json_encode( array( 'posts' => array( 'Первый', 'Второй' ) ) ) : 'готово' );
         return $reply( array( 'choices' => array( array( 'message' => array( 'content' => $content ) ) ) ) );
+    }
+    if ( str_starts_with( $url, 'https://example.com/vkt-feed/' ) ) {
+        return array( 'response' => array( 'code' => 200 ), 'body' => '<rss><channel><item><title>Свежая новость</title><link>https://example.com/vkt-feed/n1</link><pubDate>' . gmdate( 'r', time() - 600 ) . '</pubDate><description>Анонс новости</description></item></channel></rss>' );
     }
     $method = str_starts_with( $url, 'https://api.vk.com/method/' ) ? basename( $url ) : '';
     $body = (array) ( $args['body'] ?? array() );
@@ -128,6 +134,9 @@ $ok( VKT_Community::key_alive( 222 ), 'Отказ в статистике не �
 $ok( is_wp_error( $act( $a, 'group_passport', array( 'id' => $g1, 'passport' => str_repeat( 'а', VKT_Groups::PASSPORT_MAX + 1 ) ) ) ), 'Слишком длинный паспорт не сохраняется' );
 $saved = $act( $a, 'group_passport', array( 'id' => $g1, 'passport' => "# Паспорт\n- Закреплено за: Анна\n- Призыв: пишите в сообщения" ) );
 $ok( ! is_wp_error( $saved ), 'Паспорт сохранён' );
+$act( $a, 'group_passport', array( 'id' => $g2, 'passport' => "Цена <1000 руб\nвторая строка" ) );
+$ok( "Цена <1000 руб\nвторая строка" === $act( $a, 'group_detail', array( 'id' => $g2 ) )['passport'], 'Знак «меньше» не обрезает паспорт' );
+$act( $a, 'group_passport', array( 'id' => $g2, 'passport' => '' ) );
 $GLOBALS['vkt_prompts'] = array();
 $series = $act( $a, 'series_generate', array( 'prompt' => 'Неделя про осень', 'count' => 2, 'group_id' => $g1 ) );
 $prompt = (string) end( $GLOBALS['vkt_prompts'] );
@@ -142,6 +151,46 @@ $draft = $act( $a, 'group_passport_draft', array( 'id' => $g1 ) );
 $prompt = (string) end( $GLOBALS['vkt_prompts'] );
 $ok( ! is_wp_error( $draft ) && str_starts_with( $draft['passport'], '# Паспорт' ) && ! str_contains( $draft['passport'], '```' ) && str_contains( $prompt, 'Закреплено за: Анна' ) && str_contains( $prompt, '19:00' ), 'Черновик паспорта: по постам и цифрам, заполненное сохраняется, без обёртки кода' );
 $ok( is_wp_error( $act( $a, 'group_passport_draft', array( 'id' => $g2 ) ) ), 'Без собранных постов черновик не делается — сначала сборщик' );
+
+// 5а. База ведения: материалы группы уходят в генерацию по назначению.
+$added = $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => array( 'file' => 'vk-shops' ) ) );
+$ok( ! is_wp_error( $added ) && 1 === count( $added['materials'] ) && is_wp_error( $act( $b, 'group_material_save', array( 'id' => $g1, 'material' => array( 'file' => 'vk-shops' ) ) ) ), 'Методика подключена к своей группе, к чужой — нельзя' );
+$own = $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => array( 'title' => 'Ответы о цене', 'text' => 'Цену называем только в личке', 'posts' => false, 'replies' => true ) ) );
+$detail = $act( $a, 'group_detail', array( 'id' => $g1 ) );
+wp_set_current_user( $a );
+$card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
+$ok( ! is_wp_error( $own ) && 2 === count( $detail['materials'] ) && array() === array_filter( $detail['library'], static fn( $item ) => isset( $item['text'] ) ) && 2 === $card['materials_count'] && ! isset( $card['materials'] ), 'Карточка отдаёт материалы и библиотеку, список — только их число' );
+$act( $a, 'series_generate', array( 'prompt' => 'Неделя про осень', 'count' => 2, 'group_id' => $g1 ) );
+$prompt = (string) end( $GLOBALS['vkt_prompts'] );
+$ok( str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Закреплено за: Анна' ) && ! str_contains( $prompt, 'только в личке' ), 'Серия пишется по методике и паспорту, без материалов для ответов' );
+$act( $a, 'comments_generate', array( 'group_id' => 111, 'items' => array( array( 'author' => 'Ира', 'post' => 'Пост', 'comment' => 'Сколько стоит?' ) ) ) );
+$prompt = (string) end( $GLOBALS['vkt_prompts'] );
+$ok( str_contains( $prompt, 'только в личке' ) && ! str_contains( $prompt, 'хук × подача' ), 'Ответы на комментарии получают свои материалы' );
+$removed = $act( $a, 'group_material_delete', array( 'id' => $g1, 'material_id' => $added['materials'][0]['id'] ) );
+wp_set_current_user( $a );
+$listed = VKT_Publisher::state()['groups'];
+$ok( $listed && array() === array_filter( $listed, static fn( $group ) => array_key_exists( 'materials', $group ) || array_key_exists( 'passport', $group ) || array_key_exists( 'callback_secret', $group ) ), 'Список групп автопостинга не везёт материалы, паспорт и секрет Callback' );
+$ok( ! is_wp_error( $removed ) && 1 === count( $removed['materials'] ) && 'Ответы о цене' === $removed['materials'][0]['title'], 'Материал убирается, остальные на месте' );
+
+// 5б. Новостная группа: настройки, сбор из источников, источник в тексте, без повторов.
+$ok( is_wp_error( $act( $a, 'group_news_collect', array( 'id' => $g1 ) ) ) && is_wp_error( $act( $a, 'group_news_save', array( 'id' => $g1, 'news' => array( 'enabled' => true, 'sources' => '' ) ) ) ), 'Без источников новости не собираются и не включаются' );
+$news = $act( $a, 'group_news_save', array( 'id' => $g1, 'news' => array( 'enabled' => true, 'sources' => "example.com/vkt-feed/rss", 'topic' => 'Только главное', 'count' => 5, 'days' => 1, 'mode' => 'posts' ) ) );
+$ok( ! is_wp_error( $news ) && array( 'https://example.com/vkt-feed/rss' ) === $news['news']['sources'] && 0 === $news['news']['used'] && is_wp_error( $act( $b, 'group_news_save', array( 'id' => $g1, 'news' => array() ) ) ), 'Настройки новостей сохранены; чужой группе их не поменять' );
+wp_set_current_user( $a );
+$card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
+$ok( true === $card['is_news'] && ! isset( $card['news'] ), 'Новостная группа помечена в списке' );
+$checked = $act( $a, 'group_news_check', array( 'id' => $g1 ) );
+$ok( ! is_wp_error( $checked ) && 1 === $checked['fresh'] && $checked['sources'][0]['ok'] && 'Свежая новость' === $checked['sample'][0]['title'], 'Проверка источников читает ленту без модели' );
+$found = $act( $a, 'group_news_collect', array( 'id' => $g1 ) );
+$prompt = (string) end( $GLOBALS['vkt_prompts'] );
+$ok( ! is_wp_error( $found ) && "Новость дня\n\nИсточник: https://example.com/vkt-feed/n1" === $found['posts'][0]['text'] && 1 === $found['news']['used'], 'Сбор: текст модели и настоящая ссылка на источник, новость запомнена' );
+$ok( str_contains( $prompt, 'Только главное' ) && str_contains( $prompt, 'Анонс новости' ) && str_contains( $prompt, 'Закреплено за: Анна' ) && ! str_contains( $prompt, 'example.com/vkt-feed/n1' ), 'В модель ушли выборка, анонс и паспорт группы, но не ссылка' );
+$again = $act( $a, 'group_news_collect', array( 'id' => $g1 ) );
+$ok( is_wp_error( $again ) && str_contains( $again->get_error_message(), 'Свежих новостей' ), 'Повторный сбор ту же новость не предлагает' );
+$reset = $act( $a, 'group_news_reset', array( 'id' => $g1 ) );
+$ok( 0 === $reset['news']['used'] && ! is_wp_error( $act( $a, 'group_news_collect', array( 'id' => $g1 ) ) ), 'После «Забыть использованные» новость снова доступна' );
+wp_set_current_user( $a );
+$ok( array() === array_filter( VKT_Publisher::state()['groups'], static fn( $group ) => array_key_exists( 'news', $group ) ), 'Список автопостинга настройки новостей не везёт' );
 
 // 6. Скрытие: сбор на паузе, история на месте, возврат включает сбор.
 $act( $a, 'group_hide', array( 'id' => $g1, 'hidden' => true ) );

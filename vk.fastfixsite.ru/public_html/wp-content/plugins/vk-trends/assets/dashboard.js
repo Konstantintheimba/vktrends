@@ -103,6 +103,11 @@
     let seriesGroup = 0, seriesTarget = '';
     // Мои сообщества: список, открытая группа и несохранённый паспорт.
     let groupsData = null, groupOpen = 0, groupDetail = null, groupPassportDraft = null, groupShowHidden = false;
+    // База ведения группы: какой материал открыт на правку ('new' — новый) и его несохранённый текст.
+    let groupMaterialEdit = null, groupMaterialDraft = null;
+    // Новости группы: несохранённые настройки, итог проверки источников и собранные записи.
+    // Собранное привязано к ID группы и переживает уход в «Серию» — туда оно и раскладывается.
+    let groupNewsDraft = null, groupNewsCheck = null, groupNewsResult = null;
     // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
     let seriesEdit = null;
     // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
@@ -540,7 +545,7 @@
                 <h2>Промпт на всю серию</h2>
                 <p class="vkt-muted">Один запрос на весь период: модель видит, сколько нужно текстов, и не повторяет себя. Тексты разложатся по пустым слотам по порядку.</p>
                 <form data-form="series-prompt" class="vkt-form">
-                    <p class="vkt-help">${bound?.has_passport ? `Модель учтёт паспорт группы «${esc(bound.name)}» и её последние посты — темы не повторятся.` : `Модель учтёт последние посты группы. Паспорта у неё нет — ${button('Заполнить паспорт', 'group-open', `data-id="${Number(seriesGroup)}"`)}`}</p>
+                    <p class="vkt-help">${bound?.has_passport ? `Модель учтёт паспорт группы «${esc(bound.name)}» и её последние посты — темы не повторятся.` : `Модель учтёт последние посты группы. Паспорта у неё нет — ${button('Заполнить паспорт', 'group-open', `data-id="${Number(seriesGroup)}"`)}`}${Number(bound?.materials_count) ? ` Пишет по базе ведения группы — материалов: ${num(bound.materials_count)}.` : ''}</p>
                     ${modelPicker(state.settings.ai)}
                     <label>Тема серии<textarea name="prompt" data-series-prompt rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
                     <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
@@ -1074,7 +1079,7 @@
         const collecting = m.measured_at ? `собрано ${ago(m.measured_at)}` : 'ждёт первого сбора';
         return `<article class="vkt-panel vkt-group-card">
             <div class="vkt-group-head">${groupAvatar(group)}<div><strong>${esc(group.name || `club${group.group_id}`)}</strong><small><a href="${esc(groupLink(group))}" target="_blank" rel="noopener noreferrer">${esc(group.screen_name || `club${group.group_id}`)} ↗</a> · ${esc(collecting)}</small></div></div>
-            <div class="vkt-group-badges">${group.has_passport ? badge('паспорт заполнен', 'green') : badge('нет паспорта')}${Number(group.can_post) ? '' : badge('нет права публикации', 'red')}</div>
+            <div class="vkt-group-badges">${group.has_passport ? badge('паспорт заполнен', 'green') : badge('нет паспорта')}${Number(group.materials_count) ? badge(`база ведения: ${num(group.materials_count)}`, 'green') : ''}${group.is_news ? badge('новостная', 'green') : ''}${Number(group.can_post) ? '' : badge('нет права публикации', 'red')}</div>
             <div class="vkt-group-numbers">
                 <span>Подписчики<strong>${short(m.members)}</strong></span>
                 <span>Постов за 30 дн.<strong>${num(m.posts30 || 0)}</strong></span>
@@ -1094,7 +1099,7 @@
         const visible = list.filter(group => !Number(group.hidden));
         const hidden = list.filter(group => Number(group.hidden));
         const sum = key => visible.reduce((total, group) => total + (Number(group.metrics?.[key]) || 0), 0);
-        const subtitle = 'Только свои группы: последние посты, их движение, охваты и паспорт — кто ведёт, формат, тон и призывы. Паспорт учитывается, когда нейросеть пишет посты, серии и ответы.';
+        const subtitle = 'Только свои группы: последние посты, их движение, охваты и паспорт — кто ведёт, формат, тон и призывы. Паспорт и база ведения учитываются, когда нейросеть пишет посты, серии и ответы.';
         if (!list.length) return heading('Мои сообщества', subtitle) + empty('Своих групп пока нет', 'Добавьте группу ключом сообщества или обновите список в «Автопостинге» — она появится здесь и начнёт собираться.', 'publishing', 'Открыть автопостинг');
         return heading('Мои сообщества', subtitle, button(`${icon('refresh')} Обновить`, 'groups-reload')) +
             (groupsData.warning ? `<div class="vkt-info vkt-info-warning">${esc(groupsData.warning)}</div>` : '') +
@@ -1142,6 +1147,73 @@
             ${digest.weak.length ? `<h3>Слабее всего</h3><ul class="vkt-group-posts">${digest.weak.map(postLine).join('')}</ul>` : ''}
             <p class="vkt-muted">Средние и лучшее время — по постам старше двух суток: свежие ещё набирают просмотры. Часы — по времени сайта.</p>`;
     }
+    // В запрос уходит начало материала — тот же предел, что VKT_Materials::PROMPT_EACH.
+    const MATERIAL_PROMPT_LIMIT = 6000;
+    function groupMaterialsPanel(group) {
+        const list = group.materials || [];
+        const attached = list.map(item => item.file).filter(Boolean);
+        const free = (group.library || []).filter(item => !attached.includes(item.file));
+        const use = (item, key, label) => `<label class="vkt-check"><input type="checkbox" data-material-use="${key}" data-id="${esc(item.id)}" ${item[key] ? 'checked' : ''}>${label}</label>`;
+        const row = item => `<li class="vkt-material${item.posts || item.replies ? '' : ' is-off'}">
+                <div class="vkt-material-head"><strong>${esc(item.title)}</strong>${badge(item.file ? 'файл плагина' : 'свой текст')}<small class="vkt-muted">${num(item.chars)} симв.${Number(item.chars) > MATERIAL_PROMPT_LIMIT ? ` · в модель уйдут первые ${num(MATERIAL_PROMPT_LIMIT)}` : ''}${item.posts || item.replies ? '' : ' · не используется'}</small></div>
+                <div class="vkt-material-uses">${use(item, 'posts', 'Посты и серии')}${use(item, 'replies', 'Ответы на комментарии')}</div>
+                <div class="vkt-table-actions">${button(item.file ? 'Посмотреть' : 'Править', item.file ? 'group-material-view' : 'group-material-edit', `data-id="${esc(item.id)}"`)}${button('Убрать', 'group-material-delete', `data-id="${esc(item.id)}"`)}</div>
+            </li>`;
+        const draft = groupMaterialDraft || {title: '', text: ''};
+        const form = groupMaterialEdit ? `<form data-form="group-material" class="vkt-form vkt-material-form">
+                <label>Название<input name="title" data-material-draft="title" maxlength="120" required value="${esc(draft.title)}" placeholder="Например, тон ответов на вопросы о цене"></label>
+                <label>Текст материала, Markdown<textarea name="text" data-material-draft="text" rows="14" maxlength="20000" required class="vkt-code-input" placeholder="Правила, по которым модель пишет для этой группы">${esc(draft.text)}</textarea></label>
+                <label>Или возьмите текст из файла .md / .txt — он подставится в поле выше<input type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" data-material-file></label>
+                ${groupMaterialEdit === 'new' ? `<div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" name="posts" checked>Посты и серии</label><label class="vkt-check"><input type="checkbox" name="replies">Ответы на комментарии</label></div>` : ''}
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} ${groupMaterialEdit === 'new' ? 'Добавить материал' : 'Сохранить материал'}</button>${button('Отмена', 'group-material-cancel')}</div>
+            </form>` : '';
+        return `<section class="vkt-panel vkt-group-materials"><div class="vkt-panel-heading"><div><h2>База ведения</h2><p>Материалы, по которым ведётся группа: методика, правила рубрик, ответы на частые вопросы. Отмеченные уходят в модель вместе с паспортом — в посты и серии или в ответы на комментарии. Если материал расходится с паспортом, главнее паспорт.</p></div></div>
+            ${list.length ? `<ul class="vkt-material-list">${list.map(row).join('')}</ul>` : '<div class="vkt-info">Материалов пока нет: модель пишет только по паспорту и истории постов.</div>'}
+            ${free.length ? `<div class="vkt-material-library"><h3>Готовые материалы плагина</h3>${free.map(item => `<div class="vkt-material-offer"><div><strong>${esc(item.title)}</strong><small class="vkt-muted">${esc(item.description || '')} · ${num(item.chars)} симв.</small></div>${button('Подключить', 'group-material-add', `data-file="${esc(item.file)}"`, true)}</div>`).join('')}</div>` : ''}
+            ${form || `<div class="vkt-form-actions">${button('Добавить свой материал', 'group-material-new')}</div>`}
+        </section>`;
+    }
+    // Настройки новостей как в форме: сохранённое, поверх — несохранённые правки.
+    const groupNewsForm = group => {
+        const saved = group.news || {};
+        return {enabled: !!saved.enabled, sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', ...(groupNewsDraft || {})};
+    };
+    const groupNewsPayload = group => {
+        const form = groupNewsForm(group);
+        return {enabled: !!form.enabled, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode};
+    };
+    function groupNewsPanel(group) {
+        const saved = group.news || {};
+        const form = groupNewsForm(group);
+        const aiReady = !!state.settings.ai?.configured;
+        const option = (value, label, current) => `<option value="${esc(value)}" ${String(current) === String(value) ? 'selected' : ''}>${label}</option>`;
+        const dayLabels = {1: 'за сутки', 3: 'за 3 дня', 7: 'за неделю'};
+        const check = groupNewsCheck?.groupId === Number(group.id) ? groupNewsCheck : null;
+        const result = groupNewsResult?.groupId === Number(group.id) ? groupNewsResult : null;
+        const intro = 'Плагин сам ходит в интернет: читает RSS-ленты ваших источников, нейросеть отбирает подходящие новости и пишет по ним записи, ссылку на источник добавляет плагин. Работает с любой подключённой моделью.';
+        if (!form.enabled) return `<section class="vkt-panel vkt-group-news"><div class="vkt-panel-heading"><div><h2>Новости</h2><p>${intro}</p></div></div>
+            <form data-form="group-news" class="vkt-form"><label class="vkt-check"><input type="checkbox" data-news="enabled">Это новостная группа</label>${saved.enabled ? `<div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить</button><span class="vkt-muted">Источники и выборка сохранятся — их можно включить обратно.</span></div>` : ''}</form></section>`;
+        const checkHtml = check ? `<div class="vkt-news-check"><h3>Источники${check.fresh === undefined ? '' : ` · свежих новостей: ${num(check.fresh)}`}</h3><ul>${(check.sources || []).map(source => `<li class="${source.ok ? '' : 'is-failed'}"><span>${esc(source.url)}</span><small>${source.ok ? `читается · в ленте ${num(source.total)}, свежих ${num(source.fresh)}` : esc(source.message)}</small></li>`).join('')}</ul>${(check.sample || []).length ? `<h3>Свежее сверху</h3><ul>${check.sample.map(item => `<li><span>${esc(item.title)}</span><small>${esc(item.source)}</small></li>`).join('')}</ul>` : ''}</div>` : '';
+        const resultHtml = result && result.posts.length ? `<div class="vkt-news-result"><h3>${result.mode === 'digest' ? 'Дайджест готов' : `Готово записей: ${num(result.posts.length)}`} · модель выбирала из ${num(result.offered)} свежих</h3>
+                <ul>${result.posts.map((post, index) => `<li><div><strong>${esc(post.title)}</strong><small class="vkt-muted">${esc(post.source)}</small></div><p>${esc(post.text)}</p>${button('Убрать', 'group-news-drop', `data-index="${index}"`)}</li>`).join('')}</ul>
+                <div class="vkt-form-actions">${button(`${icon('clock')} Разложить по сетке серии`, 'group-news-series', '', true)}<span class="vkt-muted">Записи встанут в свободные слоты серии этой группы: там их можно поправить, добавить фото и поставить в очередь. Сами они не публикуются.</span></div></div>` : '';
+        return `<section class="vkt-panel vkt-group-news"><div class="vkt-panel-heading"><div><h2>Новости</h2><p>${intro}</p></div></div>
+            <form data-form="group-news" class="vkt-form">
+                <label class="vkt-check"><input type="checkbox" data-news="enabled" checked>Это новостная группа</label>
+                <label>Источники — адрес сайта или его RSS-ленты, по одному в строке, до ${num(saved.max_sources || 15)}<textarea data-news="sources" rows="5" class="vkt-code-input" placeholder="https://example.ru/rss&#10;https://example.com">${esc(form.sources)}</textarea></label>
+                <label>Какие новости брать<textarea data-news="topic" rows="4" maxlength="1500" placeholder="Например: только баскетбол НБА — матчи, обмены, травмы. Без слухов, ставок и политики.">${esc(form.topic)}</textarea></label>
+                <div class="vkt-form-row vkt-news-options">
+                    <label>Сколько новостей за сбор<select data-news="count">${(saved.counts || [5, 10, 15, 20, 30]).map(value => option(value, num(value), form.count)).join('')}</select></label>
+                    <label>Свежесть<select data-news="days">${(saved.day_options || [1, 3, 7]).map(value => option(value, dayLabels[value] || `за ${value} дн.`, form.days)).join('')}</select></label>
+                    <label>Что получить<select data-news="mode">${option('posts', 'Отдельный пост на каждую новость', form.mode)}${option('digest', 'Один пост-дайджест', form.mode)}</select></label>
+                </div>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить настройки</button>${button('Проверить источники', 'group-news-check')}${groupNewsDraft ? '<span class="vkt-muted">Есть несохранённые правки — сбор и проверка сохранят их сами.</span>' : ''}</div>
+            </form>
+            ${checkHtml}
+            ${aiReady ? `<div class="vkt-ai-row vkt-news-run">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Собрать новости`, 'group-news-collect', '', true)}<small class="vkt-help">Взятые новости запоминаются и в следующий сбор не попадут. Уже использовано: ${num(saved.used || 0)}.${Number(saved.used) ? ` ${button('Забыть использованные', 'group-news-reset')}` : ''}</small></div>${quotaNote(state.settings.ai)}` : '<div class="vkt-info">Чтобы собирать новости, подключите модель для текстов в «Настройках».</div>'}
+            ${resultHtml}
+        </section>`;
+    }
     function groupPage() {
         const group = groupDetail;
         if (!group) return heading('Мои сообщества', 'Загружаем группу…', button('← Все сообщества', 'group-close')) + '<div class="vkt-loading">Собираем сводку по группе…</div>';
@@ -1163,6 +1235,8 @@
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить паспорт</button>${groupPassportDraft !== null ? '<span class="vkt-muted">Есть несохранённые правки.</span>' : ''}</div>
                 </form>
             </section>` +
+            groupMaterialsPanel(group) +
+            groupNewsPanel(group) +
             `<div class="vkt-section-title"><h2>Последние посты</h2><span class="vkt-muted">Замеры сборщика: просмотры и их прирост.</span></div>` +
             (posts.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Пост</th><th>Вышел</th><th>Просмотры</th><th>24 часа</th><th>7 дней</th><th>ERR</th><th></th></tr></thead><tbody>${posts.map(post => `<tr><td><strong>${esc(String(post.text || 'Запись без текста').slice(0, 160))}</strong>${Number(post.is_pinned) ? ' ' + badge('закреплён') : ''}${Number(post.is_ad) ? ' ' + badge('реклама') : ''}</td><td>${date(post.published_at)}<small class="vkt-muted">${ago(post.published_at)}</small></td><td><strong>${short(post.views)}</strong></td><td class="vkt-growth">${signed(post.g1)}</td><td class="vkt-growth">${signed(post.g7)}</td><td>${post.err === null ? '—' : decimal(post.err, 2) + '%'}</td><td class="vkt-table-actions">${button('Динамика', 'post-history', `data-id="${Number(post.id)}"`)}<a class="vkt-button" href="https://vk.com/wall${Number(post.owner_id)}_${Number(post.post_id)}" target="_blank" rel="noopener noreferrer">VK ↗</a></td></tr>`).join('')}</tbody></table></section>`
                 : '<div class="vkt-info">Постов группы в базе пока нет — сборщик обойдёт её в ближайшие минуты.</div>');
@@ -1905,7 +1979,7 @@
             return;
         }
         if (command==='group-open') {
-            groupOpen = Number(el.dataset.id); groupDetail = null; groupPassportDraft = null;
+            groupOpen = Number(el.dataset.id); groupDetail = null; groupPassportDraft = null; groupMaterialEdit = null; groupMaterialDraft = null; groupNewsDraft = null;
             if (dialog.open) dialog.close();
             if (view !== 'groups') { location.hash = '#groups'; return; }
             render();
@@ -1914,7 +1988,33 @@
             content.scrollIntoView({block: 'start'});
             return;
         }
-        if (command==='group-close') { groupOpen = 0; groupDetail = null; groupPassportDraft = null; render(); return; }
+        if (command==='group-close') { groupOpen = 0; groupDetail = null; groupPassportDraft = null; groupMaterialEdit = null; groupMaterialDraft = null; groupNewsDraft = null; render(); return; }
+        if (command==='group-news-drop') { groupNewsResult?.posts.splice(Number(el.dataset.index), 1); render(); return; }
+        if (command==='group-news-series') {
+            const posts = groupNewsResult?.posts || [];
+            if (!posts.length) return;
+            seriesGroup = groupNewsResult.groupId; seriesTarget = '';
+            // Сетки ещё нет — строим по текущим настройкам серии, как кнопкой «Построить сетку».
+            if (!seriesSlots.length) seriesSlots = seriesPlan(seriesSetup);
+            const free = seriesSlots.filter(slot => !slot.message.trim());
+            const placed = posts.splice(0, free.length);
+            placed.forEach((post, index) => { free[index].message = post.text; });
+            if (!placed.length) { toast(seriesSlots.length ? 'В сетке серии нет свободных слотов. Добавьте время или период в «Серии» и повторите.' : 'Сетка серии не строится: проверьте дни и время в «Серии».', true); render(); return; }
+            toast(posts.length ? `Разложено ${placed.length} из ${placed.length + posts.length}: слотов не хватило. Добавьте время или период и разложите остаток из карточки группы.` : `Записи разложены по сетке: ${placed.length}. Проверьте и поставьте в очередь.`, posts.length > 0);
+            if (!posts.length) groupNewsResult = null;
+            location.hash = '#series';
+            return;
+        }
+        if (command==='group-material-new') { groupMaterialEdit = 'new'; groupMaterialDraft = {title: '', text: ''}; render(); return; }
+        if (command==='group-material-cancel') { groupMaterialEdit = null; groupMaterialDraft = null; render(); return; }
+        if (command==='group-material-edit' || command==='group-material-view') {
+            const item = (groupDetail?.materials || []).find(entry => entry.id === el.dataset.id);
+            if (!item) return;
+            if (command==='group-material-view') { modal(`<h2>${esc(item.title)}</h2><p class="vkt-muted">Файл плагина materials/${esc(item.file)}.md — правится в плагине и обновляется сразу у всех групп.</p><textarea class="vkt-code-input" rows="18" readonly>${esc(item.text)}</textarea>`); return; }
+            groupMaterialEdit = item.id; groupMaterialDraft = {title: item.title, text: item.text};
+            render();
+            return;
+        }
         if (command==='groups-hidden-toggle') { groupShowHidden = !groupShowHidden; return; }
         if (command==='group-series') { seriesGroup = Number(el.dataset.id); seriesTarget = ''; location.hash = '#series'; return; }
         if (command==='series-best-times') {
@@ -1996,6 +2096,37 @@
             if (command==='group-stats') {
                 const stats = await act('group_stats', {id: Number(el.dataset.id)});
                 toast(stats?.error ? stats.error : 'Охваты обновлены.', !!stats?.error);
+            }
+            if (command==='group-news-check' || command==='group-news-collect') {
+                const id = groupOpen;
+                // Проверяем и собираем по тому, что на экране: несохранённые правки сначала сохраняются.
+                if (groupNewsDraft) { await act('group_news_save', {id, news: groupNewsPayload(groupDetail)}); groupNewsDraft = null; }
+                if (command==='group-news-check') {
+                    toast('Читаем источники…');
+                    groupNewsCheck = {groupId: id, ...(await act('group_news_check', {id}))};
+                    toast(`Источники проверены: свежих новостей ${groupNewsCheck.fresh}.`);
+                } else {
+                    toast('Читаем источники и отбираем новости — это может занять минуту…');
+                    const found = await act('group_news_collect', {id, model: aiModel});
+                    groupNewsResult = {groupId: id, posts: found.posts || [], mode: found.mode, offered: found.offered};
+                    groupNewsCheck = {groupId: id, sources: found.sources || []};
+                    toast(found.mode === 'digest' ? 'Дайджест готов — проверьте его.' : `Готово записей: ${groupNewsResult.posts.length}. Проверьте их.`);
+                }
+            }
+            if (command==='group-news-reset') {
+                if (!window.confirm('Забыть использованные новости? Следующий сбор может предложить их снова.')) return;
+                await act('group_news_reset', {id: groupOpen});
+                toast('Список использованных новостей очищен.');
+            }
+            if (command==='group-material-add') {
+                await act('group_material_save', {id: groupOpen, material: {file: el.dataset.file, posts: true, replies: false}});
+                toast('Материал подключён: посты и серии этой группы пишутся по нему.');
+            }
+            if (command==='group-material-delete') {
+                if (!window.confirm('Убрать материал из базы ведения группы? В генерации он больше не учитывается.')) return;
+                await act('group_material_delete', {id: groupOpen, material_id: el.dataset.id});
+                if (groupMaterialEdit === el.dataset.id) { groupMaterialEdit = null; groupMaterialDraft = null; }
+                toast('Материал убран.');
             }
             if (command==='group-passport-draft') {
                 toast('Нейросеть читает посты группы…');
@@ -2209,6 +2340,21 @@
                     toast('Паспорт сохранён: нейросеть учтёт его в постах, сериях и ответах этой группы.');
                     break;
                 }
+                case 'group-news': {
+                    const saved = await act('group_news_save', {id: groupOpen, news: groupNewsPayload(groupDetail)});
+                    groupNewsDraft = null;
+                    toast(saved.news.enabled ? `Настройки новостей сохранены: источников ${saved.news.sources.length}.` : 'Новости для этой группы выключены.');
+                    break;
+                }
+                case 'group-material': {
+                    const material = groupMaterialEdit === 'new'
+                        ? {title: values.title || '', text: values.text || '', posts: !!values.posts, replies: !!values.replies}
+                        : {id: groupMaterialEdit, title: values.title || '', text: values.text || ''};
+                    await act('group_material_save', {id: groupOpen, material});
+                    groupMaterialEdit = null; groupMaterialDraft = null;
+                    toast('Материал сохранён: нейросеть учтёт его в следующих генерациях для этой группы.');
+                    break;
+                }
                 case 'series-images': seriesImagesRun().catch(error => { seriesImageRun = null; toast(error.message, true, error.fix); render(); }); return;
                 case 'series-post': {
                     if (!seriesEdit) throw new Error('Запись не найдена.');
@@ -2344,6 +2490,34 @@
         finally { if(submit) { submit.disabled=false; submit.removeAttribute('aria-busy'); } }
     });
     root.addEventListener('change',async event=> {
+        if (event.target.matches('[data-news]')) {
+            const field = event.target;
+            groupNewsDraft = {...(groupNewsDraft || {}), [field.dataset.news]: field.type === 'checkbox' ? field.checked : field.value};
+            // Галочка «новостная группа» раскрывает или прячет настройки.
+            if (field.type === 'checkbox') render();
+            return;
+        }
+        if (event.target.matches('[data-material-use]')) {
+            const input = event.target;
+            input.disabled = true;
+            try {
+                const saved = await act('group_material_save', {id: groupOpen, material: {id: input.dataset.id, [input.dataset.materialUse]: input.checked}});
+                if (groupDetail) groupDetail.materials = saved.materials;
+            } catch (error) { toast(error.message, true, error.fix); }
+            render();
+            return;
+        }
+        if (event.target.matches('[data-material-file]')) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            // Больше 200 КБ — это не заметка с правилами, а документ целиком: модель его не прочтёт.
+            if (file.size > 204800) { event.target.value = ''; toast('Файл больше 200 КБ. Оставьте в нём только правила для этой группы.', true); return; }
+            const text = (await file.text()).replace(/\r\n/g, '\n').trim();
+            groupMaterialDraft = {title: groupMaterialDraft?.title || file.name.replace(/\.[^.]+$/, ''), text: text.slice(0, 20000)};
+            render();
+            toast(text.length > 20000 ? 'Файл длиннее 20 000 символов — в поле попало только начало.' : 'Текст из файла подставлен — проверьте и сохраните.', text.length > 20000);
+            return;
+        }
         if (event.target.matches('[data-flux-upload]')) {
             const input = event.target;
             const file = input.files?.[0];
@@ -2419,6 +2593,8 @@
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
         // Паспорт переживает перерисовку после обновления охватов и других действий.
         if(event.target.matches('[data-group-passport]')) groupPassportDraft=event.target.value;
+        if(event.target.matches('textarea[data-news]')) groupNewsDraft={...(groupNewsDraft||{}), [event.target.dataset.news]: event.target.value};
+        if(event.target.dataset.materialDraft && groupMaterialDraft) groupMaterialDraft[event.target.dataset.materialDraft]=event.target.value;
         if(event.target.dataset.seriesImage==='style') seriesImage.style=event.target.value;
         // Черновики ответов переживают перерисовку: форма собирается заново после каждого действия.
         if(event.target.dataset.draft) { commentsDrafts.set(event.target.dataset.draft, event.target.value); commentsAiKeys.delete(event.target.dataset.draft); }
@@ -2431,7 +2607,7 @@
         if(dialog.open) dialog.close();
         if(view==='overview') { page=1; localSearch=''; sort='velocity'; }
         // Из раздела ушли — в следующий раз «Мои сообщества» открываются списком.
-        if(view!=='groups') { groupOpen=0; groupDetail=null; groupPassportDraft=null; }
+        if(view!=='groups') { groupOpen=0; groupDetail=null; groupPassportDraft=null; groupMaterialEdit=null; groupMaterialDraft=null; groupNewsDraft=null; }
         render();
         content.focus({preventScroll:true});
         try { await load(); } catch(error) { toast(error.message, true, error.fix); }

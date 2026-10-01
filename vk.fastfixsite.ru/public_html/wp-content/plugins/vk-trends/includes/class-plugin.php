@@ -631,6 +631,18 @@ final class VKT_Plugin {
                 return VKT_Groups::save_passport( $data['id'] ?? 0, $data['passport'] ?? '' );
             case 'group_passport_draft':
                 return self::metered( 'text', static fn() => VKT_Groups::draft_passport( $data['id'] ?? 0, self::model_id( $data ) ) );
+            case 'group_material_save':
+                return VKT_Groups::save_material( $data['id'] ?? 0, $data['material'] ?? array() );
+            case 'group_material_delete':
+                return VKT_Groups::delete_material( $data['id'] ?? 0, $data['material_id'] ?? '' );
+            case 'group_news_save':
+                return VKT_Groups::save_news( $data['id'] ?? 0, $data['news'] ?? array() );
+            case 'group_news_check':
+                return VKT_Groups::check_news( $data['id'] ?? 0 );
+            case 'group_news_reset':
+                return VKT_Groups::reset_news( $data['id'] ?? 0 );
+            case 'group_news_collect':
+                return self::metered( 'text', static fn() => VKT_Groups::collect_news( $data['id'] ?? 0, self::model_id( $data ) ) );
             case 'group_stats':
                 return VKT_Groups::refresh_stats( $data['id'] ?? 0 );
             case 'publishing_get':
@@ -642,8 +654,8 @@ final class VKT_Plugin {
             case 'comments_thread':
                 return VKT_Replies::thread( $data['group_id'] ?? 0, $data['post_id'] ?? 0, $data['offset'] ?? 0 );
             case 'comments_generate':
-                // Ответам нужен тон и призывы из паспорта, история постов им ни к чему.
-                $context = empty( $data['group_id'] ) ? '' : VKT_Groups::context( VKT_Groups::by_vk( $data['group_id'] ), false );
+                // Ответам нужен тон и призывы из паспорта и материалы для ответов, история постов им ни к чему.
+                $context = empty( $data['group_id'] ) ? '' : VKT_Groups::context( VKT_Groups::by_vk( $data['group_id'] ), false, 'replies' );
                 return self::metered( 'text', static fn() => VKT_AI::generate_replies( $data['instruction'] ?? '', $data['items'] ?? array(), self::model_id( $data ), $context ) );
             case 'comments_reply':
                 return VKT_Replies::reply_now( $data );
@@ -728,7 +740,7 @@ final class VKT_Plugin {
         }
     }
 
-    /** Паспорт и история своей группы для модели. Чужая или пустая группа — пустая строка. */
+    /** Паспорт, материалы и история своей группы для модели. Чужая или пустая группа — пустая строка. */
     private static function group_context( $id ) {
         return absint( $id ) ? VKT_Groups::context( VKT_Groups::group( absint( $id ) ) ) : '';
     }

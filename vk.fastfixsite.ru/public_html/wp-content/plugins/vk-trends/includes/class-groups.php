@@ -8,9 +8,9 @@ defined( 'ABSPATH' ) || exit;
  * own в подписке. Такая подписка не занимает лимит источников и не мешается
  * в «Источниках» и «Сообществах» — там только чужие группы.
  *
- * Паспорт — Markdown от владельца: кто ведёт, формат, тон, призывы. Он и
- * сводка последних постов уходят в модель, когда пишутся посты, серия и
- * ответы на комментарии этой группы.
+ * Паспорт — Markdown от владельца: кто ведёт, формат, тон, призывы. Он,
+ * материалы базы ведения (VKT_Materials) и сводка последних постов уходят
+ * в модель, когда пишутся посты, серия и ответы на комментарии этой группы.
  */
 final class VKT_Groups {
     const PASSPORT_MAX = 20000;
@@ -116,15 +116,17 @@ final class VKT_Groups {
     public static function state() {
         global $wpdb;
         $groups = (array) $wpdb->get_results( $wpdb->prepare(
-            'SELECT id,group_id,screen_name,name,photo,enabled,can_post,hidden,passport,passport_at,stats,stats_at FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY hidden,name,id LIMIT 500',
+            'SELECT id,group_id,screen_name,name,photo,enabled,can_post,hidden,passport,passport_at,materials,news,stats,stats_at FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY hidden,name,id LIMIT 500',
             VKT_Account::id()
         ), ARRAY_A );
         $warning = self::sync_tracking( $groups );
         foreach ( $groups as &$group ) {
             $group['metrics'] = self::metrics( $group['group_id'] );
             $group['has_passport'] = '' !== trim( (string) $group['passport'] );
-            // Паспорт и сводку список не везёт: они большие и нужны только в карточке группы.
-            unset( $group['passport'] );
+            $group['materials_count'] = count( array_filter( VKT_Materials::normalize( $group['materials'] ), static fn( $item ) => $item['posts'] || $item['replies'] ) );
+            // Паспорт, материалы и сводку список не везёт: они большие и нужны только в карточке группы.
+            $group['is_news'] = VKT_News::settings( $group['news'] )['enabled'];
+            unset( $group['passport'], $group['materials'], $group['news'] );
             $group['stats'] = self::stats_summary( $group['stats'] );
             $group['best_times'] = self::digest( $group['group_id'] )['best_hours'];
         }
@@ -143,6 +145,9 @@ final class VKT_Groups {
         $group['digest'] = self::digest( $group['group_id'] );
         $group['stats'] = self::stats_summary( $group['stats'] );
         $group['passport'] = (string) $group['passport'];
+        $group['materials'] = VKT_Materials::normalize( $group['materials'] ?? '' );
+        $group['library'] = array_values( array_map( static fn( $item ) => array( 'file' => $item['file'], 'title' => $item['title'], 'description' => $item['description'], 'chars' => mb_strlen( $item['text'] ) ), VKT_Materials::library() ) );
+        $group['news'] = self::news_public( VKT_News::settings( $group['news'] ?? '' ) );
         $group['posts'] = (array) $wpdb->get_results( $wpdb->prepare(
             'SELECT id,post_id,owner_id,published_at,LEFT(text,300) AS text,thumbnail,views,likes,comments,reposts,g1,g7,err,is_pinned,is_ad FROM ' . VKT_Store::table( 'posts' ) . ' WHERE owner_id=%d ORDER BY published_at DESC,id DESC LIMIT 20',
             -absint( $group['group_id'] )
@@ -168,12 +173,125 @@ final class VKT_Groups {
         if ( is_wp_error( $group ) ) {
             return $group;
         }
-        $text = is_string( $text ) ? trim( str_replace( "\r\n", "\n", wp_strip_all_tags( $text ) ) ) : '';
+        $text = VKT_Materials::plain( $text );
         if ( mb_strlen( $text ) > self::PASSPORT_MAX ) {
             return self::error( 'Паспорт — не длиннее ' . self::PASSPORT_MAX . ' символов.' );
         }
         $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'passport' => $text, 'passport_at' => gmdate( 'Y-m-d H:i:s' ) ), array( 'id' => (int) $group['id'] ) );
         return array( 'ok' => true, 'passport_at' => gmdate( 'Y-m-d H:i:s' ) );
+    }
+
+    /** Добавить материал базы ведения или поправить существующий. Возвращает список целиком. */
+    public static function save_material( $id, $data ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $list = VKT_Materials::upsert( VKT_Materials::normalize( $group['materials'] ?? '' ), $data );
+        return is_wp_error( $list ) ? $list : self::store_materials( $group, $list );
+    }
+
+    public static function delete_material( $id, $material_id ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        return self::store_materials( $group, VKT_Materials::remove( VKT_Materials::normalize( $group['materials'] ?? '' ), $material_id ) );
+    }
+
+    private static function store_materials( $group, $list ) {
+        global $wpdb;
+        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'materials' => VKT_Materials::pack( $list ) ), array( 'id' => (int) $group['id'] ) );
+        return array( 'ok' => true, 'materials' => $list );
+    }
+
+    /** Настройки новостей для интерфейса: вместо списка использованных — их число. */
+    private static function news_public( $settings ) {
+        $settings['used'] = count( $settings['used'] );
+        return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES ) );
+    }
+
+    private static function store_news( $group, $settings ) {
+        global $wpdb;
+        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'news' => wp_json_encode( $settings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) ), array( 'id' => (int) $group['id'] ) );
+        return self::news_public( $settings );
+    }
+
+    public static function save_news( $id, $data ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $settings = VKT_News::clean( $data, VKT_News::settings( $group['news'] ?? '' ) );
+        return is_wp_error( $settings ) ? $settings : array( 'ok' => true, 'news' => self::store_news( $group, $settings ) );
+    }
+
+    /** Забыть использованные новости: следующий сбор снова предложит их. */
+    public static function reset_news( $id ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $settings = VKT_News::settings( $group['news'] ?? '' );
+        $settings['used'] = array();
+        return array( 'ok' => true, 'news' => self::store_news( $group, $settings ) );
+    }
+
+    /** Настройки и свежие новости группы — общее начало проверки и сбора. */
+    private static function fresh_news( $id ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $settings = VKT_News::settings( $group['news'] ?? '' );
+        if ( ! $settings['sources'] ) {
+            return self::error( 'У группы нет источников новостей. Впишите адреса сайтов или RSS-лент и сохраните.' );
+        }
+        return array( $group, $settings, VKT_News::collect( $settings ) );
+    }
+
+    /** Проверка источников без модели: какие читаются и сколько в них свежего. */
+    public static function check_news( $id ) {
+        $fresh = self::fresh_news( $id );
+        if ( is_wp_error( $fresh ) ) {
+            return $fresh;
+        }
+        return array( 'sources' => $fresh[2]['sources'], 'fresh' => count( $fresh[2]['items'] ), 'sample' => array_map( static fn( $item ) => array( 'title' => $item['title'], 'source' => $item['source'], 'link' => $item['link'] ), array_slice( $fresh[2]['items'], 0, 8 ) ) );
+    }
+
+    /**
+     * Сбор новостей в готовые записи: плагин читает источники, модель
+     * отбирает подходящее под выборку группы и пишет тексты, ссылку на
+     * источник добавляет плагин. Взятые новости запоминаются и в следующий
+     * сбор не попадают.
+     */
+    public static function collect_news( $id, $model = '' ) {
+        $fresh = self::fresh_news( $id );
+        if ( is_wp_error( $fresh ) ) {
+            return $fresh;
+        }
+        list( $group, $settings, $collected ) = $fresh;
+        if ( ! $collected['items'] ) {
+            $failed = count( array_filter( $collected['sources'], static fn( $source ) => ! $source['ok'] ) );
+            return self::error( $failed === count( $collected['sources'] )
+                ? 'Ни один источник не прочитался. Нажмите «Проверить источники» — там видно, что с каждым.'
+                : 'Свежих новостей за выбранный срок нет: всё уже использовано или ничего не вышло. Увеличьте срок или добавьте источники.', 404, array( 'sources' => $collected['sources'] ) );
+        }
+        $answer = VKT_AI::generate_news( $collected['items'], $settings['topic'], $settings['count'], $settings['mode'], $model, self::context( $group ) );
+        if ( is_wp_error( $answer ) ) {
+            return $answer;
+        }
+        $posts = VKT_News::compose( $collected['items'], $answer, $settings['mode'] );
+        if ( ! $posts ) {
+            return self::error( 'Модель не нашла среди ' . count( $collected['items'] ) . ' свежих новостей подходящих под вашу выборку. Смягчите описание выборки или добавьте источники.', 404, array( 'sources' => $collected['sources'] ) );
+        }
+        foreach ( $posts as $post ) {
+            foreach ( $post['links'] as $link ) {
+                $settings['used'][] = VKT_News::key( $link );
+            }
+        }
+        $settings['used'] = array_slice( array_values( array_unique( $settings['used'] ) ), -VKT_News::USED_MAX );
+        return array( 'posts' => $posts, 'mode' => $settings['mode'], 'offered' => count( $collected['items'] ), 'sources' => $collected['sources'], 'news' => self::store_news( $group, $settings ) );
     }
 
     /**
@@ -350,10 +468,12 @@ final class VKT_Groups {
     }
 
     /**
-     * Что модель должна знать о группе: паспорт, как заходят посты и о чём
-     * писали недавно. Пусто — если группы нет или о ней ничего не известно.
+     * Что модель должна знать о группе: паспорт, материалы базы ведения, как
+     * заходят посты и о чём писали недавно. $purpose выбирает материалы:
+     * posts — для поста и серии, replies — для ответов на комментарии.
+     * Пусто — если группы нет или о ней ничего не известно.
      */
-    public static function context( $group, $with_history = true ) {
+    public static function context( $group, $with_history = true, $purpose = 'posts' ) {
         if ( is_wp_error( $group ) || ! is_array( $group ) ) {
             return '';
         }
@@ -361,6 +481,11 @@ final class VKT_Groups {
         $passport = trim( (string) ( $group['passport'] ?? '' ) );
         if ( '' !== $passport ) {
             $parts[] = "Паспорт сообщества от владельца — следуй ему в тоне, формате, призывах и запретах:\n" . mb_substr( $passport, 0, 8000 );
+        }
+        $materials = VKT_Materials::prompt( VKT_Materials::normalize( $group['materials'] ?? '' ), $purpose );
+        if ( '' !== $materials ) {
+            // Методика общая для многих групп, паспорт написан под эту — при споре он главнее.
+            $parts[] = "Материалы владельца — база, по которой ведётся это сообщество. Пиши по ним; если материал расходится с паспортом, главнее паспорт:\n" . $materials;
         }
         if ( $with_history ) {
             $digest = self::digest( $group['group_id'] );
@@ -381,7 +506,7 @@ final class VKT_Groups {
                 }
             }
         }
-        return 1 === count( $parts ) && '' === $passport ? '' : mb_substr( implode( "\n\n", $parts ), 0, 14000 );
+        return 1 === count( $parts ) ? '' : mb_substr( implode( "\n\n", $parts ), 0, 14000 + VKT_Materials::PROMPT_TOTAL );
     }
 
     /** Черновик паспорта нейросетью по постам группы. Сохраняет его пользователь, после правки. */

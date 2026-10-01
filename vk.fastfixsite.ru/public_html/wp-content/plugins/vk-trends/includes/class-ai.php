@@ -442,6 +442,60 @@ final class VKT_AI {
     }
 
     /**
+     * Отбор новостей и тексты по ним. Модель видит только заголовок, анонс и
+     * номер: ссылок у неё нет, источник к записи приписывает плагин. Номер
+     * возвращается назад, по нему текст сверяется с новостью.
+     */
+    public static function generate_news( $items, $topic, $count, $mode, $model = '', $context = '' ) {
+        $list = array();
+        foreach ( array_values( (array) $items ) as $index => $item ) {
+            $list[] = array( 'id' => $index + 1, 'title' => (string) $item['title'], 'summary' => mb_substr( (string) $item['summary'], 0, 400 ), 'source' => (string) $item['source'], 'date' => null === $item['date'] ? '' : wp_date( 'd.m H:i', (int) $item['date'] ) );
+        }
+        if ( ! $list ) {
+            return self::error( 'Нет новостей для отбора.' );
+        }
+        $count = max( 1, min( 30, (int) $count ) );
+        $digest = 'digest' === $mode;
+        $input = 'Ты редактор новостного сообщества VK. Ниже список свежих новостей из источников владельца. Отбери из него не больше ' . $count . ' новостей, которые подходят сообществу, и по каждой напиши '
+            . ( $digest ? 'пункт дайджеста на русском языке: одно-три предложения с сутью.' : 'готовый пост на русском языке: до 1200 символов, с первой строкой-заголовком и сутью новости.' )
+            . ' Пиши только то, что есть в заголовке и анонсе: не добавляй цифры, цитаты, имена, причины и подробности, которых там нет. Если анонс скуден — пост короткий.'
+            . ' Одно событие из разных источников бери один раз. Подходящих меньше — верни меньше, не добирай неподходящими. Самое важное ставь первым.'
+            . ' Ссылки и слово «Источник» не пиши: источник к каждой записи добавится автоматически. Без Markdown.'
+            . ( $digest ? ' В intro — одна вводная строка дайджеста.' : '' )
+            . ' Верни строго JSON вида {' . ( $digest ? '"intro":"вводная строка",' : '' ) . '"news":[{"id":1,"text":"текст"}]} — id из списка, без пояснений.'
+            . "
+
+Какие новости нужны сообществу: " . ( '' !== trim( (string) $topic ) ? mb_substr( trim( (string) $topic ), 0, VKT_News::TOPIC_MAX ) : 'владелец не уточнил — суди по сообществу и его паспорту.' )
+            . "
+
+Новости:
+" . wp_json_encode( $list, JSON_UNESCAPED_UNICODE );
+        $result = self::chat( self::with_group( $input, $context ), 180, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $raw = trim( (string) $result );
+        if ( preg_match( '/```(?:json)?\s*(.+?)```/s', $raw, $fenced ) ) {
+            $raw = trim( $fenced[1] );
+        }
+        $decoded = json_decode( $raw, true );
+        if ( ! is_array( $decoded ) ) {
+            return self::error( 'Модель ответила, но разобрать её отбор новостей не удалось. Повторите запрос.', 502, true );
+        }
+        $picks = array();
+        foreach ( (array) ( $decoded['news'] ?? $decoded['posts'] ?? ( isset( $decoded[0] ) ? $decoded : array() ) ) as $pick ) {
+            $id = is_array( $pick ) ? absint( $pick['id'] ?? 0 ) : 0;
+            $text = is_array( $pick ) ? trim( wp_strip_all_tags( (string) ( $pick['text'] ?? '' ) ) ) : '';
+            // Ссылку модель знать не может: всё похожее на адрес — выдумка, убираем.
+            $text = trim( (string) preg_replace( '~\s*(?:Источник:\s*)?https?://\S+~iu', '', $text ) );
+            if ( $id >= 1 && $id <= count( $list ) && '' !== $text && ! isset( $picks[ $id ] ) && count( $picks ) < $count ) {
+                $picks[ $id ] = array( 'id' => $id, 'text' => mb_substr( $text, 0, 3000 ) );
+            }
+        }
+        return array( 'intro' => mb_substr( trim( wp_strip_all_tags( (string) ( $decoded['intro'] ?? '' ) ) ), 0, 300 ), 'picks' => array_values( $picks ) );
+    }
+
+    /**
      * Черновик паспорта группы по её постам. Поля, которых из постов не
      * узнать (кто ведёт, за кем закреплена), модель оставляет пустыми —
      * выдуманный ответственный хуже пустой строки.
