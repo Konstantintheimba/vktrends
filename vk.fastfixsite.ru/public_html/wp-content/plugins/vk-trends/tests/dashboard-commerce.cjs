@@ -190,7 +190,19 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     api.setAccount({id: 7, name: 'Участник', is_admin: false, status: 'active'});
     const memberPosting = api.posting();
     check(!memberPosting.includes('name="app_id"'), 'Участник не меняет ID приложения сайта');
-    check(memberPosting.includes('54770323') && memberPosting.includes('data-command="oauth-open"'), 'Участник получает токен через приложение сайта');
+    check(memberPosting.includes('data-command="oauth-open"') && memberPosting.includes('data-form="oauth"'), 'Участник получает токен через приложение сайта');
+    check(!memberPosting.includes('name="refresh_token"') && !memberPosting.includes('name="device_id"'), 'Сырых полей refresh_token и device_id участник не видит');
+    check(memberPosting.includes('не подключён') && memberPosting.includes('три шага'), 'Без токена блок говорит, что он не подключён, и ведёт по шагам');
+    check(memberPosting.indexOf('id="vkt-user-token"') < memberPosting.indexOf('Ключи публикации'), 'Токен стоит выше остальных ключей — туда ведут ссылки из ошибок');
+    state.settings.tokens[0] = {slot: 'user', area: 'user', title: 'Пользовательский токен', hint: '', has_token: true, preview: 'vk1.a.x…y', alive: true, expires_in: 2 * 3600};
+    check(api.posting().includes('истекает через 2 ч') && api.posting().includes('Переподключить'), 'Скорый конец срока виден заранее');
+    state.settings.tokens[0] = {...state.settings.tokens[0], alive: false, expires_in: 0};
+    check(api.posting().includes('истёк') && api.posting().includes('is-dead'), 'Истёкший токен выделен');
+    state.settings.tokens[0] = {...state.settings.tokens[0], alive: true, expires_in: 20 * 3600};
+    check(api.posting().includes('действует до'), 'Живой токен показывает, до какого времени действует');
+    state.settings.oauth = {...state.settings.oauth, configured: false};
+    check(api.posting().includes('Администратор ещё не настроил'), 'Без приложения сайта участник знает, к кому идти');
+    state.settings.oauth = {...state.settings.oauth, configured: true};
     check(!memberPosting.includes('Запасные способы') && !memberPosting.includes('data-form="vkid"'), 'Запасные способы и VK ID-токен — только администратору');
     check(!memberPosting.includes('Защищённый ключ приложения'), 'Защищённого ключа участник не видит');
     check(memberPosting.includes('текстов 2 из 30') && memberPosting.includes('картинок и видео 0 из 5'), 'Остаток лимита xAI виден в кабинете');
@@ -203,6 +215,9 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     state.videos = []; state.products = [];
     check(api.overview().includes('href="#posting"') && !api.overview().includes('href="#reading"'), 'Первый шаг участника — своя публикация, а не ключ сбора');
     api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
+    const adminPosting = api.posting();
+    check(adminPosting.includes('data-form="oauth-app"') && adminPosting.includes('name="app_id"'), 'ID приложения сайта администратор меняет отдельной формой');
+    check(adminPosting.includes('для отладки') && adminPosting.includes('name="refresh_token"'), 'Ручная вставка токена у администратора осталась, но свёрнута');
     context.location.hash = '#users';
     check(api.initial() === 'users', 'Администратор открывает раздел «Пользователи»');
     api.setUsers([

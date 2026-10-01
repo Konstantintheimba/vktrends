@@ -715,6 +715,61 @@
         }).join('');
         return `<h2>Группы по ключам сообществ</h2><p class="vkt-muted">${esc(communityKeyHelp)}</p>${keys.length ? `<div class="vkt-own-groups">${rows}</div>` : '<p class="vkt-muted">Пока ни одной группы с ключом.</p>'}${communityKeyForm()}`;
     }
+    // Сколько осталось жить токену — словами: клиенту понятнее «через 5 ч», чем секунды.
+    function tokenLife(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        if (hours >= 1) return `${hours} ч${hours < 6 ? ` ${Math.round((seconds % 3600) / 60)} мин` : ''}`;
+        return `${Math.max(1, Math.round(seconds / 60))} мин`;
+    }
+    /**
+     * Пользовательский токен — главное, с чем путаются клиенты. Раньше наверху
+     * стояла сырая форма с refresh_token и device_id, а рабочий обмен кода был
+     * ниже. Теперь здесь состояние токена, когда его продлевать и три шага
+     * подключения; ручная вставка осталась только администратору для отладки.
+     */
+    function userTokenBlock(s, oauth, admin) {
+        const slot = (s.tokens || []).find(item => item.slot === 'user') || {slot: 'user', title: 'Пользовательский токен', hint: '', has_token: false};
+        const left = slot.expires_in === null || slot.expires_in === undefined ? null : Number(slot.expires_in);
+        const dead = slot.has_token && (slot.alive === false || left === 0);
+        const soon = slot.has_token && !dead && left !== null && left < 6 * 3600;
+        const until = left ? new Date(Date.now() + left * 1000).toLocaleString('ru-RU', {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
+        const status = !slot.has_token ? badge('не подключён')
+            : dead ? badge('истёк — переподключите', 'red')
+            : soon ? badge(`истекает через ${tokenLife(left)}`, 'red')
+            : badge(left !== null ? `действует до ${until}` : 'подключён', 'green');
+        const summary = !slot.has_token
+            ? 'Токен ещё не подключён. Без него записи уходят только текстом: фото и видео не приложатся, а список ваших сообществ не обновится.'
+            : dead
+                ? `VK больше не принимает токен${slot.error?.message ? `: ${slot.error.message}` : '.'} Пройдите три шага ниже — это займёт минуту.`
+                : soon
+                    ? `Токен закончится ${until}. Переподключите его заранее, чтобы запланированные записи с фото не встали.`
+                    : `Всё работает${left !== null ? ` до ${until}` : ''}.${slot.refreshable ? ' Токен обновляется сам.' : ''}`;
+        const ready = !!oauth.configured || admin;
+        return `<section class="vkt-user-token${dead ? ' is-dead' : soon ? ' is-soon' : ''}" id="vkt-user-token">
+            <div class="vkt-panel-heading"><div><h2>Пользовательский токен VK</h2><p class="vkt-muted">Нужен, чтобы прикладывать к записям фото и видео и видеть список ваших сообществ. Текст без вложений публикуется и без него — ключом сообщества.</p></div>${status}</div>
+            <div class="vkt-info${dead || soon ? ' vkt-info-warning' : ''}">${esc(summary)}</div>
+            ${slot.has_token ? `<div class="vkt-token-preview"><code>${esc(slot.preview || '')}</code> <span class="vkt-muted">${slot.scope ? `права: ${esc(slot.scope)}` : ''}</span> ${button('Проверить', 'token-probe', 'data-slot="user"')}${button('Отключить', 'token-forget', 'data-slot="user"')}</div>` : ''}
+            <details class="vkt-details vkt-token-why"${slot.has_token ? '' : ' open'}><summary>Почему токен надо обновлять каждый день</summary>
+                <p class="vkt-muted">VK выдаёт такой токен примерно на сутки. Раньше срок снимало право «offline», но в 2026 году VK его отменил, поэтому продлить токен сам сайт не может — только вы, повторным подключением. Это те же три шага ниже. За 6 часов до конца срока в кабинете появится предупреждение со ссылкой сюда, а записи с фото будут ждать нового токена, а не пропадать.</p>
+            </details>
+            <h3>${slot.has_token ? 'Переподключить' : 'Подключить'} — три шага</h3>
+            ${!ready ? '<div class="vkt-info vkt-info-warning">Администратор ещё не настроил приложение сайта — получить токен пока нельзя. Напишите ему.</div>' : ''}
+            <form data-form="oauth" class="vkt-form">
+                <ol class="vkt-token-steps">
+                    <li><strong>Разрешите доступ во ВКонтакте.</strong> Откроется новая вкладка VK — войдите тем аккаунтом, который администрирует ваши сообщества, и нажмите «Разрешить».
+                        <div class="vkt-form-actions">${button(`${icon('arrow')} Открыть VK`, 'oauth-open', ready ? '' : 'disabled', true)}${safeUrl(oauth.authorize_url || '') ? `<a class="vkt-button" href="${safeUrl(oauth.authorize_url)}" target="_blank" rel="noopener noreferrer">если вкладка не открылась ↗</a>` : ''}</div></li>
+                    <li><strong>Скопируйте адрес страницы.</strong> VK покажет почти пустую страницу, иногда с предупреждением «не копируйте данные из адресной строки». Здесь копировать можно: адрес уходит только на ваш сайт, и в нём одноразовый код, а не сам токен. Щёлкните по адресной строке, выделите всё и скопируйте.</li>
+                    <li><strong>Вставьте адрес сюда.</strong> Токен подключится сразу после вставки — код живёт около минуты, не медлите.
+                        <label>Адрес из браузера<input name="code" class="vkt-code-input" placeholder="https://oauth.vk.com/blank.html?code=…" autocomplete="off" ${ready ? '' : 'disabled'}></label>
+                        <div class="vkt-form-actions"><button class="vkt-button vkt-primary" ${ready ? '' : 'disabled'}>Подключить</button></div></li>
+                </ol>
+            </form>
+            ${admin && !slot.locked ? `<details class="vkt-details"><summary>Вставить токен вручную · для отладки</summary>
+                <p class="vkt-muted">Токен, полученный в браузере, VK привязывает к адресу этого браузера, и с сервера он работает не всегда. Поля refresh_token, device_id и client_id нужны, только если способ получения их выдал — тогда токен будет обновляться сам.</p>
+                ${tokenCard(slot)}
+            </details>` : ''}
+        </section>`;
+    }
     function posting() {
         const s = state.settings;
         const community = s.community || {};
@@ -737,32 +792,28 @@
                 <ol class="vkt-steps">${steps.map(step => `<li>${badge(step.ok ? 'готово' : 'нет', step.ok ? 'green' : '')}<div><strong>${esc(step.title)}</strong><span class="vkt-muted">${esc(step.text)}</span></div></li>`).join('')}</ol>
                 <p class="vkt-help">Проверить всё разом — кнопка «Стенд постинга» наверху: она спрашивает каждый ключ только о его работе и подводит итог по каждому сообществу.</p>
                 <hr class="vkt-settings-sep">
+                ${userTokenBlock(s, oauth, admin)}
+                <hr class="vkt-settings-sep">
                 ${communityKeys()}
                 <hr class="vkt-settings-sep">
                 <h2>Ключи публикации</h2>
-                <div class="vkt-token-cards">${(s.tokens || []).filter(slot => ['app_secret', 'user', 'community'].includes(slot.slot)).map(tokenCard).join('')}</div>
+                <div class="vkt-token-cards">${(s.tokens || []).filter(slot => ['app_secret', 'community'].includes(slot.slot)).map(tokenCard).join('')}</div>
                 <form data-form="settings" id="vkt-posting-form" class="vkt-form">
                     <label>ID своего сообщества<input type="number" name="community_id" value="${Number(community.group_id) || ''}" min="0" placeholder="Например, 241464933"></label>
                     <label class="vkt-check"><input type="checkbox" name="publishing_review" ${s.publishing_review?'checked':''}>Требовать ручную проверку публикаций</label>
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
                 </form>
                 <hr class="vkt-settings-sep">
-                <h2>Получить пользовательский токен · обмен кода</h2>
-                <p class="vkt-muted">Единственный способ, который работает с сервера: браузер получает одноразовый код, а меняет его на токен сам сервер защищённым ключом. Поэтому права классические (<code>${esc(oauth.scope || '')}</code>), а привязка к IP приходится на сервер, а не на ваш браузер.</p>
-                <form data-form="oauth" class="vkt-form">
-                    ${admin ? `<div class="vkt-form-row">
+                ${admin ? `<h2>Приложение сайта · для обмена кода</h2>
+                <p class="vkt-muted">Через это приложение все кабинеты получают пользовательский токен: браузер получает одноразовый код, а меняет его на токен сервер защищённым ключом. Поэтому права классические (<code>${esc(oauth.scope || '')}</code>), а привязка к IP приходится на сервер.</p>
+                <form data-form="oauth-app" class="vkt-form">
+                    <div class="vkt-form-row">
                         <label>ID приложения<input type="number" name="app_id" value="${Number(oauth.app_id) || ''}" min="1" placeholder="Например, 54770323"></label>
                         <label>Адрес возврата приложения<input class="vkt-code-input" value="${esc(oauth.redirect || '')}" readonly></label>
                     </div>
-                    <div class="vkt-info">Здесь нужен ID приложения из консоли <strong>dev.vk.ru</strong> — это <strong>не тот же номер</strong>, что в блоке VK ID ниже. Приложение из кабинета VK ID классический OAuth не обслуживает и отвечает <code>Security Error</code>; плагин проверит это до перехода. Защищённый ключ того же приложения сохраните в слоте «Защищённый ключ приложения» выше. Этим же приложением пользуются все кабинеты.</div>` : (oauth.configured
-                        ? `<div class="vkt-info">Токен выдаётся через приложение сайта <strong>${Number(oauth.app_id)}</strong>. Войдите во ВКонтакте тем аккаунтом, который администрирует ваши сообщества, и разрешите доступ.</div>`
-                        : '<div class="vkt-info vkt-info-warning">Администратор ещё не настроил приложение сайта — получить токен пока нельзя.</div>')}
-                    <div class="vkt-form-actions">${button(`${icon('arrow')} 1. Открыть страницу согласия`, 'oauth-open')}${safeUrl(oauth.authorize_url || '') ? `<a class="vkt-button" href="${safeUrl(oauth.authorize_url)}" target="_blank" rel="noopener noreferrer">та же ссылка ↗</a>` : ''}</div>
-                    <p class="vkt-help">Если вкладка не открылась — её заблокировал браузер; тогда нажмите ссылку рядом.</p>
-                    <label>2. Адрес из браузера после «Разрешить»<input name="code" class="vkt-code-input" placeholder="https://oauth.vk.com/blank.html?code=…" autocomplete="off"></label>
-                    <p class="vkt-help">Код одноразовый и живёт около минуты — вставляйте сразу. Токен получит и сохранит сервер, в браузер он не попадёт.</p>
-                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">3. Обменять код на токен</button></div>
-                </form>
+                    <div class="vkt-info">Здесь нужен ID приложения из консоли <strong>dev.vk.ru</strong> — это <strong>не тот же номер</strong>, что в блоке VK ID ниже. Приложение из кабинета VK ID классический OAuth не обслуживает и отвечает <code>Security Error</code>; плагин проверит это до перехода. Защищённый ключ того же приложения сохраните в слоте «Защищённый ключ приложения» выше.</div>
+                    <div class="vkt-form-actions"><button class="vkt-button">Сохранить ID приложения</button></div>
+                </form>` : ''}
                 ${admin ? `<hr class="vkt-settings-sep">
                 <details class="vkt-details"><summary>Запасные способы получить токен</summary>
                 <p class="vkt-muted">Нужны, только если обмен кода почему-то не идёт. Оба дают токен на сутки и без автообновления.</p>
@@ -1762,7 +1813,7 @@
             return;
         }
         if (command==='oauth-open') {
-            const field = $('[data-form="oauth"] input[name="app_id"]');
+            const field = $('[data-form="oauth-app"] input[name="app_id"]');
             // Участник поля ID не видит: приложение сайта одно на всех.
             const appId = Number(field?.value) || Number(state.settings.oauth?.app_id) || 0;
             if (!appId) { toast('Укажите ID приложения.', true); return; }
@@ -1773,7 +1824,7 @@
             el.disabled = true;
             try {
                 const checked = await act('oauth_check', isAdmin() ? {app_id: appId} : {});
-                if (win) { win.location.href = checked.authorize_url; toast('Приложение подходит. Разрешите доступ и вставьте адрес в поле ниже.'); }
+                if (win) { win.location.href = checked.authorize_url; toast('Во вкладке VK нажмите «Разрешить», скопируйте адрес страницы и вставьте его в шаг 3.'); }
                 else { toast('Браузер заблокировал вкладку — откройте ссылку рядом с кнопкой.', true); }
                 await load();
             } catch (error) { if (win) win.close(); toast(error.message, true, error.fix); }
@@ -2189,15 +2240,17 @@
                     location.href = started.url;
                     return;
                 }
+                case 'oauth-app': {
+                    const appId = Number(values.app_id) || 0;
+                    if (!appId) throw new Error('Укажите ID приложения.');
+                    await act('settings', {app_id: appId});
+                    await load();
+                    toast('ID приложения сохранён. Теперь кабинеты могут подключать токен.');
+                    return;
+                }
                 case 'oauth': {
-                    if (isAdmin()) {
-                        const appId = Number(values.app_id) || 0;
-                        if (!appId) throw new Error('Укажите ID приложения.');
-                        await act('settings', {app_id: appId});
-                    }
                     if (!String(values.code || '').trim()) {
-                        await load();
-                        toast(isAdmin() ? 'ID приложения сохранён. Теперь нажмите «Открыть страницу согласия».' : 'Сначала откройте страницу согласия и вставьте адрес из браузера.', !isAdmin());
+                        toast('Сначала нажмите «Открыть VK», разрешите доступ и вставьте сюда адрес страницы.', true);
                         return;
                     }
                     const report = await act('oauth_exchange', {code: values.code});
@@ -2353,6 +2406,12 @@
         if (event.target.matches('[data-bulk]')) { commentsBulk[event.target.dataset.bulk] = event.target.type === 'checkbox' ? event.target.checked : event.target.value; return; }
         if(event.target.id==='vkt-method') { apiMethod=event.target.value; apiDraft=null; render(); }
         if(event.target.name==='token_kind') { const fields=$('#vkt-user-token-fields'); if(fields) fields.hidden = event.target.value!=='user'; }
+    });
+    // Код из адреса живёт около минуты: подключаем сразу по вставке, не дожидаясь кнопки.
+    root.addEventListener('paste', event => {
+        const field = event.target;
+        if (!field.matches?.('[data-form="oauth"] input[name="code"]')) return;
+        setTimeout(() => { if (/[?&#]code=/.test(field.value)) field.form.requestSubmit(); }, 0);
     });
     root.addEventListener('input',event=> {
         if(event.target.id==='vkt-params') apiDraft=event.target.value;

@@ -333,6 +333,19 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-token-card form { margin-top: 12px; }
 .vkt-token-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: -6px 0 4px; }
 .vkt-token-preview code { background: #f4f7fc; border: 1px solid var(--vkt-line); border-radius: 6px; padding: 5px 9px; font-size: 12px; }
+/* Пользовательский токен: состояние, зачем обновлять и три шага подключения. */
+.vkt-user-token { border: 1px solid #d5e3fb; border-radius: 12px; padding: 18px; background: #f7faff; display: grid; gap: 12px; }
+.vkt-user-token.is-soon { border-color: #f1d3a8; background: #fffcf5; }
+.vkt-user-token.is-dead { border-color: #f0c4c4; background: #fff8f8; }
+.vkt-user-token .vkt-panel-heading { align-items: flex-start; margin: 0; }
+.vkt-user-token h2 { margin: 0 0 4px; }
+.vkt-user-token h3 { font-size: 14px; font-weight: 600; margin: 4px 0 0; }
+.vkt-user-token .vkt-info { margin: 0; }
+.vkt-user-token .vkt-token-preview { margin: 0; }
+.vkt-token-steps { margin: 0; padding-left: 20px; display: grid; gap: 14px; font-size: 13px; line-height: 1.6; }
+.vkt-token-steps li::marker { font-weight: 700; color: var(--vkt-blue); }
+.vkt-token-steps .vkt-form-actions, .vkt-token-steps label { margin-top: 8px; }
+.vkt-token-why p { margin: 10px 0 0; }
 .vkt-settings-sep { border: 0; border-top: 1px solid var(--vkt-line); margin: 26px 0 20px; }
 /* Конструктор записи: файлы с сервера и генерация. */
 .vkt-ai-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
