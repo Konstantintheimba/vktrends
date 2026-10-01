@@ -141,6 +141,9 @@ final class VKT_Plugin {
             'vkid' => $admin ? VKT_VKID::public_status() : array( 'configured' => VKT_VKID::configured() ),
             'ai' => VKT_AI::public_status(),
             'flux' => $admin ? VKT_Flux::public_status() : array( 'configured' => false ),
+            // Чем можно рисовать картинки к записям — всем кабинетам, в пределах суточного лимита.
+            'images' => VKT_Images::providers(),
+            'shops' => VKT_Shops::options(),
             'proxy_host' => $admin ? VKT_Links::proxy_host() : '',
             'account' => VKT_Account::profile(),
             'limits' => array( 'sources' => VKT_Account::source_limit(), 'sources_used' => VKT_Subscriptions::count() ),
@@ -587,6 +590,15 @@ final class VKT_Plugin {
                 return self::metered( 'text', static fn() => VKT_AI::generate_text( $data['prompt'] ?? '', $data['current'] ?? '', self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
             case 'ai_image':
                 return self::metered( 'media', static fn() => VKT_AI::generate_image( $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' ) );
+            case 'shop_post': {
+                $brief = VKT_Shops::brief( $data );
+                if ( is_wp_error( $brief ) ) { return $brief; }
+                return self::metered( 'text', static fn() => VKT_AI::generate_shop_post( $brief, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
+            }
+            case 'image_start':
+                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' ) );
+            case 'image_status':
+                return VKT_Images::status( $data['id'] ?? '' );
             case 'ai_video_start': {
                 $started = self::metered( 'media', static fn() => VKT_AI::start_video( $data['prompt'] ?? '', $data['ratio'] ?? 'story' ) );
                 // Готовый ролик заберёт только тот, кто его заказал.

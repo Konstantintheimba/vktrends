@@ -153,8 +153,9 @@ $ok( ! is_wp_error( $draft ) && str_starts_with( $draft['passport'], '# Пасп
 $ok( is_wp_error( $act( $a, 'group_passport_draft', array( 'id' => $g2 ) ) ), 'Без собранных постов черновик не делается — сначала сборщик' );
 
 // 5а. База ведения: материалы группы уходят в генерацию по назначению.
-$added = $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => array( 'file' => 'vk-shops' ) ) );
-$ok( ! is_wp_error( $added ) && 1 === count( $added['materials'] ) && is_wp_error( $act( $b, 'group_material_save', array( 'id' => $g1, 'material' => array( 'file' => 'vk-shops' ) ) ) ), 'Методика подключена к своей группе, к чужой — нельзя' );
+$rubric = array( 'title' => 'Рубрики', 'text' => 'По средам — разбор ошибок новичков' );
+$added = $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => $rubric ) );
+$ok( ! is_wp_error( $added ) && 1 === count( $added['materials'] ) && is_wp_error( $act( $b, 'group_material_save', array( 'id' => $g1, 'material' => $rubric ) ) ) && is_wp_error( $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => array( 'file' => 'vk-shops' ) ) ) ), 'Материал добавлен своей группе, чужой — нельзя; методика VK Shops материалом больше не подключается' );
 $own = $act( $a, 'group_material_save', array( 'id' => $g1, 'material' => array( 'title' => 'Ответы о цене', 'text' => 'Цену называем только в личке', 'posts' => false, 'replies' => true ) ) );
 $detail = $act( $a, 'group_detail', array( 'id' => $g1 ) );
 wp_set_current_user( $a );
@@ -162,10 +163,10 @@ $card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $g
 $ok( ! is_wp_error( $own ) && 2 === count( $detail['materials'] ) && array() === array_filter( $detail['library'], static fn( $item ) => isset( $item['text'] ) ) && 2 === $card['materials_count'] && ! isset( $card['materials'] ), 'Карточка отдаёт материалы и библиотеку, список — только их число' );
 $act( $a, 'series_generate', array( 'prompt' => 'Неделя про осень', 'count' => 2, 'group_id' => $g1 ) );
 $prompt = (string) end( $GLOBALS['vkt_prompts'] );
-$ok( str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Закреплено за: Анна' ) && ! str_contains( $prompt, 'только в личке' ), 'Серия пишется по методике и паспорту, без материалов для ответов' );
+$ok( str_contains( $prompt, 'разбор ошибок новичков' ) && ! str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Закреплено за: Анна' ) && ! str_contains( $prompt, 'только в личке' ), 'Серия пишется по материалам и паспорту группы, без методики VK Shops и материалов для ответов' );
 $act( $a, 'comments_generate', array( 'group_id' => 111, 'items' => array( array( 'author' => 'Ира', 'post' => 'Пост', 'comment' => 'Сколько стоит?' ) ) ) );
 $prompt = (string) end( $GLOBALS['vkt_prompts'] );
-$ok( str_contains( $prompt, 'только в личке' ) && ! str_contains( $prompt, 'хук × подача' ), 'Ответы на комментарии получают свои материалы' );
+$ok( str_contains( $prompt, 'только в личке' ) && ! str_contains( $prompt, 'разбор ошибок новичков' ), 'Ответы на комментарии получают свои материалы' );
 $removed = $act( $a, 'group_material_delete', array( 'id' => $g1, 'material_id' => $added['materials'][0]['id'] ) );
 wp_set_current_user( $a );
 $listed = VKT_Publisher::state()['groups'];
@@ -174,7 +175,7 @@ $ok( ! is_wp_error( $removed ) && 1 === count( $removed['materials'] ) && 'От�
 
 // 5б. Новостная группа: настройки, сбор из источников, источник в тексте, без повторов.
 $ok( is_wp_error( $act( $a, 'group_news_collect', array( 'id' => $g1 ) ) ) && is_wp_error( $act( $a, 'group_news_save', array( 'id' => $g1, 'news' => array( 'enabled' => true, 'sources' => '' ) ) ) ), 'Без источников новости не собираются и не включаются' );
-$news = $act( $a, 'group_news_save', array( 'id' => $g1, 'news' => array( 'enabled' => true, 'sources' => "example.com/vkt-feed/rss", 'topic' => 'Только главное', 'count' => 5, 'days' => 1, 'mode' => 'posts' ) ) );
+$news = $act( $a, 'group_news_save', array( 'id' => $g1, 'news' => array( 'enabled' => true, 'method' => 'rss', 'sources' => "example.com/vkt-feed/rss", 'topic' => 'Только главное', 'count' => 5, 'days' => 1, 'mode' => 'posts' ) ) );
 $ok( ! is_wp_error( $news ) && array( 'https://example.com/vkt-feed/rss' ) === $news['news']['sources'] && 0 === $news['news']['used'] && is_wp_error( $act( $b, 'group_news_save', array( 'id' => $g1, 'news' => array() ) ) ), 'Настройки новостей сохранены; чужой группе их не поменять' );
 wp_set_current_user( $a );
 $card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
@@ -191,6 +192,16 @@ $reset = $act( $a, 'group_news_reset', array( 'id' => $g1 ) );
 $ok( 0 === $reset['news']['used'] && ! is_wp_error( $act( $a, 'group_news_collect', array( 'id' => $g1 ) ) ), 'После «Забыть использованные» новость снова доступна' );
 wp_set_current_user( $a );
 $ok( array() === array_filter( VKT_Publisher::state()['groups'], static fn( $group ) => array_key_exists( 'news', $group ) ), 'Список автопостинга настройки новостей не везёт' );
+
+// 5в. Товарный пост VK Shops и общий список моделей картинок — доступны участнику.
+$product = $act( $a, 'product', array( 'title' => 'Умная салфетка', 'url' => 'https://example.com/p/5' ) );
+$product_id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . VKT_Store::table( 'products' ) . ' WHERE user_id=%d ORDER BY id DESC LIMIT 1', $a ) );
+$shop = $act( $a, 'shop_post', array( 'group_id' => $g1, 'product_id' => $product_id, 'hook' => 'mistake', 'facts' => 'Цена 390 руб', 'current' => 'Пост про уборку' ) );
+$prompt = (string) end( $GLOBALS['vkt_prompts'] );
+$ok( ! is_wp_error( $shop ) && str_ends_with( $shop['text'], "\n\nhttps://example.com/p/5" ) && str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Умная салфетка' ) && str_contains( $prompt, 'Цена 390 руб' ) && str_contains( $prompt, 'Закреплено за: Анна' ), 'Товарный пост: методика, товар, факты и паспорт группы в запросе, ссылка в конце' );
+$ok( is_wp_error( $act( $b, 'shop_post', array( 'product_id' => $product_id ) ) ), 'Чужой товар в товарный пост не взять' );
+wp_set_current_user( $a );
+$ok( is_array( VKT_Plugin::public_settings()['images'] ?? null ) && isset( VKT_Plugin::public_settings()['shops']['hooks']['mistake'] ) && is_wp_error( $act( $a, 'image_start', array( 'provider' => 'bfl:flux-2-pro', 'prompt' => 'Кухня' ) ) ), 'Участник видит список моделей картинок; неподключённая модель отклоняется словами' );
 
 // 6. Скрытие: сбор на паузе, история на месте, возврат включает сбор.
 $act( $a, 'group_hide', array( 'id' => $g1, 'hidden' => true ) );

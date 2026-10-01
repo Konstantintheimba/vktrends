@@ -2,7 +2,7 @@
 /**
  * Plugin Name: VK Trends
  * Description: Дашборд постов, видео и товаров VK с личными кабинетами: вход через VK ID, свои источники и публикации, счётчики, динамика, автопостинг с генерацией текста и медиа, ответы на комментарии.
- * Version: 0.29.0
+ * Version: 0.30.0
  * Requires at least: 6.6
  * Requires PHP: 8.0
  * Author: FastFixSite
@@ -11,7 +11,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-define( 'VKT_VERSION', '0.29.0' );
+define( 'VKT_VERSION', '0.30.0' );
 define( 'VKT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'VKT_URL', plugin_dir_url( __FILE__ ) );
 
@@ -32,10 +32,12 @@ require_once VKT_DIR . 'includes/class-login.php';
 require_once VKT_DIR . 'includes/class-media.php';
 require_once VKT_DIR . 'includes/class-ai.php';
 require_once VKT_DIR . 'includes/class-flux.php';
+require_once VKT_DIR . 'includes/class-images.php';
 require_once VKT_DIR . 'includes/class-publisher.php';
 require_once VKT_DIR . 'includes/class-replies.php';
 require_once VKT_DIR . 'includes/class-materials.php';
 require_once VKT_DIR . 'includes/class-news.php';
+require_once VKT_DIR . 'includes/class-shops.php';
 require_once VKT_DIR . 'includes/class-groups.php';
 require_once VKT_DIR . 'includes/class-collector.php';
 require_once VKT_DIR . 'includes/class-plugin.php';

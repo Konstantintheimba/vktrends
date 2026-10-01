@@ -47,7 +47,12 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( &$se
         case 'groups.addCallbackServer': $GLOBALS['vkt_added_secret'] = $body['secret_key'] ?? ''; return $reply( array( 'response' => array( 'server_id' => 7 ) ) );
         case 'groups.setCallbackSettings': $GLOBALS['vkt_events'] = $body; return $reply( array( 'response' => 1 ) );
         case 'wall.get': return $reply( array( 'response' => array( 'count' => 1, 'items' => array( array( 'id' => 5, 'date' => time(), 'text' => 'Пост про осень', 'comments' => array( 'count' => 2 ) ) ) ) ) );
+        case 'wall.createComment': return $reply( array( 'error' => array( 'error_code' => 100, 'error_msg' => 'One of the parameters specified was missing or invalid: reply_to_comment not found' ) ) );
         case 'wall.getComments':
+            // Комментарий 50 с ответом группы удалили в VK: остался только 51.
+            if ( ! empty( $GLOBALS['vkt_comment_gone'] ) ) {
+                return $reply( array( 'response' => array( 'count' => 1, 'current_level_count' => 1, 'items' => array( array( 'id' => 51, 'from_id' => 43, 'date' => time() - 50, 'text' => 'Есть доставка?', 'thread' => array( 'count' => 0, 'items' => array() ) ) ), 'profiles' => array(), 'groups' => array() ) ) );
+            }
             return $reply( array( 'response' => array( 'count' => 2, 'current_level_count' => 2, 'items' => array(
                 array( 'id' => 50, 'from_id' => 42, 'date' => time() - 60, 'text' => 'Сколько стоит?', 'thread' => array( 'count' => 1, 'items' => array( array( 'id' => 52, 'from_id' => -111, 'date' => time() - 30, 'text' => 'Написали в ЛС' ) ) ) ),
                 array( 'id' => 51, 'from_id' => 43, 'date' => time() - 50, 'text' => 'Есть доставка?', 'thread' => array( 'count' => 0, 'items' => array() ) ),
@@ -126,6 +131,18 @@ list( $body, $status ) = $event( 'wall_reply_new', array( 'id' => 70, 'from_id' 
 $ok( 200 === $status, 'События с ручным секретом принимаются' );
 $ok( is_wp_error( $act( $a, 'callback_save', array( 'group_id' => 111, 'code' => '12381946', 'secret' => '' ) ) ), 'Без секретного ключа ручная настройка не сохраняется' );
 $ok( is_wp_error( $act( $a, 'callback_setup', array( 'group_id' => 999 ) ) ), 'Callback чужой группы не подключить' );
+
+// 6. Удалённое в VK у нас не хранится: ни в ленте, ни в очереди ответов.
+$inbox = VKT_Store::table( 'comment_inbox' );
+$ok( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM $inbox WHERE group_id=111 AND comment_id=60" ), 'Комментарий, удалённый событием Callback, стёрт из базы' );
+$failed = $act( $a, 'comments_reply', array( 'group_id' => 111, 'items' => array( array( 'post_id' => 5, 'comment_id' => 70, 'author_id' => 42, 'author' => 'Анна', 'comment_text' => 'Ещё', 'message' => 'Отвечаем' ) ) ) );
+$reply_row = $wpdb->get_row( $wpdb->prepare( 'SELECT status,error FROM ' . VKT_Store::table( 'comment_replies' ) . ' WHERE id=%d', (int) ( $failed['id'] ?? 0 ) ), ARRAY_A );
+$ok( ! is_wp_error( $failed ) && 'cancelled' === $reply_row['status'] && str_contains( $reply_row['error'], 'удалён в VK' ), 'Ответ на удалённый комментарий снят, а не висит ошибкой' );
+$ok( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM $inbox WHERE group_id=111 AND comment_id=70" ), 'Сам комментарий убран из ленты после отказа VK' );
+$GLOBALS['vkt_comment_gone'] = true;
+$scan = $act( $a, 'comments_scan', array( 'group_id' => 111 ) );
+$left = array_map( 'intval', $wpdb->get_col( "SELECT comment_id FROM $inbox WHERE group_id=111 AND post_id=5 ORDER BY comment_id" ) );
+$ok( ! is_wp_error( $scan ) && $scan['removed'] >= 2 && array( 51 ) === $left, '«Загрузить из VK» убирает комментарии, которых в VK больше нет, вместе с их ветками' );
 
 require_once ABSPATH . 'wp-admin/includes/user.php';
 wp_delete_user( $a );

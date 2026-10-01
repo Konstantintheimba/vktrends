@@ -41,7 +41,7 @@ final class VKT_Materials {
             return self::$library;
         }
         self::$library = array();
-        foreach ( (array) glob( VKT_DIR . 'materials/*.md' ) as $path ) {
+        foreach ( glob( VKT_DIR . 'materials/*.md' ) ?: array() as $path ) {
             $key = basename( $path, '.md' );
             $raw = preg_match( '/^[a-z0-9-]{2,40}$/', $key ) ? (string) file_get_contents( $path ) : '';
             if ( '' === trim( $raw ) ) {

@@ -18,6 +18,8 @@ final class VKT_AI {
         'openrouter' => array( 'title' => 'OpenRouter', 'base' => 'https://openrouter.ai/api/v1', 'model' => 'deepseek/deepseek-chat' ),
         'custom' => array( 'title' => 'Свой, OpenAI-совместимый', 'base' => '', 'model' => '' ),
     );
+    // Модель xAI, которая умеет инструмент web_search в /v1/responses.
+    const SEARCH_MODEL = 'grok-4.7';
     const IMAGE_MODEL = 'grok-imagine-image-2.0';
     const VIDEO_MODEL = 'grok-imagine-video-1.5';
     // Соотношения сторон, которые принимает xAI, под привычные подписи VK.
@@ -439,6 +441,194 @@ final class VKT_AI {
             $out[] = array( 'index' => $entry['id'] - 1, 'text' => $replies[ $position + 1 ] ?? '' );
         }
         return array( 'replies' => $out );
+    }
+
+    /**
+     * Кто умеет искать в интернете. Новый поставщик — запись здесь и ветка
+     * в search(): остальной код знает только ID и название.
+     * xAI ищет инструментом web_search, OpenRouter — плагином web поверх
+     * любой своей модели (так в интернет ходит и DeepSeek).
+     */
+    private static function search_registry() {
+        $list = array();
+        $models = self::models();
+        $xai = self::configured() ? trim( (string) VKT_XAI_API_KEY ) : '';
+        foreach ( $models as $model ) {
+            if ( '' === $xai && 'xai' === $model['preset'] ) {
+                $xai = $model['key'];
+            }
+        }
+        if ( '' !== $xai ) {
+            $list['xai'] = array( 'title' => 'xAI Grok · web_search', 'kind' => 'xai', 'key' => $xai );
+        }
+        foreach ( $models as $id => $model ) {
+            if ( 'openrouter' === $model['preset'] ) {
+                $list[ 'openrouter-' . $id ] = array( 'title' => $model['title'] . ' · поиск OpenRouter', 'kind' => 'openrouter', 'model' => $model );
+            }
+        }
+        return $list;
+    }
+
+    /** Список поставщиков поиска для интерфейса — без ключей. */
+    public static function search_providers() {
+        $out = array();
+        foreach ( self::search_registry() as $id => $provider ) {
+            $out[] = array( 'id' => $id, 'title' => $provider['title'] );
+        }
+        return $out;
+    }
+
+    /**
+     * Запрос с поиском в интернете. Возвращает текст ответа и адреса,
+     * которые поставщик сам назвал источниками: по ним потом сверяются
+     * ссылки из текста. $domains — где искать в первую очередь.
+     */
+    public static function search( $input, $domains = array(), $provider = '' ) {
+        $registry = self::search_registry();
+        $id = isset( $registry[ $provider ] ) ? $provider : (string) ( array_key_first( $registry ) ?? '' );
+        if ( '' === $id ) {
+            return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: нужен ключ xAI или модель OpenRouter.', array(
+                'status' => 400,
+                'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Подключить модель — «Настройки»' ) : null,
+            ) );
+        }
+        $entry = $registry[ $id ];
+        $domains = array_slice( array_values( array_unique( array_filter( array_map( 'strval', (array) $domains ) ) ) ), 0, 5 );
+        if ( 'xai' === $entry['kind'] ) {
+            $tool = array( 'type' => 'web_search' );
+            if ( $domains ) {
+                $tool['filters'] = array( 'allowed_domains' => $domains );
+            }
+            $url = 'https://api.x.ai/v1/responses';
+            $key = $entry['key'];
+            $body = array( 'model' => self::SEARCH_MODEL, 'input' => array( array( 'role' => 'user', 'content' => $input ) ), 'tools' => array( $tool ) );
+        } else {
+            $plugin = array( 'id' => 'web', 'max_results' => 10 );
+            if ( $domains ) {
+                $plugin['include_domains'] = $domains;
+            }
+            $url = $entry['model']['base'] . '/chat/completions';
+            $key = $entry['model']['key'];
+            $body = array( 'model' => $entry['model']['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ), 'plugins' => array( $plugin ) );
+        }
+        $started = microtime( true );
+        $response = wp_remote_post( $url, array(
+            // Поиск с чтением страниц идёт заметно дольше обычного ответа.
+            'timeout' => 170,
+            'redirection' => 0,
+            'sslverify' => true,
+            'limit_response_size' => 4194304,
+            'headers' => array( 'Authorization' => 'Bearer ' . $key, 'Content-Type' => 'application/json' ),
+            'body' => wp_json_encode( $body ),
+        ) );
+        $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
+        $method = 'search.' . $entry['kind'];
+        if ( is_wp_error( $response ) ) {
+            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи: ' . $entry['title'], $duration );
+            return self::error( 'Не удалось подключиться к ' . $entry['title'] . ': ' . $response->get_error_message(), 502, true );
+        }
+        $http = (int) wp_remote_retrieve_response_code( $response );
+        $raw = (string) wp_remote_retrieve_body( $response );
+        $data = json_decode( $raw, true );
+        if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
+            $reason = self::reason( $data, $raw, $http, $key );
+            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $entry['title'] . ': ' . $reason, 0, 250 ), $duration );
+            return self::error( $entry['title'] . ' отклонил поиск (HTTP ' . $http . '): ' . $reason, 422, 429 === $http || $http >= 500 );
+        }
+        $text = '';
+        $urls = array();
+        if ( 'xai' === $entry['kind'] ) {
+            foreach ( (array) ( $data['output'] ?? array() ) as $item ) {
+                foreach ( (array) ( is_array( $item ) ? ( $item['content'] ?? array() ) : array() ) as $part ) {
+                    if ( is_array( $part ) && 'output_text' === ( $part['type'] ?? '' ) ) {
+                        $text .= (string) ( $part['text'] ?? '' );
+                        foreach ( (array) ( $part['annotations'] ?? array() ) as $note ) {
+                            $urls[] = (string) ( $note['url'] ?? '' );
+                        }
+                    }
+                }
+            }
+            if ( '' === $text ) {
+                $text = (string) ( $data['output_text'] ?? '' );
+            }
+            foreach ( (array) ( $data['citations'] ?? array() ) as $citation ) {
+                $urls[] = is_array( $citation ) ? (string) ( $citation['url'] ?? '' ) : (string) $citation;
+            }
+        } else {
+            $text = self::choice_text( $data );
+            foreach ( (array) ( $data['choices'][0]['message']['annotations'] ?? array() ) as $note ) {
+                $urls[] = (string) ( $note['url_citation']['url'] ?? $note['url'] ?? '' );
+            }
+        }
+        VKT_Store::log( $method, 'ai', 'ok', $http, 'Поиск выполнен: ' . $entry['title'] . ', источников ' . count( array_filter( $urls ) ), $duration );
+        return '' === trim( $text ) ? self::error( $entry['title'] . ' не вернул результат поиска.', 502, true ) : array( 'text' => trim( $text ), 'urls' => array_values( array_unique( array_filter( $urls ) ) ), 'provider' => $entry['title'] );
+    }
+
+    /**
+     * Свежие новости по теме поиском в интернете: заголовок, суть и адрес
+     * статьи. Писать посты здесь не просим — только найти и пересказать факты.
+     */
+    public static function search_news( $topic, $limit, $days, $domains = array(), $group_name = '' ) {
+        $limit = max( 3, min( 30, (int) $limit ) );
+        $input = 'Найди в интернете свежие новости за последние ' . max( 1, (int) $days ) . ' сут. Сегодня ' . wp_date( 'd.m.Y', time() ) . '. Обязательно выполни поиск, не отвечай по памяти.'
+            . "\n\nКакие новости нужны: " . mb_substr( trim( (string) $topic ), 0, VKT_News::TOPIC_MAX )
+            . ( '' !== trim( (string) $group_name ) ? "\nДля сообщества VK «" . sanitize_text_field( (string) $group_name ) . '».' : '' )
+            . ( $domains ? "\nИщи в первую очередь на сайтах: " . implode( ', ', $domains ) . '.' : '' )
+            . "\n\nВерни строго JSON без пояснений и Markdown: {\"news\":[{\"title\":\"заголовок на русском\",\"summary\":\"3–5 предложений с фактами из статьи: кто, что, когда, цифры\",\"url\":\"точный адрес страницы статьи, которую ты открыл\",\"date\":\"ГГГГ-ММ-ДД\"}]}."
+            . ' До ' . $limit . ' разных новостей, самые важные первыми. Одно событие — одна запись. Адрес — только настоящей статьи из результатов поиска, не главной страницы сайта и не выдуманный. Не нашёл подходящего — верни {"news":[]}.';
+        $found = self::search( $input, $domains );
+        if ( is_wp_error( $found ) ) {
+            return $found;
+        }
+        $raw = $found['text'];
+        if ( preg_match( '/```(?:json)?\s*(.+?)```/s', $raw, $fenced ) ) {
+            $raw = trim( $fenced[1] );
+        }
+        $decoded = json_decode( $raw, true );
+        // Модель с поиском любит приписать пару слов вокруг JSON — достаём сам объект.
+        if ( ! is_array( $decoded ) && false !== ( $from = strpos( $raw, '{' ) ) && false !== ( $to = strrpos( $raw, '}' ) ) && $to > $from ) {
+            $decoded = json_decode( substr( $raw, $from, $to - $from + 1 ), true );
+        }
+        if ( ! is_array( $decoded ) ) {
+            return self::error( 'Поиск ответил, но список новостей из ответа собрать не удалось. Повторите запрос.', 502, true );
+        }
+        $items = array();
+        foreach ( (array) ( $decoded['news'] ?? ( isset( $decoded[0] ) ? $decoded : array() ) ) as $item ) {
+            if ( is_array( $item ) ) {
+                $items[] = array( 'title' => (string) ( $item['title'] ?? '' ), 'summary' => (string) ( $item['summary'] ?? '' ), 'url' => (string) ( $item['url'] ?? $item['link'] ?? '' ), 'date' => (string) ( $item['date'] ?? '' ) );
+            }
+        }
+        return array( 'items' => array_slice( $items, 0, $limit ), 'urls' => $found['urls'], 'provider' => $found['provider'] );
+    }
+
+    /**
+     * Товарный пост по методике VK Shops. Утверждать о товаре можно только
+     * то, что вписал владелец; ссылку приписывает плагин, чтобы модель её
+     * не исказила. Текущий текст записи, если он есть, служит основой.
+     */
+    public static function generate_shop_post( $brief, $model = '', $context = '' ) {
+        $input = 'Напиши товарный пост для сообщества VK на русском языке по методике ниже. Верни только готовый текст поста — без пояснений, вариантов, кавычек и Markdown.'
+            . "\n\nМетодика:\n" . VKT_Shops::rules()
+            . "\n\nТовар: " . $brief['title'] . '.'
+            . ( '' !== $brief['url'] ? ' Ссылка на товар добавится в конец поста автоматически — сам ссылку не пиши, но подведи к ней последней строкой.' : ' Ссылки на товар нет — не выдумывай её и не пиши «ссылка ниже».' )
+            . "\n\nЧто известно по факту — утверждать о товаре, опыте и результате можно только это:\n" . ( '' !== $brief['facts'] ? $brief['facts'] : 'Ничего, кроме названия. Пиши описанием ситуации и товара, без личного опыта, оценок, цен и результатов.' )
+            . "\n\nХук: " . ( '' !== $brief['hook'] ? $brief['hook'] : 'выбери сам подходящий к товару' ) . '. Подача: ' . ( '' !== $brief['format'] ? $brief['format'] : 'выбери сам подходящую' ) . '.';
+        if ( '' !== $brief['current'] ) {
+            $input .= "\n\nСейчас в этой записи такой текст. Возьми его тему и ситуацию за основу и преврати в товарный пост:\n" . $brief['current'];
+        }
+        $result = self::chat( self::with_group( $input, $context ), 120, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $text = trim( wp_strip_all_tags( $result ) );
+        if ( '' === $text ) {
+            return self::error( 'Модель не вернула текст.', 502, true );
+        }
+        if ( '' !== $brief['url'] ) {
+            // Модель могла всё же вписать адрес по-своему: оставляем один, настоящий.
+            $text = trim( (string) preg_replace( '~\s*https?://\S+~iu', '', $text ) ) . "\n\n" . $brief['url'];
+        }
+        return array( 'text' => mb_substr( $text, 0, 16000 ) );
     }
 
     /**

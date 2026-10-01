@@ -577,6 +577,10 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-material-offer > div { display: flex; flex-direction: column; min-width: 0; }
 .vkt-material-offer small { font-size: 11px; }
 .vkt-material-form textarea { font-size: 13px; line-height: 1.6; }
+.vkt-shop-box { border: 1px dashed var(--vkt-line); border-radius: 8px; padding: 10px 14px; }
+.vkt-shop-box summary { cursor: pointer; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.vkt-shop-box[open] { display: flex; flex-direction: column; gap: 14px; }
+.vkt-shop-box .vkt-help { margin: 0; }
 .vkt-group-news { margin-bottom: 25px; }
 .vkt-news-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .vkt-news-check, .vkt-news-result { margin-top: 18px; }

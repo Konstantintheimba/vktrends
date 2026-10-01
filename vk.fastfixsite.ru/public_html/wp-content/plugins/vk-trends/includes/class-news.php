@@ -13,6 +13,10 @@ final class VKT_News {
     const COUNTS = array( 5, 10, 15, 20, 30 );
     const DAYS = array( 1, 3, 7 );
     const MODES = array( 'posts', 'digest' );
+    // Откуда берутся новости: поиск в интернете или RSS-ленты источников.
+    const METHODS = array( 'search', 'rss' );
+    // Сколько ссылок, не названных поиском в источниках, проверяем живым запросом.
+    const MAX_CHECKS = 12;
     const MAX_SOURCES = 15;
     const TOPIC_MAX = 1500;
     // Модели уходит не больше стольких свежих новостей: выбрать из сотен она всё равно не сможет.
@@ -31,6 +35,7 @@ final class VKT_News {
         $sources = array_values( array_filter( array_map( 'strval', (array) ( $data['sources'] ?? array() ) ) ) );
         return array(
             'enabled' => ! empty( $data['enabled'] ),
+            'method' => in_array( $data['method'] ?? '', self::METHODS, true ) ? $data['method'] : 'search',
             'sources' => array_slice( $sources, 0, self::MAX_SOURCES ),
             'topic' => (string) ( $data['topic'] ?? '' ),
             'count' => in_array( (int) ( $data['count'] ?? 0 ), self::COUNTS, true ) ? (int) $data['count'] : 10,
@@ -66,11 +71,16 @@ final class VKT_News {
             return self::error( 'Описание выборки — не длиннее ' . self::TOPIC_MAX . ' символов.' );
         }
         $enabled = ! empty( $data['enabled'] );
-        if ( $enabled && ! $sources ) {
+        $method = in_array( $data['method'] ?? '', self::METHODS, true ) ? $data['method'] : 'search';
+        if ( $enabled && 'rss' === $method && ! $sources ) {
             return self::error( 'Добавьте хотя бы один источник: адрес сайта или его RSS-ленты.' );
+        }
+        if ( $enabled && 'search' === $method && '' === $topic ) {
+            return self::error( 'Опишите, какие новости искать: без этого поиску нечего спрашивать.' );
         }
         return self::settings( array(
             'enabled' => $enabled,
+            'method' => $method,
             'sources' => array_values( $sources ),
             'topic' => $topic,
             'count' => $data['count'] ?? 0,
@@ -245,6 +255,78 @@ final class VKT_News {
         }
         usort( $items, static fn( $a, $b ) => (int) $b['date'] <=> (int) $a['date'] );
         return array( 'items' => array_slice( $items, 0, self::MAX_ITEMS ), 'sources' => $report );
+    }
+
+    /** Адрес для сравнения: без протокола, www, меток и хвостового слеша. */
+    private static function canonical( $url ) {
+        $url = (string) preg_replace( '~([?&])utm_[a-z_]+=[^&#]*&?~i', '$1', (string) $url );
+        return rtrim( strtolower( (string) preg_replace( '~^https?://(?:www\.)?~i', '', (string) preg_replace( '/#.*$/', '', $url ) ) ), '/?&' );
+    }
+
+    /** Страница по адресу действительно открывается. */
+    private static function alive( $url ) {
+        $args = array( 'timeout' => 5, 'redirection' => 3, 'sslverify' => true, 'limit_response_size' => 2048, 'user-agent' => 'Mozilla/5.0 (compatible; VK Trends/' . VKT_VERSION . '; +' . home_url( '/' ) . ')' );
+        $response = wp_safe_remote_head( $url, $args );
+        $code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+        // Часть сайтов не отвечает на HEAD — спрашиваем обычным запросом.
+        if ( $code < 200 || $code >= 400 ) {
+            $response = wp_safe_remote_get( $url, $args );
+            $code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+        }
+        return $code >= 200 && $code < 400;
+    }
+
+    /**
+     * Свежие новости поиском в интернете. Ссылку берём, только если она
+     * подтверждена: поиск сам назвал её источником или страница открывается.
+     * Модель с поиском иногда сочиняет адрес — такой новости в посте не место.
+     */
+    public static function search( $settings, $group_name = '' ) {
+        $domains = array();
+        foreach ( $settings['sources'] as $source ) {
+            $domains[] = preg_replace( '/^www\./', '', (string) wp_parse_url( $source, PHP_URL_HOST ) );
+        }
+        $domains = array_values( array_unique( array_filter( $domains ) ) );
+        // Фильтр по сайтам поиск принимает до пяти; больше — ищем везде, сайты остаются пожеланием.
+        $found = VKT_AI::search_news( $settings['topic'], min( 30, $settings['count'] * 2 ), $settings['days'], count( $domains ) <= 5 ? $domains : array(), $group_name );
+        if ( is_wp_error( $found ) ) {
+            return $found;
+        }
+        $cited = array_flip( array_map( array( __CLASS__, 'canonical' ), $found['urls'] ) );
+        $used = array_flip( $settings['used'] );
+        $seen = array();
+        $items = array();
+        $checks = 0;
+        $unconfirmed = 0;
+        foreach ( $found['items'] as $item ) {
+            $title = mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $item['title'] ) ) ), 0, 300 );
+            $link = esc_url_raw( rtrim( (string) preg_replace( '~([?&])utm_[a-z_]+=[^&#]*&?~i', '$1', trim( $item['url'] ) ), '?&' ), array( 'http', 'https' ) );
+            if ( '' === $title || '' === $link || ! wp_http_validate_url( $link ) ) {
+                continue;
+            }
+            $key = self::key( $link );
+            if ( isset( $seen[ $key ] ) || isset( $used[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
+            if ( ! isset( $cited[ self::canonical( $link ) ] ) ) {
+                // Считаем каждую попытку, удачную и нет: иначе десяток мёртвых ссылок растянет сбор на минуты.
+                if ( $checks >= self::MAX_CHECKS || ! ( ++$checks && self::alive( $link ) ) ) {
+                    ++$unconfirmed;
+                    continue;
+                }
+            }
+            $stamp = '' === trim( $item['date'] ) ? false : strtotime( $item['date'] );
+            $items[] = array(
+                'title' => $title,
+                'link' => $link,
+                'date' => false === $stamp ? null : $stamp,
+                'summary' => mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $item['summary'] ) ) ), 0, 900 ),
+                'source' => preg_replace( '/^www\./', '', (string) wp_parse_url( $link, PHP_URL_HOST ) ),
+            );
+        }
+        $message = $unconfirmed ? 'отброшено без подтверждённой ссылки: ' . $unconfirmed : '';
+        return array( 'items' => $items, 'sources' => array( array( 'url' => 'Поиск в интернете · ' . $found['provider'], 'ok' => true, 'total' => count( $found['items'] ), 'fresh' => count( $items ), 'message' => $message ) ) );
     }
 
     /**

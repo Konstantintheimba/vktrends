@@ -25,7 +25,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 api.init(state, data);
@@ -303,6 +303,20 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(running.includes('data-series-group') && !running.includes('name="groups"') && running.includes('value="sabc123def"'), 'Серия привязана к одному сообществу, запущенную можно выбрать для дополнения');
     check(running.includes('data-command="series-open"') && running.includes('Фото к записям'), 'Серию можно открыть в сетке, есть блок фото');
     check(running.includes('Подключить токен'), 'Без пользовательского токена фото не предлагаются');
+    check(running.includes('data-command="series-slot-add"'), 'В серию можно добавить отдельную запись');
+    // Окно слота: товарный пост VK Shops с товарами кабинета, хуком и подачей.
+    state.settings.shops = {hooks: {mistake: 'ошибка'}, formats: {compare: 'сравнение'}};
+    state.products = [{id: 5, title: 'Салфетка <умная>', url: 'https://shop.test/5'}];
+    const shopHtml = api.shopBox({message: 'Пост про уборку', shop: {product: '5', hook: 'mistake', facts: 'Цена <390>'}, shopOpen: true}, 'data-index="0"');
+    check(shopHtml.includes('Товарный пост · VK Shops') && shopHtml.includes('<option value="5" selected>Салфетка &lt;умная&gt;</option>') && shopHtml.includes('<option value="mistake" selected>ошибка</option>') && shopHtml.includes('<option value="compare" >сравнение</option>') && shopHtml.includes('Цена &lt;390&gt;') && shopHtml.includes('data-command="series-shop" data-index="0"'), 'В окне записи — товарный пост: товар, хук, подача и факты сохраняются и экранируются');
+    state.products = [];
+    // Модели картинок приходят общим списком с сервера.
+    state.settings.images = [{id: 'xai', title: 'xAI · grok-imagine-image-2.0'}, {id: 'bfl:flux-2-pro', title: 'BFL · FLUX.2 [pro]'}];
+    api.setPublishing({...api.getPublishing(), status: {...api.getPublishing().status, media_native: true}});
+    const drawing = api.series();
+    check(drawing.includes('<option value="xai" selected>xAI · grok-imagine-image-2.0</option>') && drawing.includes('<option value="bfl:flux-2-pro" >BFL · FLUX.2 [pro]</option>'), 'В «Фото к записям» видны все подключённые модели, включая FLUX');
+    state.settings.images = [];
+    api.setPublishing({...api.getPublishing(), status: {...api.getPublishing().status, media_native: false}});
     check(running.includes('Запущенные серии') && running.includes('Неделя &lt;про&gt; осень') && running.includes('data-command="series-cancel"') && running.includes('ждут: 2'), 'Список запущенных серий с отменой оставшихся');
     // Мои сообщества: список, скрытые, карточка с паспортом и охватами; серия видит паспорт и лучшее время.
     const metrics = {members: 2000, posts: 11, posts30: 11, avg_views30: 550, g1: 10, g7: 120, err: 1.5, last_post: '2026-09-27 10:00:00', measured_at: '2026-09-28 10:00:00', source_id: 9};
@@ -344,16 +358,23 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     api.editMaterial(null, null);
     // Новости: опция группы, настройки, проверка источников, собранные записи и раскладка в серию.
     check(html.includes('Это новостная группа') && !html.includes('data-news="sources"') && !html.includes('group-news-collect'), 'У обычной группы от новостей только галочка');
-    api.setNews({enabled: true}, null, null);
+    api.setNews({enabled: true, method: 'rss'}, null, null);
     html = api.groups();
     check(html.includes('data-news="sources"') && html.includes('data-news="topic"') && html.includes('<option value="10" selected>') && html.includes('Один пост-дайджест') && html.includes('data-command="group-news-check"'), 'Галочка раскрывает источники, выборку, число, свежесть и формат');
     api.setNews(null, {groupId: 3, fresh: 4, sources: [{url: 'https://a.test/rss', ok: true, total: 20, fresh: 4}, {url: 'https://b.test/<x>', ok: false, message: 'сайт ответил кодом 403'}], sample: [{title: 'Свежая <b>', source: 'a.test', link: 'https://a.test/1'}]},
         {groupId: 3, mode: 'posts', offered: 4, posts: [{title: 'Обмен <игроков>', source: 'a.test', text: 'Текст <i>\n\nИсточник: https://a.test/1'}, {title: 'Вторая', source: 'a.test', text: 'Второй текст'}]});
-    groupWith({materials: [], library: [], news: {enabled: true, sources: ['https://a.test/rss', 'https://b.test/x'], topic: 'Только <НБА>', count: 15, days: 3, mode: 'digest', used: 7, counts: [5, 10, 15, 20, 30], day_options: [1, 3, 7], max_sources: 15}});
+    groupWith({materials: [], library: [], news: {enabled: true, method: 'rss', search: [{id: 'xai', title: 'xAI Grok · web_search'}], sources: ['https://a.test/rss', 'https://b.test/x'], topic: 'Только <НБА>', count: 15, days: 3, mode: 'digest', used: 7, counts: [5, 10, 15, 20, 30], day_options: [1, 3, 7], max_sources: 15}});
     html = api.groups();
     check(html.includes('https://a.test/rss\nhttps://b.test/x') && html.includes('Только &lt;НБА&gt;') && html.includes('<option value="15" selected>') && html.includes('<option value="3" selected>') && html.includes('<option value="digest" selected>'), 'Сохранённые настройки новостей показаны в форме');
-    check(html.includes('в ленте 20, свежих 4') && html.includes('сайт ответил кодом 403') && html.includes('https://b.test/&lt;x&gt;') && html.includes('Свежая &lt;b&gt;'), 'Итог проверки источников: что читается, что нет');
+    check(html.includes('в ленте 20, годных 4') && html.includes('сайт ответил кодом 403') && html.includes('https://b.test/&lt;x&gt;') && html.includes('Свежая &lt;b&gt;'), 'Итог проверки источников: что читается, что нет');
     check(html.includes('Обмен &lt;игроков&gt;') && html.includes('Текст &lt;i&gt;') && html.includes('data-command="group-news-series"') && html.includes('data-command="group-news-drop" data-index="1"') && html.includes('Уже использовано: 7') && html.includes('data-command="group-news-reset"'), 'Собранные записи экранированы, их можно убрать или разложить в серию');
+    api.setNews({method: 'search'}, null, null);
+    html = api.groups();
+    check(html.includes('Ищет xAI Grok · web_search') && html.includes('Какие новости искать') && html.includes('Сайты, где искать в первую очередь') && !html.includes('data-command="group-news-check"') && html.includes('data-command="group-news-collect"'), 'Поиск в интернете: видно, кто ищет, сайты необязательны, проверки лент нет');
+    groupWith({materials: [], library: [], news: {enabled: true, method: 'search', search: [], sources: [], topic: 'НБА', count: 10, days: 1, mode: 'posts', used: 0}});
+    check(api.groups().includes('Искать в интернете пока нечем'), 'Без модели с поиском блок объясняет, что подключить');
+    groupWith({materials: [], library: [], news: {enabled: true, method: 'rss', search: [], sources: ['https://a.test/rss'], topic: '', count: 10, days: 1, mode: 'posts', used: 0}});
+    api.setNews(null, null, {groupId: 3, mode: 'posts', offered: 4, posts: [{title: 'Обмен', source: 'a.test', text: 'Текст <i>\n\nИсточник: https://a.test/1'}, {title: 'Вторая', source: 'a.test', text: 'Второй текст'}]});
     api.setSeries([{at: '2026-10-05T10:00', message: 'Занято', attachments: '', media: []}, {at: '2026-10-05T19:00', message: '', attachments: '', media: []}]);
     await listeners.click({target: {closest: () => ({dataset: {command: 'group-news-series'}})}});
     check(api.getSeries()[0].message === 'Занято' && api.getSeries()[1].message.startsWith('Текст <i>') && api.getNews().posts.length === 1 && api.getSeriesGroup() === 3 && context.location.hash === '#series', 'Раскладка: занятый слот не тронут, свободный заполнен, остаток ждёт в группе');

@@ -105,10 +105,55 @@ final class VKT_Replies {
         ) );
     }
 
-    /** Удалённый в VK комментарий пропадает из ленты, но строка остаётся — на случай восстановления. */
+    const GONE = 'Комментарий удалён в VK — ответ снят.';
+
+    /**
+     * Комментария в VK больше нет — у нас его тоже нет: строка удаляется, а
+     * ждущие и упавшие ответы на него снимаются, отвечать уже некому.
+     * Восстановят в VK — Callback или «Загрузить из VK» вернут его заново.
+     */
     public static function forget_comment( $group_id, $comment_id ) {
         global $wpdb;
-        $wpdb->update( VKT_Store::table( 'comment_inbox' ), array( 'deleted' => 1 ), array( 'group_id' => absint( $group_id ), 'comment_id' => absint( $comment_id ) ) );
+        $group_id = absint( $group_id );
+        $comment_id = absint( $comment_id );
+        if ( ! $group_id || ! $comment_id ) {
+            return;
+        }
+        $wpdb->delete( VKT_Store::table( 'comment_inbox' ), array( 'group_id' => $group_id, 'comment_id' => $comment_id ) );
+        $wpdb->query( $wpdb->prepare(
+            'UPDATE ' . VKT_Store::table( 'comment_replies' ) . " SET status='cancelled',error=%s,updated_at=%s WHERE group_id=%d AND comment_id=%d AND status IN ('pending','failed')",
+            self::GONE, gmdate( 'Y-m-d H:i:s' ), $group_id, $comment_id
+        ) );
+    }
+
+    /** VK отвечает так, когда комментария или записи под ним уже нет. */
+    private static function is_gone( $message ) {
+        return (bool) preg_match( '/reply_to_comment not found|comment (?:was )?(?:not found|deleted)|post (?:was )?(?:not found|deleted)/i', (string) $message );
+    }
+
+    /**
+     * Убирает из ленты комментарии записи, которых VK больше не отдаёт.
+     * $seen — ID всех полученных комментариев, $top — верхнего уровня,
+     * $complete — тех, чья ветка пришла целиком, $full — верхний уровень
+     * пришёл целиком. Чего мы не видели из-за постраничной выдачи — не трогаем.
+     */
+    private static function prune( $group_id, $post_id, $seen, $top, $complete, $full ) {
+        global $wpdb;
+        $removed = 0;
+        $rows = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT comment_id,thread_id FROM ' . VKT_Store::table( 'comment_inbox' ) . ' WHERE group_id=%d AND post_id=%d', $group_id, $post_id ), ARRAY_A );
+        foreach ( $rows as $row ) {
+            $id = (int) $row['comment_id'];
+            $parent = (int) $row['thread_id'];
+            if ( isset( $seen[ $id ] ) ) {
+                continue;
+            }
+            $gone = $parent ? ( isset( $complete[ $parent ] ) || ( $full && ! isset( $top[ $parent ] ) ) ) : $full;
+            if ( $gone ) {
+                self::forget_comment( $group_id, $id );
+                ++$removed;
+            }
+        }
+        return $removed;
     }
 
     /**
@@ -123,21 +168,41 @@ final class VKT_Replies {
         }
         $with = array_slice( array_values( array_filter( $posts['posts'], static fn( $post ) => $post['comments'] > 0 ) ), 0, 10 );
         $found = 0;
+        $removed = 0;
+        // Под записью не осталось комментариев — значит, все наши по ней удалены.
+        foreach ( $posts['posts'] as $post ) {
+            if ( ! $post['comments'] ) {
+                $removed += self::prune( absint( $group_id ), absint( $post['id'] ), array(), array(), array(), true );
+            }
+        }
         foreach ( $with as $post ) {
             $thread = self::thread( $group_id, $post['id'] );
             if ( is_wp_error( $thread ) ) {
-                return $found ? array( 'posts' => count( $with ), 'comments' => $found, 'warning' => $thread->get_error_message() ) : $thread;
+                return $found ? array( 'posts' => count( $with ), 'comments' => $found, 'removed' => $removed, 'warning' => $thread->get_error_message() ) : $thread;
             }
+            $seen = array();
+            $top = array();
+            $complete = array();
             foreach ( $thread['comments'] as $comment ) {
+                $top[ $comment['id'] ] = true;
+                if ( count( $comment['thread'] ) >= $comment['thread_count'] ) {
+                    $complete[ $comment['id'] ] = true;
+                }
                 foreach ( array_merge( array( $comment ), $comment['thread'] ) as $index => $item ) {
+                    // Удалённый комментарий VK оставляет заглушкой, пока под ним есть ответы.
+                    if ( $item['deleted'] ) {
+                        continue;
+                    }
+                    $seen[ $item['id'] ] = true;
                     $raw = array( 'id' => $item['id'], 'post_id' => $post['id'], 'from_id' => $item['from_id'], 'text' => $item['text'], 'date' => strtotime( $item['date'] . ' UTC' ), 'attachments' => $item['has_media'] ? array( 1 ) : array(), 'thread_id' => $index ? $comment['id'] : 0 );
                     if ( self::ingest( $group_id, $raw, 'scan', $post['text'], array( 'name' => $item['author'], 'photo' => $item['photo'] ) ) ) {
                         ++$found;
                     }
                 }
             }
+            $removed += self::prune( absint( $group_id ), absint( $post['id'] ), $seen, $top, $complete, count( $thread['comments'] ) >= $thread['total'] );
         }
-        return array( 'posts' => count( $with ), 'comments' => $found );
+        return array( 'posts' => count( $with ), 'comments' => $found, 'removed' => $removed );
     }
 
     /**
@@ -659,6 +724,12 @@ final class VKT_Replies {
                         $changes['attempts'] = (int) $reply['attempts'];
                         $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + 15 * MINUTE_IN_SECONDS );
                         $changes['error'] = mb_substr( $result->get_error_message() . ' Ждём переподключения ключа.', 0, 255 );
+                    }
+                    // Комментарий удалили, пока ответ ждал: это не ошибка отправки, отвечать просто некому.
+                    if ( self::is_gone( $result->get_error_message() ) ) {
+                        self::forget_comment( $group_id, absint( $reply['comment_id'] ) );
+                        $changes['status'] = 'cancelled';
+                        $changes['error'] = self::GONE;
                     }
                 } else {
                     $changes['status'] = 'sent';

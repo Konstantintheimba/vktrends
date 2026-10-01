@@ -208,7 +208,7 @@ final class VKT_Groups {
     /** Настройки новостей для интерфейса: вместо списка использованных — их число. */
     private static function news_public( $settings ) {
         $settings['used'] = count( $settings['used'] );
-        return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES ) );
+        return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES, 'search' => VKT_AI::search_providers() ) );
     }
 
     private static function store_news( $group, $settings ) {
@@ -244,6 +244,13 @@ final class VKT_Groups {
             return $group;
         }
         $settings = VKT_News::settings( $group['news'] ?? '' );
+        if ( 'search' === $settings['method'] ) {
+            if ( '' === $settings['topic'] ) {
+                return self::error( 'Опишите, какие новости искать, и сохраните настройки.' );
+            }
+            $collected = VKT_News::search( $settings, (string) $group['name'] );
+            return is_wp_error( $collected ) ? $collected : array( $group, $settings, $collected );
+        }
         if ( ! $settings['sources'] ) {
             return self::error( 'У группы нет источников новостей. Впишите адреса сайтов или RSS-лент и сохраните.' );
         }
@@ -273,9 +280,11 @@ final class VKT_Groups {
         list( $group, $settings, $collected ) = $fresh;
         if ( ! $collected['items'] ) {
             $failed = count( array_filter( $collected['sources'], static fn( $source ) => ! $source['ok'] ) );
-            return self::error( $failed === count( $collected['sources'] )
+            return self::error( 'search' === $settings['method']
+                ? 'Поиск не нашёл свежих новостей с подтверждённой ссылкой' . ( '' !== $collected['sources'][0]['message'] ? ' (' . $collected['sources'][0]['message'] . ')' : '' ) . '. Уточните выборку, увеличьте срок или нажмите «Забыть использованные».'
+                : ( $failed === count( $collected['sources'] )
                 ? 'Ни один источник не прочитался. Нажмите «Проверить источники» — там видно, что с каждым.'
-                : 'Свежих новостей за выбранный срок нет: всё уже использовано или ничего не вышло. Увеличьте срок или добавьте источники.', 404, array( 'sources' => $collected['sources'] ) );
+                : 'Свежих новостей за выбранный срок нет: всё уже использовано или ничего не вышло. Увеличьте срок или добавьте источники.' ), 404, array( 'sources' => $collected['sources'] ) );
         }
         $answer = VKT_AI::generate_news( $collected['items'], $settings['topic'], $settings['count'], $settings['mode'], $model, self::context( $group ) );
         if ( is_wp_error( $answer ) ) {

@@ -30,7 +30,15 @@ function wp_safe_remote_get( $url, $args = array() ) {
     $page = $GLOBALS['vkt_pages'][ $url ] ?? null;
     return null === $page ? new WP_Error( 'http', 'cURL error 28: timeout' ) : ( is_array( $page ) ? $page : array( 'body' => $page ) );
 }
+function wp_safe_remote_head( $url, $args = array() ) {
+    $GLOBALS['vkt_checked'][] = $url;
+    return in_array( $url, $GLOBALS['vkt_alive'] ?? array(), true ) ? array( 'code' => 200, 'body' => '' ) : array( 'code' => 404, 'body' => '' );
+}
 function wp_remote_post( $url, $args ) {
+    if ( str_ends_with( $url, '/v1/responses' ) ) {
+        $GLOBALS['vkt_search_request'] = json_decode( $args['body'], true );
+        return array( 'code' => $GLOBALS['vkt_search_code'] ?? 200, 'body' => json_encode( $GLOBALS['vkt_search_response'] ) );
+    }
     $GLOBALS['vkt_model_request'] = json_decode( $args['body'], true );
     return array( 'body' => json_encode( array( 'choices' => array( array( 'message' => array( 'content' => $GLOBALS['vkt_model_text'] ) ) ) ) ) );
 }
@@ -132,5 +140,40 @@ $assert( 2 === count( $posts ) && "Обмен состоялся.\n\nИсточ�
 $digest = VKT_News::compose( $collected['items'], $answer, 'digest' );
 $assert( 1 === count( $digest ) && str_starts_with( $digest[0]['text'], "Главное за день\n\n— Обмен состоялся.\nИсточник: https://news.test/trade\n\n— Контракт продлён." ) && 2 === count( $digest[0]['links'] ) && 'news.test, sport.test' === $digest[0]['source'], 'Дайджест: вводная строка, пункты и источник у каждого' );
 $assert( array() === VKT_News::compose( $collected['items'], array( 'picks' => array() ), 'digest' ), 'Пустой отбор — пустой результат' );
+
+// Поиск в интернете: запрос к xAI, сверка ссылок с источниками поиска и живая проверка остальных.
+$assert( 'search' === VKT_News::settings( array() )['method'] && is_wp_error( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => '' ), array() ) ) && ! is_wp_error( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => 'НБА' ), array() ) ), 'По умолчанию — поиск: ему нужна выборка, а источники необязательны' );
+$assert( array( array( 'id' => 'xai', 'title' => 'xAI Grok · web_search' ) ) === VKT_AI::search_providers(), 'С ключом xAI поиск доступен' );
+$found_json = json_encode( array( 'news' => array(
+    array( 'title' => 'Обмен в НБА', 'summary' => 'Клубы обменялись <b>защитниками</b>.', 'url' => 'https://www.kp.ru/sport/trade/?utm_source=x', 'date' => gmdate( 'Y-m-d' ) ),
+    array( 'title' => 'Живая без цитаты', 'summary' => 'Факт.', 'url' => 'https://tass.ru/sport/1', 'date' => '' ),
+    array( 'title' => 'Выдуманная', 'summary' => 'Факт.', 'url' => 'https://fake-site.test/news/42', 'date' => '' ),
+    array( 'title' => 'Уже брали', 'summary' => 'Факт.', 'url' => 'https://kp.ru/used', 'date' => '' ),
+    array( 'title' => 'Не ссылка', 'summary' => 'Факт.', 'url' => 'нет адреса', 'date' => '' ),
+) ), JSON_UNESCAPED_UNICODE );
+$GLOBALS['vkt_search_response'] = array( 'output' => array(
+    array( 'type' => 'web_search_call' ),
+    array( 'type' => 'message', 'content' => array( array( 'type' => 'output_text', 'text' => "Вот что нашлось:\n" . $found_json . "\nГотово.", 'annotations' => array( array( 'type' => 'url_citation', 'url' => 'https://kp.ru/sport/trade' ), array( 'type' => 'url_citation', 'url' => 'https://kp.ru/used' ) ) ) ) ),
+) );
+$GLOBALS['vkt_alive'] = array( 'https://tass.ru/sport/1' );
+$GLOBALS['vkt_checked'] = array();
+$search_settings = VKT_News::settings( array( 'enabled' => true, 'method' => 'search', 'topic' => 'Только НБА', 'count' => 5, 'days' => 3, 'sources' => array( 'https://www.kp.ru/', 'https://tass.ru' ), 'used' => array( VKT_News::key( 'https://kp.ru/used' ) ) ) );
+$searched = VKT_News::search( $search_settings, 'Баскетбол' );
+$request = $GLOBALS['vkt_search_request'];
+$assert( VKT_AI::SEARCH_MODEL === $request['model'] && 'web_search' === $request['tools'][0]['type'] && array( 'kp.ru', 'tass.ru' ) === $request['tools'][0]['filters']['allowed_domains'], 'Запрос к xAI: инструмент web_search и сайты группы фильтром' );
+$assert( str_contains( $request['input'][0]['content'], 'Только НБА' ) && str_contains( $request['input'][0]['content'], 'за последние 3 сут' ) && str_contains( $request['input'][0]['content'], 'Баскетбол' ) && str_contains( $request['input'][0]['content'], 'До 10 ' ), 'В поиск уходят выборка, срок, группа и запас по числу' );
+$assert( array( 'Обмен в НБА', 'Живая без цитаты' ) === array_column( $searched['items'], 'title' ), 'Остались новости с подтверждённой ссылкой: названная поиском и открывающаяся' );
+$assert( 'https://www.kp.ru/sport/trade/' === $searched['items'][0]['link'] && 'kp.ru' === $searched['items'][0]['source'] && 'Клубы обменялись защитниками.' === $searched['items'][0]['summary'] && null === $searched['items'][1]['date'], 'Ссылка без utm-меток, источник — домен, теги из пересказа убраны' );
+$assert( array( 'https://tass.ru/sport/1', 'https://fake-site.test/news/42' ) === $GLOBALS['vkt_checked'], 'Живьём проверяются только ссылки, которых поиск источниками не назвал' );
+$assert( str_contains( $searched['sources'][0]['message'], 'отброшено без подтверждённой ссылки: 1' ) && 5 === $searched['sources'][0]['total'] && 2 === $searched['sources'][0]['fresh'] && str_contains( $searched['sources'][0]['url'], 'xAI Grok' ), 'В отчёте видно, кто искал и сколько отброшено' );
+$many_sites = VKT_News::settings( array( 'method' => 'search', 'topic' => 'Т', 'sources' => array_map( static fn( $i ) => "https://s$i.test", range( 1, 7 ) ) ) );
+VKT_News::search( $many_sites );
+$assert( ! isset( $GLOBALS['vkt_search_request']['tools'][0]['filters'] ), 'Больше пяти сайтов — поиск без фильтра: xAI принимает не больше пяти' );
+$GLOBALS['vkt_search_response'] = array( 'output_text' => 'Ничего не нашёл.' );
+$assert( is_wp_error( VKT_News::search( $search_settings ) ), 'Ответ поиска без списка — ошибка' );
+$GLOBALS['vkt_search_response'] = array( 'error' => array( 'message' => 'model not found' ) );
+$GLOBALS['vkt_search_code'] = 404;
+$denied = VKT_News::search( $search_settings );
+$assert( is_wp_error( $denied ) && str_contains( $denied->get_error_message(), 'model not found' ) && str_contains( $denied->get_error_message(), '404' ), 'Отказ xAI показан дословно' );
 
 echo "PASS: $checks news checks\n";

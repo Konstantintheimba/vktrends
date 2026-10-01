@@ -2,7 +2,12 @@
 // База ведения группы: библиотека файлов плагина, свои материалы, галочки
 // назначения и то, что в итоге уходит в модель. Без сети, базы и WordPress.
 define( 'ABSPATH', __DIR__ . '/' );
-define( 'VKT_DIR', dirname( __DIR__ ) . '/' );
+// Библиотека плагина сейчас пуста (методика VK Shops ушла в товарный пост),
+// поэтому механизм проверяется на временной папке с одним файлом.
+define( 'VKT_DIR', sys_get_temp_dir() . '/vkt-materials-' . getmypid() . '/' );
+mkdir( VKT_DIR . 'materials', 0700, true );
+copy( dirname( __DIR__ ) . '/prompts/vk-shops.md', VKT_DIR . 'materials/vk-shops.md' );
+register_shutdown_function( static function () { @unlink( VKT_DIR . 'materials/vk-shops.md' ); @rmdir( VKT_DIR . 'materials' ); @rmdir( VKT_DIR ); } );
 define( 'DAY_IN_SECONDS', 86400 );
 
 class WP_Error {
@@ -26,7 +31,7 @@ $assert = static function ( $condition, $message ) use ( &$checks ) {
 
 // Библиотека: файл методики читается, название и описание отделены от текста для модели.
 $library = VKT_Materials::library();
-$assert( isset( $library['vk-shops'] ) && 'Методика VK Shops' === $library['vk-shops']['title'], 'Методика VK Shops есть в библиотеке плагина' );
+$assert( isset( $library['vk-shops'] ) && 'Методика VK Shops' === $library['vk-shops']['title'], 'Файл из папки materials попадает в библиотеку' );
 $shops = $library['vk-shops'];
 $assert( '' !== $shops['description'] && ! str_contains( $shops['text'], $shops['description'] ) && ! str_contains( $shops['text'], '# Методика VK Shops' ), 'Название и описание в модель не дублируются' );
 $assert( mb_strlen( $shops['text'] ) <= VKT_Materials::PROMPT_EACH, 'Методика помещается в запрос целиком' );
