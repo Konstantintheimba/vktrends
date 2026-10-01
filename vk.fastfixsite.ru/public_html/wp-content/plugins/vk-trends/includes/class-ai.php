@@ -406,7 +406,7 @@ final class VKT_AI {
             return self::error( 'Указания для ответов — не длиннее 2000 символов.' );
         }
         $list = array();
-        foreach ( array_slice( is_array( $items ) ? array_values( $items ) : array(), 0, VKT_Replies::MAX_BATCH ) as $index => $item ) {
+        foreach ( array_slice( is_array( $items ) ? array_values( $items ) : array(), 0, VKT_Replies::BATCH_CEILING ) as $index => $item ) {
             $comment = is_array( $item ) ? trim( wp_strip_all_tags( (string) ( $item['comment'] ?? '' ) ) ) : '';
             if ( '' === $comment ) {
                 continue;

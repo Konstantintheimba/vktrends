@@ -222,12 +222,13 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(api.initial() === 'users', 'Администратор открывает раздел «Пользователи»');
     api.setUsers([
         {id: 7, name: 'Иван <b>', avatar: '', vk_id: 38975563, status: 'pending', registered: '2026-09-18 10:00:00', last_login: '', sources: 0, groups: 0, posts: 0},
-        {id: 8, name: 'Мария', avatar: 'https://sun.userapi.com/a.jpg', vk_id: 1, status: 'active', registered: '2026-09-17 10:00:00', last_login: '2026-09-18 09:00:00', sources: 12, groups: 2, posts: 5},
+        {id: 8, name: 'Мария', avatar: 'https://sun.userapi.com/a.jpg', vk_id: 1, status: 'active', registered: '2026-09-17 10:00:00', last_login: '2026-09-18 09:00:00', sources: 12, groups: 2, posts: 5, limits: {text: {own: 200, limit: 200, used: 31}, media: {own: null, limit: 5, used: 2}, replies_batch: {own: null, limit: 50, used: null}, sources: {own: null, limit: 100, used: null}}},
     ]);
     const usersView = api.users();
     check(usersView.includes('Иван &lt;b&gt;') && !usersView.includes('Иван <b>'), 'Имя из VK экранируется');
     check(usersView.includes('data-status="active"') && usersView.includes('Одобрить') && usersView.includes('Заблокировать'), 'Заявку можно одобрить, активного — заблокировать');
     check(usersView.includes('vk.com/id38975563') && usersView.includes('name="member_sources"'), 'Ссылка на профиль VK и форма лимитов на месте');
+    check(usersView.includes('data-command="user-limits" data-id="8"') && usersView.includes('<span class="vkt-limit-own">тексты 31/200</span>') && usersView.includes('<span class="">картинки 2/5</span>') && usersView.includes('ответов за раз 50'), 'У каждого кабинета видны лимиты и расход за сегодня, личный лимит выделен');
     context.location.hash = '#posts';
 
     // Стенд генерации фото: только администратору, ключ и ответы сервиса на виду.
@@ -390,5 +391,14 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     html = api.comments();
     check(html.includes('Лента комментариев') && html.includes('data-comments-pick="5_60"') && html.includes('Пост &lt;i&gt;'), 'Лента показывает комментарии всей группы с записью, к которой они оставлены');
     check(html.includes('data-command="group-settings"') && html.includes('подключите Callback'), 'Без Callback лента подсказывает, где его подключить');
+    // Стикер и фото без текста: видны в ленте, на них можно ответить, в очередь уходит описание словами.
+    api.setFeed({groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 1}], queue: [{id: 1, group_id: 100, post_id: 5, comment_id: 61, status: 'pending', message: 'Ответ', available_at: '2026-10-01 10:00:00'}], status: {reading: true, ai: {}, cron_stale: true}}, {total: 2, comments: [
+        {id: 62, post_id: 5, post_text: 'Пост', from_id: 44, author: 'Ира', text: '', has_media: true, media: [{type: 'sticker', url: 'https://vk.test/s.png', title: ''}, {type: 'audio', url: '', title: 'Группа — <Песня>'}], answered: false, queued: '', thread: []},
+        {id: 63, post_id: 5, post_text: 'Пост', from_id: 45, author: 'Олег', text: '', has_media: true, media: [], answered: false, queued: '', thread: []},
+    ]});
+    html = api.comments();
+    check(html.includes('<img class="vkt-comment-media is-sticker" src="https://vk.test/s.png" alt="Стикер"') && html.includes('Аудио: Группа — &lt;Песня&gt;') && html.includes('data-comments-pick="5_62"'), 'Стикер показан картинкой, аудио — подписью; комментарий без текста можно выбрать');
+    check(html.includes('data-comments-pick="5_63"') && html.includes('нажмите «Загрузить из VK»'), 'Старый комментарий без сохранённого вложения подсказывает перезагрузить ленту');
+    check(html.includes('Планировщик сайта не разбирал очередь'), 'Если планировщик стоит, а в очереди есть ответы, вкладка объясняет, почему они идут только при ней');
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

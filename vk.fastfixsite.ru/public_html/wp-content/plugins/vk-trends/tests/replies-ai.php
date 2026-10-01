@@ -25,7 +25,7 @@ function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $compon
 class VKT_Tokens { public static function unseal( $value ) { return ''; } }
 class VKT_Account { public static function is_admin() { return true; } }
 class VKT_Store { public static function log() {} }
-class VKT_Replies { const MAX_BATCH = 50; const MAX_LENGTH = 2000; }
+class VKT_Replies { const MAX_BATCH = 50; const BATCH_CEILING = 100; const MAX_LENGTH = 2000; }
 
 require dirname( __DIR__ ) . '/includes/class-ai.php';
 

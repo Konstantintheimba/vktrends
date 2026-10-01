@@ -5,6 +5,11 @@
 define( 'ABSPATH', __DIR__ . '/' );
 const ARRAY_A = 'ARRAY_A';
 const MINUTE_IN_SECONDS = 60;
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
+function set_transient( $key, $value, $ttl = 0 ) { $GLOBALS['vkt_transients'][ $key ] = $value; return true; }
+function get_transient( $key ) { return $GLOBALS['vkt_transients'][ $key ] ?? false; }
+function delete_transient( $key ) { unset( $GLOBALS['vkt_transients'][ $key ] ); return true; }
+if ( ! function_exists( 'wp_date' ) ) { function wp_date( $format, $stamp = null ) { return gmdate( $format, $stamp ?? time() ); } }
 
 class WP_Error {
     public function __construct( public $code = '', public $message = '', public $data = array() ) {}
@@ -18,6 +23,7 @@ function sanitize_textarea_field( $value ) { return trim( strip_tags( (string) $
 function wp_strip_all_tags( $value ) { return strip_tags( (string) $value ); }
 function esc_url_raw( $url, $protocols = array() ) { return str_starts_with( (string) $url, 'https://' ) ? $url : ''; }
 function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
+function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
 function wp_generate_uuid4() { return bin2hex( random_bytes( 16 ) ); }
 function wp_rand( $min, $max ) { return $GLOBALS['vkt_rand'] ?? $max; }
 function update_option( $name, $value, $autoload = true ) { $GLOBALS['vkt_options'][ $name ] = $value; return true; }
@@ -34,7 +40,9 @@ class VKT_Account {
     public static int $id = 5;
     public static array $switched = array();
     public static bool $active = true;
+    public static int $batch = 50;
     public static function id() { return self::$id; }
+    public static function limit( $key ) { return self::$batch; }
     public static function can_use() { return self::$active; }
     public static function act_as( $user_id, callable $callback ) {
         self::$switched[] = $user_id;
@@ -285,5 +293,18 @@ $assert( in_array( $state['queue'][0]['status'], array( 'pending', 'sending' ), 
 
 VKT_Replies::purge_user( 5 );
 $assert( 0 === count( $rows( 'user_id=5' ) ), 'Удаление кабинета уносит его очередь ответов' );
+
+// Вложения комментария: стикер и фото видны в ленте, чтобы на них можно было ответить.
+$media = VKT_Replies::media_of( array( 'attachments' => array(
+    array( 'type' => 'sticker', 'sticker' => array( 'images' => array( array( 'url' => 'https://vk.test/s64.png', 'width' => 64 ), array( 'url' => 'https://vk.test/s128.png', 'width' => 128 ), array( 'url' => 'https://vk.test/s512.png', 'width' => 512 ) ) ) ),
+    array( 'type' => 'photo', 'photo' => array( 'sizes' => array( array( 'url' => 'https://vk.test/p75.jpg', 'width' => 75 ), array( 'url' => 'https://vk.test/p360.jpg', 'width' => 360 ), array( 'url' => 'http://vk.test/p1280.jpg', 'width' => 1280 ) ) ) ),
+    array( 'type' => 'audio', 'audio' => array( 'artist' => 'Группа', 'title' => 'Песня <b>' ) ),
+    array( 'type' => 'video', 'video' => array( 'title' => 'Ролик', 'image' => array( array( 'url' => 'javascript:alert(1)', 'width' => 320 ) ) ) ),
+    array( 'type' => 'poll', 'poll' => array() ),
+) ) );
+$assert( 4 === count( $media ) && array( 'type' => 'sticker', 'url' => 'https://vk.test/s128.png', 'title' => '' ) === $media[0], 'Стикер отдаётся картинкой подходящего размера, вложений не больше четырёх' );
+$assert( 'https://vk.test/p360.jpg' === $media[1]['url'] && 'Группа — Песня' === $media[2]['title'] && '' === $media[2]['url'], 'Фото — превью около 320 px, аудио — подписью без тегов' );
+$assert( 'video' === $media[3]['type'] && '' === $media[3]['url'] && 'Ролик' === $media[3]['title'], 'Небезопасный адрес картинки отбрасывается, подпись остаётся' );
+$assert( array() === VKT_Replies::media_of( array( 'text' => 'Без вложений' ) ) && array() === VKT_Replies::media_of( array( 'attachments' => array( 'мусор', array() ) ) ), 'Комментарий без вложений и мусор в них не ломают разбор' );
 
 echo "All $checks offline reply checks passed.\n";

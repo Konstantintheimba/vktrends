@@ -124,7 +124,84 @@ final class VKT_Account {
     }
 
     public static function source_limit( $user_id = null ) {
-        return self::is_admin( $user_id ) ? self::ADMIN_SOURCES : max( 1, absint( VKT_Plugin::settings()['member_sources'] ?? 100 ) );
+        return self::is_admin( $user_id ) ? self::ADMIN_SOURCES : self::limit( 'sources', $user_id );
+    }
+
+    // ——— Лимиты кабинета: общие для сайта и личные, которые ставит администратор ———
+
+    // Ключ лимита => настройка сайта с общим значением, значение по умолчанию и потолок.
+    const LIMITS = array(
+        'text' => array( 'ai_text_daily', 30, 5000 ),
+        'media' => array( 'ai_media_daily', 5, 1000 ),
+        'sources' => array( 'member_sources', 100, 500 ),
+        'replies_batch' => array( '', 50, 100 ),
+    );
+
+    /** Личные лимиты кабинета: только те, что администратор задал этому человеку. */
+    public static function own_limits( $user_id ) {
+        $saved = get_user_meta( absint( $user_id ), 'vkt_limits', true );
+        $own = array();
+        foreach ( self::LIMITS as $key => $rule ) {
+            if ( is_array( $saved ) && isset( $saved[ $key ] ) && is_numeric( $saved[ $key ] ) ) {
+                $own[ $key ] = min( $rule[2], absint( $saved[ $key ] ) );
+            }
+        }
+        return $own;
+    }
+
+    /** Действующий лимит: личный, если задан, иначе общий для сайта. */
+    public static function limit( $key, $user_id = null ) {
+        $rule = self::LIMITS[ $key ] ?? null;
+        if ( ! $rule ) {
+            return 0;
+        }
+        $user_id = self::resolve( $user_id );
+        if ( $user_id && self::is_admin( $user_id ) ) {
+            return 'sources' === $key ? self::ADMIN_SOURCES : $rule[2];
+        }
+        $own = $user_id ? self::own_limits( $user_id ) : array();
+        if ( isset( $own[ $key ] ) ) {
+            return 'sources' === $key ? max( 1, $own[ $key ] ) : $own[ $key ];
+        }
+        $settings = VKT_Plugin::settings();
+        $common = '' !== $rule[0] && isset( $settings[ $rule[0] ] ) ? absint( $settings[ $rule[0] ] ) : $rule[1];
+        return 'sources' === $key ? max( 1, $common ) : $common;
+    }
+
+    /** Личные лимиты ставит администратор. Пустое поле возвращает кабинет к общему значению. */
+    public static function set_limits( $user_id, $limits ) {
+        $user_id = absint( $user_id );
+        if ( ! $user_id || self::is_admin( $user_id ) || ! user_can( $user_id, self::CAP ) ) {
+            return new WP_Error( 'vkt_account', 'Это не пользователь VK Trends.', array( 'status' => 404 ) );
+        }
+        $own = array();
+        foreach ( self::LIMITS as $key => $rule ) {
+            $value = is_array( $limits ) ? ( $limits[ $key ] ?? '' ) : '';
+            if ( '' === $value || null === $value ) {
+                continue;
+            }
+            if ( ! is_numeric( $value ) || (int) $value < 0 || (int) $value > $rule[2] ) {
+                return new WP_Error( 'vkt_account', 'Лимит — целое число от 0 до ' . $rule[2] . '.', array( 'status' => 400 ) );
+            }
+            $own[ $key ] = (int) $value;
+        }
+        if ( $own ) {
+            update_user_meta( $user_id, 'vkt_limits', $own );
+        } else {
+            delete_user_meta( $user_id, 'vkt_limits' );
+        }
+        return array( 'ok' => true, 'limits' => self::limits_view( $user_id ) );
+    }
+
+    /** Лимиты кабинета для «Пользователей»: личное значение, действующее и расход за сегодня. */
+    public static function limits_view( $user_id ) {
+        $own = self::own_limits( $user_id );
+        $usage = self::ai_usage( $user_id );
+        $view = array();
+        foreach ( array_keys( self::LIMITS ) as $key ) {
+            $view[ $key ] = array( 'own' => $own[ $key ] ?? null, 'limit' => self::limit( $key, $user_id ), 'used' => isset( $usage[ $key ] ) ? (int) $usage[ $key ] : null );
+        }
+        return $view;
     }
 
     // ——— Суточный лимит генерации xAI ———
@@ -147,11 +224,10 @@ final class VKT_Account {
         if ( ! $user_id || self::is_admin( $user_id ) ) {
             return null;
         }
-        $settings = VKT_Plugin::settings();
         $usage = self::ai_usage( $user_id );
         $quota = array();
         foreach ( self::AI_LIMITS as $kind => $option ) {
-            $limit = absint( $settings[ $option ] ?? 0 );
+            $limit = self::limit( $kind, $user_id );
             $quota[ $kind ] = array( 'limit' => $limit, 'used' => (int) $usage[ $kind ], 'left' => max( 0, $limit - (int) $usage[ $kind ] ) );
         }
         return $quota;
@@ -163,7 +239,7 @@ final class VKT_Account {
             return true;
         }
         $what = 'text' === $kind ? 'текстов' : 'картинок и видео';
-        return new WP_Error( 'vkt_ai_quota', 'Лимит генерации ' . $what . ' на сегодня исчерпан: ' . (int) $quota[ $kind ]['limit'] . ' в сутки. Он обновится завтра.', array( 'status' => 429 ) );
+        return new WP_Error( 'vkt_ai_quota', 'Лимит генерации ' . $what . ' на сегодня исчерпан: ' . (int) $quota[ $kind ]['limit'] . ' в сутки. Он обновится завтра; поднять его может администратор в разделе «Пользователи».', array( 'status' => 429 ) );
     }
 
     /** Списывается только удачная генерация: ошибка xAI не должна съедать лимит. */
@@ -202,6 +278,7 @@ final class VKT_Account {
                 'sources' => $sources[ $id ] ?? 0,
                 'groups' => $groups[ $id ] ?? 0,
                 'posts' => $posts[ $id ] ?? 0,
+                'limits' => self::limits_view( $id ),
             ) );
         }
         return $out;

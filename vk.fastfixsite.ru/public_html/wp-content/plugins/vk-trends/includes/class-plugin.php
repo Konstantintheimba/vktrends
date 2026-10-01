@@ -89,7 +89,7 @@ final class VKT_Plugin {
 
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'flux_start', 'flux_status', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_start', 'flux_status', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -319,7 +319,7 @@ final class VKT_Plugin {
         // 16 000 символов записи VK могут занимать до 64 КБ в UTF-8. Пачка
         // ответов на комментарии — до 50 текстов, ей нужно больше.
         $bulk = is_array( $data ) && in_array( $data['action'] ?? '', array( 'comments_queue', 'comments_generate' ), true );
-        if ( ! is_array( $data ) || strlen( $request->get_body() ) > ( $bulk ? 400000 : 80000 ) ) { return self::error( 'Неверный формат или слишком большой запрос.' ); }
+        if ( ! is_array( $data ) || strlen( $request->get_body() ) > ( $bulk ? 800000 : 80000 ) ) { return self::error( 'Неверный формат или слишком большой запрос.' ); }
         $action = $data['action'] ?? '';
         if ( in_array( $action, self::ADMIN_ACTIONS, true ) && ! VKT_Account::is_admin() ) {
             return self::error( 'Это действие доступно только администратору.', 403 );
@@ -611,6 +611,8 @@ final class VKT_Plugin {
                 if ( $owner !== VKT_Account::id() && ! ( ! $owner && VKT_Account::is_admin() ) ) { return self::error( 'Задача генерации не найдена.', 404 ); }
                 return VKT_AI::video_status( $request_id );
             }
+            case 'user_limits':
+                return VKT_Account::set_limits( $data['id'] ?? 0, $data['limits'] ?? array() );
             case 'user_status':
                 return VKT_Account::set_status( $data['id'] ?? 0, sanitize_key( $data['status'] ?? '' ) );
             case 'flux_credits':

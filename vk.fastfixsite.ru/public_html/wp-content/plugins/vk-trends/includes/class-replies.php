@@ -15,7 +15,12 @@ defined( 'ABSPATH' ) || exit;
  */
 final class VKT_Replies {
     const MAX_ATTEMPTS = 4;
+    // Сколько ответов кабинет ставит в очередь за раз по умолчанию; свой предел администратор задаёт в «Пользователях».
     const MAX_BATCH = 50;
+    const BATCH_CEILING = 100;
+    // VK ограничил частоту (флуд, капча): на сколько очередь группы встаёт в первый раз. Дальше пауза удваивается.
+    const HOLD = 30 * MINUTE_IN_SECONDS;
+    const HOLD_CODES = array( 6, 9, 14, 29 );
     const MAX_LENGTH = 2000;
     // Пачка ответов в одну группу подряд выглядит для VK как флуд и
     // заканчивается капчей, поэтому cron отправляет в группу не чаще раза в минуту.
@@ -60,6 +65,7 @@ final class VKT_Replies {
                 text text NOT NULL,
                 post_text varchar(600) NOT NULL DEFAULT '',
                 has_media tinyint unsigned NOT NULL DEFAULT 0,
+                media text NULL,
                 deleted tinyint unsigned NOT NULL DEFAULT 0,
                 source varchar(10) NOT NULL DEFAULT 'scan',
                 commented_at datetime NOT NULL,
@@ -69,6 +75,53 @@ final class VKT_Replies {
                 KEY feed (group_id,commented_at),
                 KEY thread (group_id,thread_id)",
         );
+    }
+
+    /**
+     * Вложения комментария для показа: стикер, фото, видео и прочее. На
+     * стикер или фото без текста тоже отвечают — для этого их надо видеть.
+     * Отдаём маленькую картинку и подпись, не больше четырёх.
+     */
+    public static function media_of( $item ) {
+        $pick = static function ( $sizes, $want ) {
+            $best = '';
+            $gap = PHP_INT_MAX;
+            foreach ( (array) $sizes as $size ) {
+                $url = is_array( $size ) ? (string) ( $size['url'] ?? $size['src'] ?? '' ) : '';
+                $distance = abs( (int) ( $size['width'] ?? 0 ) - $want );
+                if ( '' !== $url && $distance < $gap ) {
+                    $best = $url;
+                    $gap = $distance;
+                }
+            }
+            return esc_url_raw( $best, array( 'https' ) );
+        };
+        $out = array();
+        foreach ( (array) ( $item['attachments'] ?? array() ) as $attachment ) {
+            $type = is_array( $attachment ) ? (string) ( $attachment['type'] ?? '' ) : '';
+            $body = is_array( $attachment[ $type ] ?? null ) ? $attachment[ $type ] : array();
+            $url = '';
+            $title = '';
+            switch ( $type ) {
+                case 'sticker': $url = $pick( $body['images'] ?? array(), 128 ); break;
+                case 'photo': $url = $pick( $body['sizes'] ?? array(), 320 ); break;
+                case 'video': $url = $pick( $body['image'] ?? $body['first_frame'] ?? array(), 320 ); $title = (string) ( $body['title'] ?? '' ); break;
+                case 'graffiti': $url = esc_url_raw( (string) ( $body['url'] ?? '' ), array( 'https' ) ); break;
+                case 'doc': $url = $pick( $body['preview']['photo']['sizes'] ?? array(), 320 ); $title = (string) ( $body['title'] ?? '' ); break;
+                case 'audio': $title = trim( ( $body['artist'] ?? '' ) . ' — ' . ( $body['title'] ?? '' ), ' —' ); break;
+                case 'link': $title = (string) ( $body['title'] ?? $body['url'] ?? '' ); break;
+                case 'audio_message': break;
+                default:
+                    if ( '' === $type ) {
+                        continue 2;
+                    }
+            }
+            $out[] = array( 'type' => sanitize_key( $type ), 'url' => $url, 'title' => mb_substr( sanitize_text_field( $title ), 0, 120 ) );
+            if ( count( $out ) >= 4 ) {
+                break;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -87,10 +140,12 @@ final class VKT_Replies {
         $stack = array_values( array_filter( array_map( 'absint', (array) ( $item['parents_stack'] ?? array() ) ) ) );
         $table = VKT_Store::table( 'comment_inbox' );
         $now = gmdate( 'Y-m-d H:i:s' );
+        // Обход стены приносит вложения уже разобранными, событие Callback — сырыми.
+        $media = is_array( $item['media'] ?? null ) ? $item['media'] : self::media_of( $item );
         return false !== $wpdb->query( $wpdb->prepare(
-            "INSERT INTO $table (group_id,post_id,comment_id,thread_id,from_id,author_name,author_photo,text,post_text,has_media,deleted,source,commented_at,received_at)
-             VALUES (%d,%d,%d,%d,%d,%s,%s,%s,%s,%d,0,%s,%s,%s)
-             ON DUPLICATE KEY UPDATE text=VALUES(text),has_media=VALUES(has_media),deleted=0,
+            "INSERT INTO $table (group_id,post_id,comment_id,thread_id,from_id,author_name,author_photo,text,post_text,has_media,media,deleted,source,commented_at,received_at)
+             VALUES (%d,%d,%d,%d,%d,%s,%s,%s,%s,%d,%s,0,%s,%s,%s)
+             ON DUPLICATE KEY UPDATE text=VALUES(text),has_media=VALUES(has_media),media=VALUES(media),deleted=0,
                 author_name=IF(VALUES(author_name)<>'',VALUES(author_name),author_name),author_photo=IF(VALUES(author_photo)<>'',VALUES(author_photo),author_photo),
                 post_text=IF(VALUES(post_text)<>'',VALUES(post_text),post_text),thread_id=IF(VALUES(thread_id)>0,VALUES(thread_id),thread_id)",
             $group_id, $post_id, $comment_id, $stack[0] ?? absint( $item['thread_id'] ?? 0 ), (int) ( $item['from_id'] ?? 0 ),
@@ -98,7 +153,8 @@ final class VKT_Replies {
             esc_url_raw( (string) ( $author['photo'] ?? '' ), array( 'https' ) ),
             mb_substr( sanitize_textarea_field( (string) ( $item['text'] ?? '' ) ), 0, 4000 ),
             mb_substr( sanitize_textarea_field( (string) $post_text ), 0, 600 ),
-            empty( $item['attachments'] ) ? 0 : 1,
+            $media || ! empty( $item['attachments'] ) ? 1 : 0,
+            $media ? wp_json_encode( $media, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) : '',
             'callback' === $source ? 'callback' : 'scan',
             gmdate( 'Y-m-d H:i:s', absint( $item['date'] ?? 0 ) ?: time() ),
             $now
@@ -194,7 +250,7 @@ final class VKT_Replies {
                         continue;
                     }
                     $seen[ $item['id'] ] = true;
-                    $raw = array( 'id' => $item['id'], 'post_id' => $post['id'], 'from_id' => $item['from_id'], 'text' => $item['text'], 'date' => strtotime( $item['date'] . ' UTC' ), 'attachments' => $item['has_media'] ? array( 1 ) : array(), 'thread_id' => $index ? $comment['id'] : 0 );
+                    $raw = array( 'id' => $item['id'], 'post_id' => $post['id'], 'from_id' => $item['from_id'], 'text' => $item['text'], 'date' => strtotime( $item['date'] . ' UTC' ), 'attachments' => $item['has_media'] ? array( 1 ) : array(), 'media' => $item['media'], 'thread_id' => $index ? $comment['id'] : 0 );
                     if ( self::ingest( $group_id, $raw, 'scan', $post['text'], array( 'name' => $item['author'], 'photo' => $item['photo'] ) ) ) {
                         ++$found;
                     }
@@ -237,6 +293,7 @@ final class VKT_Replies {
             'date' => $row['commented_at'],
             'text' => (string) $row['text'],
             'has_media' => (bool) $row['has_media'],
+            'media' => (array) json_decode( (string) ( $row['media'] ?? '' ), true ),
             'deleted' => false,
             'is_group' => false,
             'answered' => (bool) $row['answered'],
@@ -314,6 +371,7 @@ final class VKT_Replies {
              WHERE r.user_id=%d ORDER BY r.status IN (\'pending\',\'sending\') DESC,CASE WHEN r.status IN (\'pending\',\'sending\') THEN r.available_at END,r.updated_at DESC,r.id DESC LIMIT 150',
             $user_id
         ), ARRAY_A );
+        $last_run = (string) get_option( 'vkt_last_reply_run', '' );
         return array(
             'groups' => $groups,
             'queue' => $queue,
@@ -322,7 +380,9 @@ final class VKT_Replies {
                 'reading' => '' !== VKT_API::mode(),
                 'ai' => VKT_AI::public_status(),
                 'min_gap' => self::MIN_GAP,
-                'max_batch' => self::MAX_BATCH,
+                'max_batch' => VKT_Account::limit( 'replies_batch' ),
+                // Планировщик сайта жив, если очередь разбиралась в последние минуты: иначе её двигает открытая вкладка.
+                'cron_stale' => ! $last_run || strtotime( $last_run . ' UTC' ) < time() - 5 * MINUTE_IN_SECONDS,
                 'max_length' => self::MAX_LENGTH,
                 'last' => get_option( 'vkt_last_reply_run', null ),
             ),
@@ -471,6 +531,7 @@ final class VKT_Replies {
                 'text' => mb_substr( sanitize_textarea_field( (string) ( $item['text'] ?? '' ) ), 0, 4000 ),
                 // Комментарий без текста — стикер, фото или удалённый.
                 'has_media' => ! empty( $item['attachments'] ),
+                'media' => self::media_of( $item ),
                 'deleted' => ! empty( $item['deleted'] ),
                 'is_group' => -$group_id === $from,
                 'queued' => $queued[ $id ] ?? '',
@@ -523,8 +584,9 @@ final class VKT_Replies {
         if ( ! $items ) {
             return self::error( 'Не выбрано ни одного комментария.' );
         }
-        if ( count( $items ) > self::MAX_BATCH ) {
-            return self::error( 'За один раз можно поставить не больше ' . self::MAX_BATCH . ' ответов.' );
+        $batch = VKT_Account::limit( 'replies_batch' );
+        if ( count( $items ) > $batch ) {
+            return self::error( 'За один раз можно поставить не больше ' . $batch . ' ответов — это лимит вашего кабинета. Поставьте остальные следующей пачкой или попросите администратора поднять лимит.' );
         }
         $interval = max( 0, min( self::MAX_INTERVAL, absint( $data['interval'] ?? 0 ) ) ) * MINUTE_IN_SECONDS;
         $jitter = ! empty( $data['jitter'] );
@@ -725,6 +787,15 @@ final class VKT_Replies {
                         $changes['available_at'] = gmdate( 'Y-m-d H:i:s', time() + 15 * MINUTE_IN_SECONDS );
                         $changes['error'] = mb_substr( $result->get_error_message() . ' Ждём переподключения ключа.', 0, 255 );
                     }
+                    // VK ограничил частоту: дело не в этом ответе, а в темпе. Попытку не тратим, очередь группы встаёт на паузу.
+                    $vk_code = (int) ( $error_data['vk_code'] ?? ( preg_match( '/код (\d+)/u', $result->get_error_message(), $found ) ? $found[1] : 0 ) );
+                    if ( in_array( $vk_code, self::HOLD_CODES, true ) ) {
+                        $until = self::hold( $group_id );
+                        $changes['status'] = 'pending';
+                        $changes['attempts'] = (int) $reply['attempts'];
+                        $changes['available_at'] = gmdate( 'Y-m-d H:i:s', $until );
+                        $changes['error'] = mb_substr( 'VK ограничил частоту ответов (код ' . $vk_code . '). Очередь группы продолжит сама в ' . wp_date( 'H:i', $until ) . '.', 0, 255 );
+                    }
                     // Комментарий удалили, пока ответ ждал: это не ошибка отправки, отвечать просто некому.
                     if ( self::is_gone( $result->get_error_message() ) ) {
                         self::forget_comment( $group_id, absint( $reply['comment_id'] ) );
@@ -736,6 +807,7 @@ final class VKT_Replies {
                     $changes['vk_comment_id'] = absint( $result['response']['comment_id'] ?? 0 );
                     $changes['sent_at'] = gmdate( 'Y-m-d H:i:s' );
                     $changes['error'] = '';
+                    delete_transient( 'vkt_reply_hold_' . $group_id );
                 }
                 $wpdb->update( $table, $changes, array( 'id' => $reply['id'] ) );
                 ++$processed;
@@ -751,6 +823,25 @@ final class VKT_Replies {
         } finally {
             VKT_Store::unlock( 'replies' );
         }
+    }
+
+    /**
+     * Ставит очередь группы на паузу и возвращает время, когда она продолжит.
+     * Первая пауза — HOLD, каждая следующая подряд вдвое длиннее, до четырёх
+     * часов: если VK не отпустил, стучаться чаще бессмысленно. Удачная
+     * отправка счёт сбрасывает.
+     */
+    private static function hold( $group_id ) {
+        global $wpdb;
+        $level = min( 3, absint( get_transient( 'vkt_reply_hold_' . $group_id ) ) );
+        set_transient( 'vkt_reply_hold_' . $group_id, $level + 1, 12 * HOUR_IN_SECONDS );
+        $until = time() + self::HOLD * ( 2 ** $level );
+        // Сдвигаем все ждущие ответы группы: иначе следующий упрётся в то же ограничение через минуту.
+        $wpdb->query( $wpdb->prepare(
+            'UPDATE ' . VKT_Store::table( 'comment_replies' ) . " SET available_at=%s WHERE group_id=%d AND status='pending' AND available_at<%s",
+            gmdate( 'Y-m-d H:i:s', $until ), $group_id, gmdate( 'Y-m-d H:i:s', $until )
+        ) );
+        return $until;
     }
 
     /** Одна попытка отправки. Вызывается уже от имени автора ответа. */

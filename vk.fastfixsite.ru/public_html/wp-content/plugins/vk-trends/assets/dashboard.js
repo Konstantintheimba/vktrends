@@ -1007,11 +1007,16 @@
         const actions = user => user.status === 'active'
             ? button('Заблокировать', 'user-status', `data-id="${Number(user.id)}" data-status="blocked"`)
             : button(user.status === 'blocked' ? 'Разблокировать' : 'Одобрить', 'user-status', `data-id="${Number(user.id)}" data-status="active"`) + (user.status === 'pending' ? button('Отклонить', 'user-status', `data-id="${Number(user.id)}" data-status="blocked"`) : '');
-        const rows = list.map(user => `<tr><td><div class="vkt-user-cell">${safeUrl(user.avatar || '') ? `<img src="${safeUrl(user.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="vkt-post-avatar">${esc(String(user.name || '?').slice(0, 1))}</span>`}<div><strong>${esc(user.name)}</strong><small>${Number(user.vk_id) ? `<a href="https://vk.com/id${Number(user.vk_id)}" target="_blank" rel="noopener noreferrer">vk.com/id${Number(user.vk_id)} ↗</a>` : 'без VK'}</small></div></div></td><td>${badge(...(userStatuses[user.status] || [esc(user.status), '']))}</td><td>${date(user.registered)}${user.last_login ? `<small class="vkt-muted">вход ${ago(user.last_login)}</small>` : ''}</td><td>${num(user.sources)}</td><td>${num(user.groups)}</td><td>${num(user.posts)}</td><td class="vkt-table-actions">${actions(user)}</td></tr>`).join('');
+        const limitCell = user => {
+            const limits = user.limits || {};
+            const part = (key, label, used) => limits[key] ? `<span class="${limits[key].own === null ? '' : 'vkt-limit-own'}">${label} ${used ? `${num(limits[key].used || 0)}/` : ''}${num(limits[key].limit)}</span>` : '';
+            return `<div class="vkt-limit-cell">${part('text', 'тексты', true)}${part('media', 'картинки', true)}${part('replies_batch', 'ответов за раз', false)}</div>`;
+        };
+        const rows = list.map(user => `<tr><td><div class="vkt-user-cell">${safeUrl(user.avatar || '') ? `<img src="${safeUrl(user.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="vkt-post-avatar">${esc(String(user.name || '?').slice(0, 1))}</span>`}<div><strong>${esc(user.name)}</strong><small>${Number(user.vk_id) ? `<a href="https://vk.com/id${Number(user.vk_id)}" target="_blank" rel="noopener noreferrer">vk.com/id${Number(user.vk_id)} ↗</a>` : 'без VK'}</small></div></div></td><td>${badge(...(userStatuses[user.status] || [esc(user.status), '']))}</td><td>${date(user.registered)}${user.last_login ? `<small class="vkt-muted">вход ${ago(user.last_login)}</small>` : ''}</td><td>${num(user.sources)}</td><td>${num(user.groups)}</td><td>${num(user.posts)}</td><td>${limitCell(user)}</td><td class="vkt-table-actions">${button('Лимиты', 'user-limits', `data-id="${Number(user.id)}"`)}${actions(user)}</td></tr>`).join('');
         return heading('Пользователи', 'Кабинеты тех, кто вошёл через VK ID. Каждый видит только свои источники, подборки и публикации.', button(`${icon('refresh')} Обновить`, 'reload')) +
             `<div class="vkt-stats">${stat('Всего', num(list.length), 'Вошли через VK ID', 'people')}${stat('Ждут одобрения', num(pending), 'Кабинет откроется после одобрения', 'clock', 'orange')}${stat('Активных', num(list.filter(user => user.status === 'active').length), 'Работают с кабинетом', 'check', 'green')}${stat('Источников у вас', num(s.limits?.sources_used || 0), 'Ваш личный список', 'layers', 'purple')}</div>` +
-            (list.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Пользователь</th><th>Статус</th><th>Заявка</th><th>Источники</th><th>Группы</th><th>Записи</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Пока никого', s.vkid?.configured ? 'Пользователи появятся здесь после первого входа через VK ID на главной.' : 'Укажите ID приложения VK ID в разделе «Публикация» → «Запасные способы» — тогда на главной появится кнопка входа.')) +
-            `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Лимиты кабинета</h2><p class="vkt-muted">Действуют на всех пользователей, кроме администратора. Генерация xAI считается по суткам в часовом поясе сайта, списывается только удачная.</p>
+            (list.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Пользователь</th><th>Статус</th><th>Заявка</th><th>Источники</th><th>Группы</th><th>Записи</th><th>Лимиты · сегодня</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Пока никого', s.vkid?.configured ? 'Пользователи появятся здесь после первого входа через VK ID на главной.' : 'Укажите ID приложения VK ID в разделе «Публикация» → «Запасные способы» — тогда на главной появится кнопка входа.')) +
+            `<div class="vkt-settings-grid"><section class="vkt-panel"><h2>Общие лимиты кабинета</h2><p class="vkt-muted">Действуют на всех пользователей, кроме администратора и тех, кому в таблице выше кнопкой «Лимиты» задано своё значение. Генерация xAI считается по суткам в часовом поясе сайта, списывается только удачная.</p>
                 <form data-form="settings" class="vkt-form">
                     <div class="vkt-form-row"><label>Источников на кабинет<input type="number" name="member_sources" min="1" max="500" value="${Number(s.member_sources) || 100}"></label><label>Текстов в сутки<input type="number" name="ai_text_daily" min="0" max="1000" value="${Number(s.ai_text_daily ?? 30)}"></label><label>Картинок и видео в сутки<input type="number" name="ai_media_daily" min="0" max="200" value="${Number(s.ai_media_daily ?? 5)}"></label></div>
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить лимиты</button></div>
@@ -1469,7 +1474,7 @@
     const commentsAiReady = () => !!commentsData?.status?.ai?.configured;
     // Уже отвеченный или поставленный в работу комментарий повторно не выбирается.
     const commentTaken = comment => ['pending', 'sending', 'sent'].includes(comment.queued);
-    const commentOpen = comment => !comment.is_group && !comment.deleted && !!comment.text && !comment.answered && !commentTaken(comment);
+    const commentOpen = comment => !comment.is_group && !comment.deleted && (!!comment.text || !!comment.has_media) && !comment.answered && !commentTaken(comment);
     async function loadComments() {
         commentsData = await request('comments');
         const groups = commentsData.groups || [];
@@ -1489,6 +1494,15 @@
         }
     }
     // После ответа или действия с очередью перечитываем то, что сейчас на экране.
+    // WP-cron срабатывает только при заходах на сайт, и очередь без них стоит.
+    // Поэтому открытая вкладка «Комментарии» раз в минуту сама толкает свою
+    // очередь. Пока человек печатает или открыто окно — не трогаем, чтобы не сбить ввод.
+    async function commentsTick() {
+        if (view !== 'comments' || !(commentsData?.queue || []).some(reply => ['pending', 'sending'].includes(reply.status))) return;
+        if (dialog.open || ['TEXTAREA', 'INPUT', 'SELECT'].includes(document.activeElement?.tagName)) return;
+        try { await act('comments_run'); await refreshComments(); } catch {}
+    }
+    if (typeof setInterval === 'function') setInterval(commentsTick, 60000);
     async function refreshComments() {
         if (commentsMode === 'feed') { await loadComments(); render(); return; }
         if (commentsPost) await openCommentsPost(commentsPost.id);
@@ -1504,7 +1518,7 @@
     }
     const commentPayload = key => {
         const entry = commentsIndex.get(key) || null;
-        if (entry) return {post_id: Number(entry.post.id), comment_id: Number(entry.comment.id), author_id: Number(entry.comment.from_id), author: entry.comment.author, comment_text: entry.comment.text, post_text: entry.post.text};
+        if (entry) return {post_id: Number(entry.post.id), comment_id: Number(entry.comment.id), author_id: Number(entry.comment.from_id), author: entry.comment.author, comment_text: [entry.comment.text, commentMediaText(entry.comment)].filter(Boolean).join(' '), post_text: entry.post.text};
         return commentsSelected.get(key) || null;
     };
     async function openCommentsPost(id, offset = 0) {
@@ -1517,18 +1531,30 @@
         indexThread();
         render();
     }
+    // Вложения комментария: на стикер или фото без текста тоже отвечают, поэтому их надо видеть.
+    const commentMediaLabels = {sticker: 'Стикер', photo: 'Фото', video: 'Видео', graffiti: 'Граффити', doc: 'Документ', audio: 'Аудио', link: 'Ссылка', audio_message: 'Голосовое сообщение', poll: 'Опрос', market: 'Товар'};
+    const commentMedia = comment => (comment.media || []).map(item => {
+        const url = safeUrl(item.url || '');
+        const label = commentMediaLabels[item.type] || 'Вложение';
+        return url
+            ? `<img class="vkt-comment-media${item.type === 'sticker' ? ' is-sticker' : ''}" src="${url}" alt="${esc(label)}" title="${esc(item.title || label)}" loading="lazy" referrerpolicy="no-referrer">`
+            : `<span class="vkt-badge">${esc(label)}${item.title ? `: ${esc(item.title)}` : ''}</span>`;
+    }).join('');
+    // То же словами — для очереди и нейросети, которым картинку не показать.
+    const commentMediaText = comment => (comment.media || []).map(item => `[${(commentMediaLabels[item.type] || 'Вложение').toLowerCase()}${item.title ? `: ${item.title}` : ''}]`).join(' ') || (comment.has_media ? '[вложение без текста]' : '');
     function commentItem(comment, post, nested = false) {
         const key = `${post.id}_${comment.id}`;
-        const pickable = !comment.is_group && !comment.deleted && !!comment.text && !commentTaken(comment);
+        const pickable = !comment.is_group && !comment.deleted && (!!comment.text || !!comment.has_media) && !commentTaken(comment);
+        const media = comment.deleted ? '' : commentMedia(comment);
         const avatar = safeUrl(comment.photo || '') ? `<img src="${safeUrl(comment.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="vkt-post-avatar">${esc(String(comment.author || '?').slice(0, 1))}</span>`;
         const marks = [
             comment.is_group ? badge('Сообщество') : '',
             !nested && comment.answered ? badge('Есть ответ группы', 'green') : '',
             comment.queued ? replyBadge(comment.queued) : '',
         ].join('');
-        const text = comment.deleted ? '<em class="vkt-muted">Комментарий удалён</em>' : comment.text ? esc(comment.text) : `<em class="vkt-muted">${comment.has_media ? 'Стикер или вложение без текста' : 'Пустой комментарий'}</em>`;
+        const text = comment.deleted ? '<em class="vkt-muted">Комментарий удалён</em>' : comment.text ? esc(comment.text) : media ? '' : `<em class="vkt-muted">${comment.has_media ? 'Стикер или вложение без текста — нажмите «Загрузить из VK», чтобы увидеть его' : 'Пустой комментарий'}</em>`;
         const form = commentsReplyKey === key ? `<form data-form="comment-reply" data-key="${esc(key)}" class="vkt-form vkt-comment-reply"><textarea name="message" rows="3" maxlength="${Number(commentsData.status.max_length) || 2000}" data-draft="${esc(key)}" placeholder="Ответ от имени сообщества…" required>${esc(commentsDrafts.get(key) || '')}</textarea><div class="vkt-comment-reply-actions"><button type="submit" class="vkt-button vkt-primary">${icon('send')} Отправить</button>${commentsAiReady() ? button(`${icon('fire')} Сгенерировать`, 'comments-ai-one', `data-key="${esc(key)}"`) : ''}${button('Отмена', 'comments-reply-close')}</div></form>` : '';
-        return `<div class="vkt-comment${nested ? ' is-nested' : ''}${comment.is_group ? ' is-own' : ''}">${pickable ? `<input type="checkbox" class="vkt-comment-pick" data-comments-pick="${esc(key)}" ${commentsSelected.has(key) ? 'checked' : ''} aria-label="Выбрать комментарий">` : '<span class="vkt-comment-pick"></span>'}${avatar}<div class="vkt-comment-body"><div class="vkt-comment-head"><strong>${Number(comment.from_id) > 0 ? `<a href="https://vk.com/id${Number(comment.from_id)}" target="_blank" rel="noopener noreferrer">${esc(comment.author)}</a>` : esc(comment.author)}</strong><small>${date(comment.date)}</small>${marks}</div><p>${text}</p>${pickable && commentsReplyKey !== key ? `<button type="button" class="vkt-link-button" data-command="comments-reply-open" data-key="${esc(key)}">Ответить</button>` : ''}${form}${!nested && (comment.thread || []).length ? `<div class="vkt-comment-thread">${comment.thread.map(item => commentItem(item, post, true)).join('')}${Number(comment.thread_count) > comment.thread.length ? `<small class="vkt-muted">В ветке ещё ${num(Number(comment.thread_count) - comment.thread.length)} — они видны в VK.</small>` : ''}</div>` : ''}</div></div>`;
+        return `<div class="vkt-comment${nested ? ' is-nested' : ''}${comment.is_group ? ' is-own' : ''}">${pickable ? `<input type="checkbox" class="vkt-comment-pick" data-comments-pick="${esc(key)}" ${commentsSelected.has(key) ? 'checked' : ''} aria-label="Выбрать комментарий">` : '<span class="vkt-comment-pick"></span>'}${avatar}<div class="vkt-comment-body"><div class="vkt-comment-head"><strong>${Number(comment.from_id) > 0 ? `<a href="https://vk.com/id${Number(comment.from_id)}" target="_blank" rel="noopener noreferrer">${esc(comment.author)}</a>` : esc(comment.author)}</strong><small>${date(comment.date)}</small>${marks}</div>${text ? `<p>${text}</p>` : ''}${media ? `<div class="vkt-comment-medias">${media}</div>` : ''}${pickable && commentsReplyKey !== key ? `<button type="button" class="vkt-link-button" data-command="comments-reply-open" data-key="${esc(key)}">Ответить</button>` : ''}${form}${!nested && (comment.thread || []).length ? `<div class="vkt-comment-thread">${comment.thread.map(item => commentItem(item, post, true)).join('')}${Number(comment.thread_count) > comment.thread.length ? `<small class="vkt-muted">В ветке ещё ${num(Number(comment.thread_count) - comment.thread.length)} — они видны в VK.</small>` : ''}</div>` : ''}</div></div>`;
     }
     function commentsThreadPanel() {
         if (!commentsPost) return `<section class="vkt-panel vkt-comments-thread"><div class="vkt-comments-placeholder">${icon('comment')}<p>Выберите запись слева — здесь появятся её комментарии.</p></div></section>`;
@@ -1622,6 +1648,7 @@
                 ? commentsFeedPanel(group)
                 : `<div class="vkt-comments-layout"><section class="vkt-panel vkt-comments-posts"><div class="vkt-panel-heading"><div><h2>Записи</h2><p>Последние записи стены.</p></div></div>${postList}</section>${commentsThreadPanel()}</div>`) +
             bar +
+            ((totals.pending || 0) && status.cron_stale ? `<div class="vkt-info vkt-info-warning">Планировщик сайта не разбирал очередь больше пяти минут. Пока открыта эта вкладка, ответы уходят сами раз в минуту; чтобы они шли и без неё, на хостинге нужна задача планировщика раз в минуту — как её добавить, написано в «Обзоре».</div>` : '') +
             `<div class="vkt-section-title"><h2>Очередь ответов</h2><span class="vkt-muted">Последний разбор очереди: ${date(status.last)}${(totals.pending || 0) ? ` · ${button('Отменить все ожидающие', 'comments-cancel-all')}` : ''}</span></div>` +
             (queue.length ? `<section class="vkt-panel vkt-table-wrap"><table class="vkt-comments-table"><thead><tr><th>Комментарий</th><th>Ответ</th><th>Сообщество</th><th>Когда</th><th>Статус</th><th></th></tr></thead><tbody>${rows}</tbody></table></section>` : empty('Ответов пока нет', 'Ответьте на комментарий или отметьте несколько и поставьте ответы в очередь.'));
     }
@@ -2044,6 +2071,19 @@
             return;
         }
         if (command==='group-close') { groupOpen = 0; groupDetail = null; groupPassportDraft = null; groupMaterialEdit = null; groupMaterialDraft = null; groupNewsDraft = null; render(); return; }
+        if (command==='user-limits') {
+            const user = (usersData || []).find(item => Number(item.id) === Number(el.dataset.id));
+            if (!user) return;
+            const limits = user.limits || {};
+            const field = (key, label, hint) => `<label>${label}<input type="number" name="${key}" min="0" value="${limits[key]?.own ?? ''}" placeholder="общий: ${num(limits[key]?.limit ?? 0)}"><small class="vkt-help">${hint}</small></label>`;
+            modal(`<h2>Лимиты · ${esc(user.name)}</h2><p class="vkt-muted">Личные значения этого кабинета. Пустое поле — действует общий лимит сайта. Сегодня израсходовано: текстов ${num(limits.text?.used || 0)}, картинок и видео ${num(limits.media?.used || 0)}.</p>
+                <form data-form="user-limits" class="vkt-form"><input type="hidden" name="id" value="${Number(user.id)}">
+                    <div class="vkt-form-row">${field('text', 'Текстов в сутки', 'Посты, серии, новости и ответы на комментарии: одна генерация — один текст, пачка ответов тоже один.')}${field('media', 'Картинок и видео в сутки', 'Фото к записям и ролики.')}</div>
+                    <div class="vkt-form-row">${field('replies_batch', 'Ответов на комментарии за раз', 'Сколько комментариев можно выбрать и поставить в очередь одной пачкой, до 100.')}${field('sources', 'Источников', 'Сколько чужих сообществ можно отслеживать.')}</div>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить лимиты</button></div>
+                </form>`);
+            return;
+        }
         if (command==='group-news-drop') { groupNewsResult?.posts.splice(Number(el.dataset.index), 1); render(); return; }
         if (command==='group-news-series') {
             const posts = groupNewsResult?.posts || [];
@@ -2393,6 +2433,12 @@
                     await act('group_passport', {id: groupOpen, passport: values.passport || ''});
                     groupPassportDraft = null;
                     toast('Паспорт сохранён: нейросеть учтёт его в постах, сериях и ответах этой группы.');
+                    break;
+                }
+                case 'user-limits': {
+                    await act('user_limits', {id: Number(values.id), limits: {text: values.text, media: values.media, replies_batch: values.replies_batch, sources: values.sources}});
+                    dialog.close();
+                    toast('Лимиты кабинета сохранены.');
                     break;
                 }
                 case 'group-news': {

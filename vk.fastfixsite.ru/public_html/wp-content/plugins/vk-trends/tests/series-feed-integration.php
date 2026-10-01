@@ -47,15 +47,20 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( &$se
         case 'groups.addCallbackServer': $GLOBALS['vkt_added_secret'] = $body['secret_key'] ?? ''; return $reply( array( 'response' => array( 'server_id' => 7 ) ) );
         case 'groups.setCallbackSettings': $GLOBALS['vkt_events'] = $body; return $reply( array( 'response' => 1 ) );
         case 'wall.get': return $reply( array( 'response' => array( 'count' => 1, 'items' => array( array( 'id' => 5, 'date' => time(), 'text' => 'Пост про осень', 'comments' => array( 'count' => 2 ) ) ) ) ) );
-        case 'wall.createComment': return $reply( array( 'error' => array( 'error_code' => 100, 'error_msg' => 'One of the parameters specified was missing or invalid: reply_to_comment not found' ) ) );
+        case 'wall.createComment':
+            if ( ! empty( $GLOBALS['vkt_flood'] ) ) {
+                return $reply( array( 'error' => array( 'error_code' => 9, 'error_msg' => 'Flood control' ) ) );
+            }
+            return $reply( array( 'error' => array( 'error_code' => 100, 'error_msg' => 'One of the parameters specified was missing or invalid: reply_to_comment not found' ) ) );
         case 'wall.getComments':
             // Комментарий 50 с ответом группы удалили в VK: остался только 51.
             if ( ! empty( $GLOBALS['vkt_comment_gone'] ) ) {
                 return $reply( array( 'response' => array( 'count' => 1, 'current_level_count' => 1, 'items' => array( array( 'id' => 51, 'from_id' => 43, 'date' => time() - 50, 'text' => 'Есть доставка?', 'thread' => array( 'count' => 0, 'items' => array() ) ) ), 'profiles' => array(), 'groups' => array() ) ) );
             }
-            return $reply( array( 'response' => array( 'count' => 2, 'current_level_count' => 2, 'items' => array(
+            return $reply( array( 'response' => array( 'count' => 3, 'current_level_count' => 3, 'items' => array(
                 array( 'id' => 50, 'from_id' => 42, 'date' => time() - 60, 'text' => 'Сколько стоит?', 'thread' => array( 'count' => 1, 'items' => array( array( 'id' => 52, 'from_id' => -111, 'date' => time() - 30, 'text' => 'Написали в ЛС' ) ) ) ),
                 array( 'id' => 51, 'from_id' => 43, 'date' => time() - 50, 'text' => 'Есть доставка?', 'thread' => array( 'count' => 0, 'items' => array() ) ),
+                array( 'id' => 53, 'from_id' => 43, 'date' => time() - 40, 'text' => '', 'attachments' => array( array( 'type' => 'sticker', 'sticker' => array( 'images' => array( array( 'url' => 'https://vk.test/sticker128.png', 'width' => 128 ) ) ) ) ), 'thread' => array( 'count' => 0, 'items' => array() ) ),
             ), 'profiles' => array( array( 'id' => 42, 'first_name' => 'Анна', 'last_name' => 'К', 'photo_50' => 'https://img.test/a.jpg' ), array( 'id' => 43, 'first_name' => 'Олег', 'last_name' => 'П', 'photo_50' => '' ) ), 'groups' => array() ) ) );
         case 'users.get': return $reply( array( 'response' => array( array( 'id' => 44, 'first_name' => 'Ира', 'last_name' => 'С', 'photo_50' => 'https://img.test/i.jpg' ) ) ) );
         case 'wall.post': return $reply( array( 'response' => array( 'post_id' => 900 ) ) );
@@ -91,9 +96,14 @@ $ok( 3 === $cancelled['cancelled'] && 0 === (int) $overview['list'][0]['waiting'
 
 // 2. Лента: обход последних записей складывает комментарии, ответ группы помечает ветку.
 $scan = $act( $a, 'comments_scan', array( 'group_id' => 111 ) );
-$ok( ! is_wp_error( $scan ) && 1 === $scan['posts'] && 3 === $scan['comments'], 'Обход записей собрал комментарии и ответ группы в ветке' );
+$ok( ! is_wp_error( $scan ) && 1 === $scan['posts'] && 4 === $scan['comments'], 'Обход записей собрал комментарии, стикер и ответ группы в ветке' );
 $open = $act( $a, 'comments_inbox', array( 'group_id' => 111, 'filter' => 'open' ) );
-$ok( 1 === count( $open['comments'] ) && 51 === $open['comments'][0]['id'] && 'Олег П' === $open['comments'][0]['author'], 'Без ответа — только комментарий, где группа ещё не отвечала' );
+$by_id = array_column( $open['comments'], null, 'id' );
+$ok( 2 === count( $open['comments'] ) && isset( $by_id[51] ) && 'Олег П' === $by_id[51]['author'], 'Без ответа — только комментарии, где группа ещё не отвечала' );
+$ok( '' === $by_id[53]['text'] && $by_id[53]['has_media'] && 'sticker' === $by_id[53]['media'][0]['type'] && 'https://vk.test/sticker128.png' === $by_id[53]['media'][0]['url'], 'Стикер без текста виден в ленте картинкой — на него можно ответить' );
+$thread = $act( $a, 'comments_thread', array( 'group_id' => 111, 'post_id' => 5 ) );
+$ok( 'sticker' === array_column( $thread['comments'], null, 'id' )[53]['media'][0]['type'], 'В ветке записи вложения тоже отдаются' );
+$wpdb->delete( VKT_Store::table( 'comment_inbox' ), array( 'group_id' => 111, 'comment_id' => 53 ) );
 $all = $act( $a, 'comments_inbox', array( 'group_id' => 111, 'filter' => 'all' ) );
 $ok( 2 === count( $all['comments'] ) && true === array_column( $all['comments'], 'answered', 'id' )[50] && 'Пост про осень' === $all['comments'][0]['post_text'], 'Во «Всех» видно, на что уже ответила группа, и текст записи' );
 
@@ -139,6 +149,23 @@ $failed = $act( $a, 'comments_reply', array( 'group_id' => 111, 'items' => array
 $reply_row = $wpdb->get_row( $wpdb->prepare( 'SELECT status,error FROM ' . VKT_Store::table( 'comment_replies' ) . ' WHERE id=%d', (int) ( $failed['id'] ?? 0 ) ), ARRAY_A );
 $ok( ! is_wp_error( $failed ) && 'cancelled' === $reply_row['status'] && str_contains( $reply_row['error'], 'удалён в VK' ), 'Ответ на удалённый комментарий снят, а не висит ошибкой' );
 $ok( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM $inbox WHERE group_id=111 AND comment_id=70" ), 'Сам комментарий убран из ленты после отказа VK' );
+// 7. VK ограничил частоту: очередь группы встаёт на паузу и продолжает сама, попытки не сгорают.
+$replies = VKT_Store::table( 'comment_replies' );
+$GLOBALS['vkt_flood'] = true;
+$queued = $act( $a, 'comments_queue', array( 'group_id' => 111, 'interval' => 0, 'jitter' => false, 'items' => array(
+    array( 'post_id' => 5, 'comment_id' => 51, 'author_id' => 43, 'author' => 'Олег', 'comment_text' => 'Есть доставка?', 'message' => 'Есть' ),
+    array( 'post_id' => 5, 'comment_id' => 50, 'author_id' => 42, 'author' => 'Анна', 'comment_text' => 'Сколько стоит?', 'message' => 'Напишем' ),
+) ) );
+$wpdb->query( "UPDATE $replies SET sent_at=NULL WHERE group_id=111" );
+VKT_Store::unlock( 'replies' );
+VKT_Replies::run_due( 3 );
+$held = (array) $wpdb->get_results( $wpdb->prepare( "SELECT status,attempts,error,available_at FROM $replies WHERE id IN (%d,%d) ORDER BY id", $queued['replies'][0]['id'], $queued['replies'][1]['id'] ), ARRAY_A );
+$ok( 2 === $queued['created'] && 'pending' === $held[0]['status'] && 0 === (int) $held[0]['attempts'] && str_contains( $held[0]['error'], 'ограничил частоту' ) && str_contains( $held[0]['error'], 'код 9' ), 'Флуд-контроль VK: ответ остаётся в очереди с объяснением, попытка не потрачена' );
+$ok( strtotime( $held[0]['available_at'] . ' UTC' ) > time() + 25 * MINUTE_IN_SECONDS && strtotime( $held[1]['available_at'] . ' UTC' ) > time() + 25 * MINUTE_IN_SECONDS, 'На паузу встаёт вся очередь группы, а не один ответ' );
+$GLOBALS['vkt_flood'] = false;
+$wpdb->query( "UPDATE $replies SET status='cancelled' WHERE group_id=111 AND status='pending'" );
+delete_transient( 'vkt_reply_hold_111' );
+
 $GLOBALS['vkt_comment_gone'] = true;
 $scan = $act( $a, 'comments_scan', array( 'group_id' => 111 ) );
 $left = array_map( 'intval', $wpdb->get_col( "SELECT comment_id FROM $inbox WHERE group_id=111 AND post_id=5 ORDER BY comment_id" ) );

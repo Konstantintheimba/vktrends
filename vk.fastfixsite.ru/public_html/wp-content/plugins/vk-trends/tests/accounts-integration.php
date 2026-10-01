@@ -254,6 +254,22 @@ $ok( is_wp_error( $quota_error ) && 429 === $quota_error->get_error_data()['stat
 wp_set_current_user( $admin );
 VKT_Account::ai_spend( 'text' );
 $ok( true === VKT_Account::ai_allow( 'text' ) && null === VKT_AI::public_status()['quota'], 'У администратора лимита нет' );
+
+// ——— Личные лимиты: администратор задаёт их каждому кабинету ———
+$ok( is_wp_error( $act( $a, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 999 ) ) ) ), 'Сам себе лимит участник не поднимет' );
+$ok( is_wp_error( $act( $admin, 'user_limits', array( 'id' => $admin, 'limits' => array( 'text' => 5 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => -1 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'replies_batch' => 500 ) ) ) ), 'Администратору лимит не ставится, значения вне пределов отклоняются' );
+$raised = $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 7, 'media' => '', 'replies_batch' => 3, 'sources' => '' ) ) );
+$ok( ! is_wp_error( $raised ) && 7 === $raised['limits']['text']['limit'] && 7 === $raised['limits']['text']['own'] && null === $raised['limits']['media']['own'] && 1 === $raised['limits']['media']['limit'] && 2 === $raised['limits']['sources']['limit'], 'Личный лимит действует там, где задан; пустое поле оставляет общий' );
+wp_set_current_user( $a );
+$quota = VKT_AI::public_status()['quota'];
+$ok( 7 === $quota['text']['limit'] && $quota['text']['left'] > 0 && true === VKT_Account::ai_allow( 'text' ) && 3 === VKT_Account::limit( 'replies_batch' ), 'Поднятый лимит текстов сразу открывает генерацию; пачка ответов — по личному лимиту' );
+wp_set_current_user( $b );
+$ok( 2 === VKT_AI::public_status()['quota']['text']['limit'] && 50 === VKT_Account::limit( 'replies_batch' ), 'У соседнего кабинета остались общие лимиты' );
+wp_set_current_user( $admin );
+$listed = array_column( VKT_Account::members(), null, 'id' );
+$ok( 7 === $listed[ $a ]['limits']['text']['own'] && null === $listed[ $b ]['limits']['text']['own'] && is_int( $listed[ $a ]['limits']['text']['used'] ), 'В «Пользователях» видны личные лимиты и расход за сегодня' );
+$cleared = $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array() ) );
+$ok( null === $cleared['limits']['text']['own'] && 2 === $cleared['limits']['text']['limit'] && '' === get_user_meta( $a, 'vkt_limits', true ), 'Пустые поля возвращают кабинет к общим лимитам' );
 set_transient( 'vkt_xai_owner_' . hash( 'sha256', 'req-owned-by-a' ), $a, HOUR_IN_SECONDS );
 $stolen = $act( $b, 'ai_video_status', array( 'request_id' => 'req-owned-by-a' ) );
 $ok( is_wp_error( $stolen ) && 404 === $stolen->get_error_data()['status'], 'Чужое видео xAI не забрать по ID задачи' );
