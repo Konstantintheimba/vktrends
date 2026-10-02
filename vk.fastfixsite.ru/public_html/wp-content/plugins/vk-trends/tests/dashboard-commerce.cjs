@@ -10,8 +10,11 @@ const communities = [{id: 1, kind: 'domain', value: 'first', title: 'Перво�
 const state = {sources: communities, stats: {videos: 0, posts: 0}, settings: {has_token: false, paused: false}};
 const data = {posts: [], communities, summary: {recognized_posts: 0}, total: 0, pages: 1};
 const uploaded = {id: 42, type: 'image', name: 'promo.jpg', title: 'promo', size: 204800, url: 'https://example.test/promo.jpg', thumbnail: 'https://example.test/promo-medium.jpg'};
+// Хранилище браузера для черновиков: до запуска в нём лежит сохранённое с прошлого захода.
+const stored = new Map([['vkt-drafts:1', JSON.stringify({v: 1, at: Date.now(), seriesPrompt: 'Тема с прошлого раза', seriesSlots: [{at: '2099-01-05T10:00', message: 'Старый слот', attachments: '', media: []}, 'мусор'], commentsDrafts: [['5_60', 'Набранный ответ']], fields: {publishing: {message: 'Недописанный пост', 'groups=3': true}}, groups: {3: {passport: 'Паспорт в работе', news: null, materialEdit: null, material: null}}})]]);
+const localStorage = {getItem: key => stored.has(key) ? stored.get(key) : null, setItem: (key, value) => { stored.set(key, String(value)); }, removeItem: key => { stored.delete(key); }};
 const context = {
-    window: {vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/', account: {id: 1, name: 'Админ', is_admin: true, status: 'active'}}, addEventListener() {}},
+    window: {localStorage, vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/', account: {id: 1, name: 'Админ', is_admin: true, status: 'active'}}, addEventListener() {}},
     document: {getElementById: () => root}, location: {hash: '#posts'}, URL, URLSearchParams, Intl, Date,
     setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { if (form) return Object.entries(form.values); this.append = () => {}; },
     fetch: async url => {
@@ -25,9 +28,48 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
+// Черновики с прошлого захода подняты ещё до загрузки данных.
+const check0 = (ok, message) => assert(ok, message);
+check0(api.drafts.prompt() === 'Тема с прошлого раза' && api.getSeries().length === 1 && api.getSeries()[0].message === 'Старый слот', 'После перезагрузки страницы тема серии и слоты на месте, мусор в сохранённом пропущен');
+check0(api.drafts.replyDraft('5_60') === 'Набранный ответ' && api.drafts.fields().publishing.message === 'Недописанный пост', 'Черновики ответов и поля «Новой записи» подняты из хранилища');
+api.drafts.groupLoad(3);
+check0(api.drafts.passport() === 'Паспорт в работе', 'Несохранённый паспорт ждёт в своей группе');
+api.drafts.groupLoad(4);
+check0(api.drafts.passport() === null, 'В другой группе чужого черновика нет');
+// Поля форм: запоминаются только из своих форм, пароли и ключи — никогда.
+const fieldOf = (form, props) => ({closest: () => ({dataset: {form}}), ...props});
+api.drafts.input(fieldOf('publishing', {name: 'message', type: 'textarea', value: 'Новый текст'}));
+api.drafts.input(fieldOf('series-setup', {name: 'weekdays', type: 'checkbox', value: '6', checked: true}));
+api.drafts.input(fieldOf('token', {name: 'token', type: 'password', value: 'vk1.a.SECRET'}));
+api.drafts.input(fieldOf('flux', {name: 'key', type: 'password', value: 'bfl_SECRET'}));
+api.drafts.input(fieldOf('settings', {name: 'proxy', type: 'text', value: 'https://proxy.test'}));
+check0(api.drafts.fields().publishing.message === 'Новый текст' && api.drafts.fields()['series-setup']['weekdays=6'] === true && !api.drafts.fields().token && !api.drafts.fields().settings && !('key' in (api.drafts.fields().flux || {})), 'Набранное в «Новой записи» и сетке запоминается; ключи, пароли и настройки — нет');
+api.drafts.passport(null);
+api.setSeries([{at: '2099-02-01T10:00', message: 'Слот <b>', attachments: '', media: [{id: 7, url: 'https://example.test/a.jpg'}], shop: {facts: 'Цена 390'}}]);
+api.drafts.persist();
+const written = JSON.parse(stored.get('vkt-drafts:1'));
+check0(written.seriesSlots[0].message === 'Слот <b>' && written.seriesSlots[0].media[0].id === 7 && written.seriesSlots[0].shop.facts === 'Цена 390' && written.fields.publishing.message === 'Новый текст' && !JSON.stringify(written).includes('SECRET'), 'В хранилище уходят слоты с файлами и товарным блоком и поля форм, без ключей');
+check0(written.groups[3].passport === 'Паспорт в работе', 'Черновик группы, из которой ушли, не теряется при записи');
+// Устаревшее и чужое не поднимается.
+stored.set('vkt-drafts:1', JSON.stringify({v: 1, at: Date.now() - 40 * 86400000, seriesPrompt: 'Очень старое'}));
+api.drafts.restore();
+check0(api.drafts.prompt() === 'Тема с прошлого раза', 'Черновик старше месяца не восстанавливается');
+stored.set('vkt-drafts:1', '{битый json');
+api.drafts.restore();
+check0(api.drafts.prompt() === 'Тема с прошлого раза', 'Испорченное хранилище не ломает страницу');
+// Восстановление в форму после перерисовки.
+const fakeFields = [{name: 'message', type: 'textarea', value: ''}, {name: 'groups', type: 'checkbox', value: '3', checked: false}, {name: 'groups', type: 'checkbox', value: '4', checked: false}, {name: 'token', type: 'password', value: ''}, {name: 'scheduled_at', type: 'datetime-local', value: ''}];
+api.drafts.fields().publishing = {message: 'Вернулся', 'groups=3': true, token: 'нельзя', scheduled_at: '2020-01-01T10:00'};
+element.querySelectorAll = selector => selector.includes('"publishing"') ? [{elements: fakeFields}] : [];
+api.drafts.apply();
+check0(fakeFields[0].value === 'Вернулся' && fakeFields[1].checked === true && fakeFields[2].checked === false && fakeFields[3].value === '' && fakeFields[4].value === '', 'После перерисовки текст и выбранные группы возвращаются в форму; пароль и прошедшее время — нет');
+delete element.querySelectorAll;
+delete api.drafts.fields().publishing;
+delete api.drafts.fields()['series-setup'];
+api.setSeries([]);
 api.init(state, data);
 const post = {id: 17, product_items: [
     {url: 'https://ozon.ru/product/1234567?x=1&y=2', title: 'Подсказка', price: 600, source: 'text', recognized: false, link_id: 8, page: {status: 'ok', title: 'Футболка <script>alert(1)</script>', price: 799, shop: 'Ozon'}},

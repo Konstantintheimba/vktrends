@@ -119,6 +119,83 @@
     let commentsMode = 'feed', commentsFeed = null, commentsFeedFilter = 'open';
     let commentsBulk = {common: '', instruction: '', interval: 3, jitter: true, start: ''};
     const commentsSelected = new Map(), commentsDrafts = new Map(), commentsIndex = new Map(), commentsAiKeys = new Set();
+    // ——— Черновики: всё, что человек набрал и ещё не отправил, переживает перерисовку, уход в другой раздел и перезагрузку страницы ———
+    // Лежат в хранилище браузера, отдельно для каждого кабинета. Ключи и пароли сюда не попадают.
+    const draftStorage = (() => { try { const store = window.localStorage; store.getItem('vkt'); return store; } catch { return null; } })();
+    const draftKey = `vkt-drafts:${Number(account.id) || 0}`;
+    // Формы, чьи поля нигде больше не запоминаются: их значения сохраняем по мере ввода и возвращаем после перерисовки.
+    const DRAFT_FORMS = ['publishing', 'series-setup', 'flux'];
+    const DRAFT_DAYS = 30;
+    let fieldDrafts = {}, groupDraftStore = {}, draftTimer = 0;
+    // Несохранённые правки группы привязаны к ней: открыли другую или ушли из раздела — они ждут возвращения.
+    function groupDraftsSave() {
+        if (!groupOpen) return;
+        const draft = {passport: groupPassportDraft, news: groupNewsDraft, materialEdit: groupMaterialEdit, material: groupMaterialDraft};
+        if (Object.values(draft).some(value => value !== null)) groupDraftStore[groupOpen] = draft; else delete groupDraftStore[groupOpen];
+    }
+    function groupDraftsLoad(id) {
+        const draft = groupDraftStore[id] || {};
+        groupPassportDraft = typeof draft.passport === 'string' ? draft.passport : null;
+        groupNewsDraft = draft.news && typeof draft.news === 'object' ? draft.news : null;
+        groupMaterialEdit = draft.materialEdit || null;
+        groupMaterialDraft = draft.material && typeof draft.material === 'object' ? draft.material : null;
+    }
+    function persistDrafts() {
+        if (!draftStorage) return;
+        groupDraftsSave();
+        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesPrompt, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
+        // Хранилище может быть переполнено или запрещено — тогда работаем как раньше, в памяти вкладки.
+        try { draftStorage.setItem(draftKey, JSON.stringify(snapshot)); } catch {}
+    }
+    function scheduleDrafts() {
+        clearTimeout(draftTimer);
+        draftTimer = setTimeout(persistDrafts, 400);
+    }
+    function restoreDrafts() {
+        let saved = null;
+        try { saved = JSON.parse(draftStorage?.getItem(draftKey) || 'null'); } catch {}
+        if (!saved || saved.v !== 1 || Date.now() - Number(saved.at) > DRAFT_DAYS * 86400000) return;
+        const text = value => typeof value === 'string' ? value : '';
+        const plain = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        const list = value => Array.isArray(value) ? value : [];
+        if (plain(saved.seriesSetup).times !== undefined) seriesSetup = {span: saved.seriesSetup.span === 'month' ? 'month' : 'week', start: text(saved.seriesSetup.start), weekdays: list(saved.seriesSetup.weekdays).map(String), times: text(saved.seriesSetup.times)};
+        seriesSlots = list(saved.seriesSlots).filter(slot => slot && typeof slot.at === 'string').map(slot => ({...slot, message: text(slot.message), attachments: text(slot.attachments), media: list(slot.media)}));
+        seriesPrompt = text(saved.seriesPrompt);
+        seriesGroup = Number(saved.seriesGroup) || 0;
+        seriesTarget = text(saved.seriesTarget);
+        seriesImage = {...seriesImage, ...plain(saved.seriesImage)};
+        aiPrompt = text(saved.aiPrompt);
+        aiModel = text(saved.aiModel);
+        commentsBulk = {...commentsBulk, ...plain(saved.commentsBulk)};
+        commentsGroup = Number(saved.commentsGroup) || 0;
+        list(saved.commentsDrafts).forEach(entry => { if (Array.isArray(entry) && typeof entry[1] === 'string') commentsDrafts.set(String(entry[0]), entry[1]); });
+        composerMedia = list(saved.composerMedia).filter(item => item && item.id);
+        groupNewsResult = saved.news && Array.isArray(saved.news.posts) ? saved.news : null;
+        fieldDrafts = plain(saved.fields);
+        groupDraftStore = plain(saved.groups);
+    }
+    // Поле формы из DRAFT_FORMS запоминается при вводе. У флажков ключ включает значение: в группе «дни недели» имя общее.
+    function draftInput(field) {
+        const form = field?.closest?.('[data-form]');
+        if (!form || !DRAFT_FORMS.includes(form.dataset.form) || !field.name || ['password', 'file', 'hidden'].includes(field.type)) return;
+        const bucket = fieldDrafts[form.dataset.form] || (fieldDrafts[form.dataset.form] = {});
+        if (field.type === 'checkbox' || field.type === 'radio') bucket[`${field.name}=${field.value}`] = field.checked; else bucket[field.name] = field.value;
+    }
+    // После перерисовки форма пустая — возвращаем в неё набранное.
+    function applyFieldDrafts() {
+        DRAFT_FORMS.forEach(name => {
+            const bucket = fieldDrafts[name];
+            if (!bucket) return;
+            (content.querySelectorAll?.(`[data-form="${name}"]`) || []).forEach(form => [...form.elements].forEach(field => {
+                if (!field.name || ['password', 'file', 'hidden'].includes(field.type)) return;
+                if (field.type === 'checkbox' || field.type === 'radio') { const key = `${field.name}=${field.value}`; if (key in bucket) field.checked = !!bucket[key]; return; }
+                if (!(field.name in bucket)) return;
+                // Время публикации, которое уже прошло, не возвращаем: сервер такую запись всё равно отклонит.
+                if (field.type === 'datetime-local' && bucket[field.name] && new Date(bucket[field.name]).getTime() < Date.now()) return;
+                field.value = bucket[field.name];
+            }));
+        });
+    }
     // Где чинить ошибку, если сервер не подсказал сам: по тексту узнаём, какой ключ или раздел виноват.
     const fixRules = [
         [/авторизация не прошла|срок действия токена|access_token|токен(?:у)? не хватает|пользовательский токен|VK ID отклонил/i, 'posting', 'Переподключить токен — «Публикация»'],
@@ -1798,6 +1875,8 @@
         if (adminViews.includes(view) && !isAdmin()) view = 'overview';
         if (view === 'users' && !usersData) { content.innerHTML = heading('Пользователи', 'Загружаем список…') + '<div class="vkt-loading">Загружаем…</div>'; return; }
         content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,settings})[view]();
+        applyFieldDrafts();
+        scheduleDrafts();
     }
     function modal(html) {
         $('#vkt-dialog-content').innerHTML = html;
@@ -2061,7 +2140,9 @@
             return;
         }
         if (command==='group-open') {
-            groupOpen = Number(el.dataset.id); groupDetail = null; groupPassportDraft = null; groupMaterialEdit = null; groupMaterialDraft = null; groupNewsDraft = null;
+            groupDraftsSave();
+            groupOpen = Number(el.dataset.id); groupDetail = null;
+            groupDraftsLoad(groupOpen);
             if (dialog.open) dialog.close();
             if (view !== 'groups') { location.hash = '#groups'; return; }
             render();
@@ -2070,7 +2151,7 @@
             content.scrollIntoView({block: 'start'});
             return;
         }
-        if (command==='group-close') { groupOpen = 0; groupDetail = null; groupPassportDraft = null; groupMaterialEdit = null; groupMaterialDraft = null; groupNewsDraft = null; render(); return; }
+        if (command==='group-close') { groupDraftsSave(); groupOpen = 0; groupDetail = null; groupDraftsLoad(0); render(); return; }
         if (command==='user-limits') {
             const user = (usersData || []).find(item => Number(item.id) === Number(el.dataset.id));
             if (!user) return;
@@ -2113,6 +2194,8 @@
         if (command==='groups-hidden-toggle') { groupShowHidden = !groupShowHidden; return; }
         if (command==='group-series') { seriesGroup = Number(el.dataset.id); seriesTarget = ''; location.hash = '#series'; return; }
         if (command==='series-best-times') {
+            // Время подставляет кнопка — набранное в форме сетки ей уступает.
+            delete fieldDrafts['series-setup'];
             const bound = (groupsData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
             const input = $('[data-form="series-setup"] input[name="times"]');
             if (bound && input) { input.value = bestTimes(bound.best_times); seriesSetup.times = input.value; toast('Время подставлено — постройте сетку.'); }
@@ -2383,6 +2466,8 @@
                     break;
                 }
                 case 'series-setup': {
+                    // Настройки сетки приняты и дальше живут в seriesSetup — отдельный черновик формы не нужен.
+                    delete fieldDrafts['series-setup'];
                     seriesSetup = {
                         span: 'month' === values.span ? 'month' : 'week',
                         start: values.start || '',
@@ -2575,6 +2660,8 @@
                     const result = await act('publishing_create',{message:values.message || '',attachments:values.attachments || '',media:composerMedia.map(item => Number(item.id)),groups,scheduled_at:scheduledAt,signed:!!values.signed,close_comments:!!values.close_comments});
                     composerMedia = [];
                     form.reset();
+                    // Запись ушла — её черновик больше не нужен.
+                    delete fieldDrafts.publishing;
                     toast(result.warning || (result.status === 'published' ? 'Запись опубликована.' : result.status === 'scheduled' ? 'Запись поставлена в расписание.' : 'Запись поставлена в очередь.'), !!result.warning);
                     break;
                 }
@@ -2591,6 +2678,8 @@
         finally { if(submit) { submit.disabled=false; submit.removeAttribute('aria-busy'); } }
     });
     root.addEventListener('change',async event=> {
+        draftInput(event.target);
+        scheduleDrafts();
         if (event.target.matches('[data-news]')) {
             const field = event.target;
             groupNewsDraft = {...(groupNewsDraft || {}), [field.dataset.news]: field.type === 'checkbox' ? field.checked : field.value};
@@ -2689,6 +2778,10 @@
         setTimeout(() => { if (/[?&#]code=/.test(field.value)) field.form.requestSubmit(); }, 0);
     });
     root.addEventListener('input',event=> {
+        draftInput(event.target);
+        // Текст в окне слота сразу ложится в слот: закрыли окно мимо «Сохранить слот» — набранное не пропало.
+        if (event.target.closest?.('[data-form="series-slot"]')) captureSeriesDialog();
+        scheduleDrafts();
         if(event.target.id==='vkt-params') apiDraft=event.target.value;
         // Тема серии и стиль картинок переживают перерисовку раздела.
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
@@ -2708,7 +2801,7 @@
         if(dialog.open) dialog.close();
         if(view==='overview') { page=1; localSearch=''; sort='velocity'; }
         // Из раздела ушли — в следующий раз «Мои сообщества» открываются списком.
-        if(view!=='groups') { groupOpen=0; groupDetail=null; groupPassportDraft=null; groupMaterialEdit=null; groupMaterialDraft=null; groupNewsDraft=null; }
+        if(view!=='groups') { groupDraftsSave(); groupOpen=0; groupDetail=null; groupDraftsLoad(0); }
         render();
         content.focus({preventScroll:true});
         try { await load(); } catch(error) { toast(error.message, true, error.fix); }
@@ -2723,5 +2816,8 @@
             history.replaceState(null, '', clean.href);
         }
     } catch {}
+    restoreDrafts();
+    // Вкладку закрывают или уводят на страницу VK за токеном — успеваем записать последнее набранное.
+    window.addEventListener('pagehide', persistDrafts);
     load().catch(error=> { content.innerHTML=heading('Не удалось загрузить данные','Проверьте вход в WordPress и доступность REST API.')+`<div class="vkt-info">${esc(error.message)}</div>${button('Повторить','reload')}`; toast(error.message, true, error.fix); });
 })();
