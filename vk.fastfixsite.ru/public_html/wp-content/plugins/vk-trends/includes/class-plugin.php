@@ -657,8 +657,8 @@ final class VKT_Plugin {
             case 'group_news_check':
                 return VKT_Groups::check_news( $data['id'] ?? 0 );
             case 'group_news_rewrite':
-                // Пачка до пяти статей — один текст из суточного лимита.
-                return self::metered( 'text', static fn() => VKT_Groups::rewrite_news( $data['id'] ?? 0, $data['links'] ?? array(), self::model_id( $data ) ) );
+                // Каждая статья — отдельный запрос к модели и один текст из суточного лимита.
+                return self::metered( 'text', static fn() => VKT_Groups::rewrite_news( $data['id'] ?? 0, $data['link'] ?? '', self::model_id( $data ) ) );
             case 'group_news_photos':
                 return VKT_News::photos( $data['link'] ?? '' );
             case 'group_news_photo_save':

@@ -458,7 +458,10 @@
                 return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}" draggable="true" data-drag-slot="${Number(index)}" data-time="${esc(slot.at.slice(11))}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${files(slot.media.length)}</button>`;
             }).join('')}</div>`);
         }
-        return `<p class="vkt-help">Запись можно перетащить на другой день — время останется прежним. Точные дату и время задайте в окне записи.</p><div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
+        const fromNews = seriesSourceTargets().length;
+        const fill = seriesSourceRun ? `<div class="vkt-info" data-series-source-note>Дополняем из статей: ${seriesSourceRun.done} из ${seriesSourceRun.total}. Не закрывайте вкладку.</div>`
+            : fromNews ? `<div class="vkt-info">Записей из новостей без полного текста или без фото: ${fromNews}. ${button(`${icon('fire')} Дополнить из статей · ${fromNews}`, 'series-source-fill', '', true)} <small class="vkt-muted">Плагин откроет каждую статью, напишет по ней полный пост и сохранит к записи до трёх её фото.</small></div>` : '';
+        return `${fill}<p class="vkt-help">Запись можно перетащить на другой день — время останется прежним. Точные дату и время задайте в окне записи.</p><div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
     }
 
     function runningSeries() {
@@ -685,6 +688,85 @@
         : '<div class="vkt-media-chips"><p class="vkt-muted">Файлы не выбраны.</p></div>';
     const seriesDialogTarget = () => null !== seriesSlotTarget ? seriesSlots[seriesSlotTarget] : seriesEdit?.draft;
     const reopenSeriesDialog = () => { if (!dialog.open) return; if (null !== seriesSlotTarget) seriesSlotDialog(seriesSlotTarget); else seriesPostDialog(0, false); };
+    // Статья, по которой сделана запись: запомнена при раскладке, а у старых записей читается из строки «Источник».
+    const sourceLink = target => safeUrl(target?.link || (String(target?.message || '').match(/Источник:\s*(https?:\/\/\S+)/) || [])[1] || '');
+    function sourceBox(target) {
+        const link = sourceLink(target);
+        if (!link) return '';
+        const found = target.candidates;
+        const photos = found === undefined ? '' : !found.length ? '<small class="vkt-muted">На странице статьи фото не нашлось.</small>'
+            : `<div class="vkt-news-photos">${found.map((url, at) => `<button type="button" class="vkt-news-photo is-on" data-command="series-source-pick" data-photo="${at}" title="Сохранить и прикрепить к записи"><img src="${safeUrl(url)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('')}<small class="vkt-muted">Нажмите на фото — оно сохранится в медиатеку и прикрепится к записи.</small></div>`;
+        return `<fieldset class="vkt-media"><legend>Статья-источник</legend><small class="vkt-help"><a href="${link}" target="_blank" rel="noopener noreferrer">${esc(link)}</a></small>
+            <div class="vkt-media-actions">${state.settings.ai?.configured ? button(`${icon('fire')} Полный текст из статьи`, 'series-source-text') : ''}${button(`${icon('search')} Подобрать фото из статьи`, 'series-source-photos')}</div>${photos}</fieldset>`;
+    }
+    async function seriesSourceAction(trigger, kind) {
+        captureSeriesDialog();
+        const target = seriesDialogTarget();
+        const link = sourceLink(target);
+        if (!target || !link) return;
+        const note = $('#vkt-series-dialog-progress');
+        const say = text => { if (note) { note.hidden = false; note.textContent = text; } };
+        trigger.disabled = true;
+        try {
+            if (kind === 'text') {
+                say('Читаем статью и пишем полный пост… Обычно это до двух минут.');
+                target.message = (await act('group_news_rewrite', {id: Number(seriesGroup), model: aiModel, link})).text;
+                target.rewritten = true;
+                toast('Полный текст готов — проверьте его и сохраните.');
+            } else if (kind === 'photos') {
+                say('Ищем фото на странице статьи…');
+                const taken = new Set(target.media.map(item => item.source).filter(Boolean));
+                target.candidates = ((await act('group_news_photos', {link})).photos || []).filter(url => !taken.has(url));
+            } else {
+                const url = (target.candidates || [])[Number(trigger.dataset.photo)];
+                if (!url) return;
+                if (target.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return; }
+                say('Сохраняем фото в медиатеку…');
+                target.media.push({...(await act('group_news_photo_save', {url})), source: url});
+                target.candidates = target.candidates.filter(item => item !== url);
+                toast(null !== seriesSlotTarget ? 'Фото сохранено и прикреплено к слоту.' : 'Фото сохранено. Нажмите «Сохранить», чтобы запись в очереди его получила.');
+            }
+            persistDrafts();
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { trigger.disabled = false; }
+        reopenSeriesDialog();
+    }
+    // Слоты из новостей, которым есть что взять из статьи: полный текст или фото.
+    const seriesSourceTargets = () => seriesSlots.filter(slot => sourceLink(slot) && (!slot.rewritten || !slot.media.length));
+    let seriesSourceRun = null;
+    async function seriesSourceFill() {
+        if (seriesSourceRun) return;
+        const queue = seriesSourceTargets();
+        if (!queue.length) return;
+        const run = seriesSourceRun = {total: queue.length, done: 0, texts: 0, photos: 0, stop: ''};
+        const say = () => { const el = $('[data-series-source-note]'); if (el) el.textContent = `Дополняем из статей: ${run.done} из ${run.total}. Не закрывайте вкладку.`; };
+        render();
+        const worker = async () => {
+            while (queue.length && !run.stop) {
+                const slot = queue.shift();
+                const link = sourceLink(slot);
+                if (!slot.rewritten && state.settings.ai?.configured) {
+                    try { slot.message = (await act('group_news_rewrite', {id: Number(seriesGroup), model: aiModel, link})).text; slot.rewritten = true; run.texts += 1; }
+                    catch (error) { if (429 === Number(error.payload?.data?.status) || /лимит|не подключена/i.test(error.message)) run.stop = error.message; }
+                }
+                if (!slot.media.length) {
+                    try {
+                        // Первые три снимка статьи: главный идёт первым.
+                        for (const url of ((await act('group_news_photos', {link})).photos || []).slice(0, 3)) {
+                            try { slot.media.push({...(await act('group_news_photo_save', {url})), source: url}); run.photos += 1; } catch { /* Сайт не отдал файл. */ }
+                        }
+                    } catch { /* Статья не открылась — слот остаётся без фото. */ }
+                }
+                run.done += 1;
+                persistDrafts();
+                say();
+            }
+        };
+        await Promise.all([worker(), worker()]);
+        seriesSourceRun = null;
+        toast(run.stop ? `Остановлено: ${run.stop}` : `Готово: полных текстов ${run.texts}, сохранено фото ${run.photos}.`, !!run.stop);
+        render();
+    }
     const rewriteButton = attr => state.settings.ai?.configured ? `<div class="vkt-ai-row">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Рерайт текста`, 'series-rewrite', attr)}<small class="vkt-help">Перепишет текст записи другими словами: факты, цифры и ссылки останутся, нового не добавится.</small></div>` : '';
     // Рерайт, а не новый пост: модель получает текст записи и не вправе менять факты.
     async function seriesDialogRewrite(trigger) {
@@ -757,6 +839,7 @@
                 ${shopBox(slot, `data-index="${Number(index)}"`)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(slot.imagePrompt)}
+                ${sourceBox(slot)}
                 ${sortableChips(slot.media)}
                 <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} ${slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи'}`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
@@ -789,6 +872,7 @@
                 ${shopBox(draft)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(draft.imagePrompt)}
+                ${sourceBox(draft)}
                 ${sortableChips(draft.media)}
                 <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}${imagesReady() ? button(`${icon('fire')} ${draft.media.length ? 'Нарисовать ещё' : 'Нарисовать фото'}`, 'series-post-image') : ''}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
@@ -1390,7 +1474,7 @@
         const worker = async () => { while (queue.length) await newsFindPhotos(queue.shift()); };
         await Promise.all([worker(), worker()]);
     }
-    // Рерайт по текстам самих статей: пачками, каждая — один запрос к модели.
+    // Полные посты по текстам самих статей: статья — один запрос к модели.
     let newsWork = null;
     async function newsRewriteAll(groupId) {
         const result = groupNewsResult;
@@ -1398,24 +1482,28 @@
         const queue = result.posts.filter(post => post.link && !post.rewritten);
         const total = queue.length;
         let done = 0;
+        if (!total) return;
         const say = text => { result.note = text; const el = $('[data-news-note]'); if (el) el.textContent = text; };
-        for (const part of chunks(queue, 5)) {
-            say(`Переписываем по текстам статей: ${done} из ${total}. Пока идёт рерайт, записи показаны по анонсам.`);
-            try {
-                const answer = await act('group_news_rewrite', {id: groupId, model: aiModel, links: part.map(post => post.link)});
-                (answer.texts || []).forEach(item => {
-                    const post = part.find(entry => entry.link === item.link);
-                    if (!post) return;
-                    post.text = item.text; post.rewritten = true; done += 1;
+        let stopped = '';
+        const worker = async () => {
+            while (queue.length && !stopped) {
+                const post = queue.shift();
+                say(`Пишем полные посты по текстам статей: ${done} из ${total}. Пока идёт рерайт, записи показаны по анонсам.`);
+                try {
+                    const answer = await act('group_news_rewrite', {id: groupId, model: aiModel, link: post.link});
+                    post.text = answer.text; post.rewritten = true; done += 1;
                     const box = $(`[data-news-text="${result.posts.indexOf(post)}"]`);
                     if (box) box.textContent = post.text;
-                });
-            } catch (error) {
-                // Кончился лимит или модель недоступна — следующие пачки упадут так же.
-                if (429 === Number(error.payload?.data?.status) || /лимит|не подключена/i.test(error.message)) { say(`Рерайт остановлен: ${error.message}`); persistDrafts(); return; }
+                } catch (error) {
+                    // Кончился лимит или модель недоступна — следующие упадут так же.
+                    if (429 === Number(error.payload?.data?.status) || /лимит|не подключена/i.test(error.message)) stopped = error.message;
+                }
             }
-        }
-        say(done === total ? `Тексты — рерайт самих статей: ${done}.` : `Рерайт по тексту статьи: ${done} из ${total}. Остальные статьи не открылись — эти записи написаны по анонсу.`);
+        };
+        // Два потока: полный текст статьи модель пишет долго, по одной ждать пришлось бы минутами.
+        await Promise.all([worker(), worker()]);
+        if (stopped) { say(`Рерайт остановлен: ${stopped}`); persistDrafts(); return; }
+        say(done === total ? `Полные посты по текстам статей: ${done}.` : `Полный пост по тексту статьи: ${done} из ${total}. Остальные статьи не открылись — эти записи короткие, по анонсу.`);
         persistDrafts();
     }
     // Отмеченные фото записи — в медиатеку. Не скачалось — запись идёт без этого снимка.
@@ -1423,7 +1511,7 @@
         const media = [];
         for (const photo of (post.photos || []).filter(item => item.on)) {
             try {
-                if (!photo.media) photo.media = await act('group_news_photo_save', {url: photo.url});
+                if (!photo.media) photo.media = {...(await act('group_news_photo_save', {url: photo.url})), source: photo.url};
                 media.push(photo.media);
             } catch { /* Сайт не отдал файл. */ }
         }
@@ -2297,6 +2385,8 @@
         if (command==='series-post-media') { captureSeriesDialog(); mediaTarget = 'series-post'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='series-slot-image' || command==='series-post-image') { await seriesDialogImage(el); return; }
         if (command==='series-rewrite') { await seriesDialogRewrite(el); return; }
+        if (command==='series-source-text' || command==='series-source-photos' || command==='series-source-pick') { await seriesSourceAction(el, command === 'series-source-text' ? 'text' : command === 'series-source-photos' ? 'photos' : 'pick'); return; }
+        if (command==='series-source-fill') { seriesSourceFill().catch(error => { seriesSourceRun = null; toast(error.message, true, error.fix); render(); }); return; }
         if (command==='series-shop') { await seriesDialogShop(el); return; }
         if (command==='series-slot-add') {
             // Отдельная запись вне сетки: завтра в этот же час, дальше время правится в окне.
@@ -2388,6 +2478,8 @@
             if (placed.length) toast('Скачиваем отмеченные фото и раскладываем записи…');
             for (const [index, post] of placed.entries()) {
                 free[index].message = post.text;
+                free[index].link = post.link || '';
+                free[index].rewritten = !!post.rewritten;
                 // Фото с сайта источника встаёт туда же, куда загруженное руками: в файлы слота.
                 (await newsPostMedia(post)).forEach(item => { if (free[index].media.length < 10 && !free[index].media.some(media => Number(media.id) === Number(item.id))) free[index].media.push(item); });
             }

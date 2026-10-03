@@ -239,9 +239,10 @@ $article = VKT_News::article( 'https://www.kp.ru/sport/trade/' );
 $assert( is_string( $article ) && str_contains( $article, 'сумма сделки — 12' ) && ! str_contains( $article, 'Чужой анонс' ) && ! str_contains( $article, 'Шапка' ) && ! str_contains( $article, 'Фото: агентство' ) && ! str_contains( $article, 'код' ) && 2 === count( explode( "\n", $article ) ), 'Текст статьи: абзацы из article без шапки, подписей, скриптов и чужих анонсов' );
 $GLOBALS['vkt_pages']['https://www.kp.ru/sport/short/'] = '<article><p>Коротко.</p></article>';
 $assert( is_wp_error( VKT_News::article( 'https://www.kp.ru/sport/short/' ) ) && is_wp_error( VKT_News::article( 'https://www.kp.ru/sport/gone/' ) ), 'Страница без текста и неоткрывшаяся — ошибка: такая запись останется по анонсу' );
-$GLOBALS['vkt_model_text'] = 'Вот рерайт: {"posts":[{"id":1,"text":"<b>Обмен</b> состоялся.\n\nСумма — 12 млн."},{"id":7,"text":"Чужой"},{"id":1,"text":"Дубль"}]}';
-$rewritten = VKT_AI::rewrite_news( array( array( 'link' => 'https://www.kp.ru/sport/trade/', 'text' => $article ) ), 'ds' );
+$GLOBALS['vkt_model_text'] = "<b>Обмен</b> состоялся.\n\nСумма — 12 млн.";
+$rewritten = VKT_AI::rewrite_article( $article, 'ds' );
 $sent = $GLOBALS['vkt_model_request']['messages'][0]['content'];
-$assert( array( 1 => "Обмен состоялся.\n\nСумма — 12 млн." ) === $rewritten && 'deepseek-chat' === $GLOBALS['vkt_model_request']['model'] && str_contains( $sent, 'рерайт' ) && str_contains( $sent, 'ничего не добавляй' ) && str_contains( $sent, 'сумма сделки — 12' ) && ! str_contains( $sent, 'kp.ru' ), 'Модель получает текст статьи и задачу рерайта без права добавлять; ссылки не видит, чужие номера и дубли отброшены' );
+$assert( "Обмен состоялся.\n\nСумма — 12 млн." === $rewritten && 'deepseek-chat' === $GLOBALS['vkt_model_request']['model'] && str_contains( $sent, 'рерайт' ) && str_contains( $sent, 'не сокращай' ) && str_contains( $sent, 'Ничего не добавляй' ) && str_contains( $sent, 'сумма сделки — 12' ), 'Модель получает весь текст статьи и задачу полного рерайта: без сокращений и без добавлений' );
+$assert( is_wp_error( VKT_AI::rewrite_article( 'Коротко.', 'ds' ) ) && 12000 === VKT_News::ARTICLE_MAX, 'Без текста статьи рерайт не запускается; статья уходит целиком, до 12 тысяч знаков' );
 
 echo "PASS: $checks news checks\n";

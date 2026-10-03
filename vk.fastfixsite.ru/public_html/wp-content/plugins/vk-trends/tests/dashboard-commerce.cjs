@@ -218,6 +218,12 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check((calendar.match(/vkt-cal-day/g) || []).length % 7 === 0, 'Сетка кратна семи колонкам, поэтому дни не разъезжаются');
     week[0].message = 'Готовый текст';
     check(api.seriesCalendar().includes('is-filled'), 'Заполненный слот отмечен');
+    check(!api.seriesCalendar().includes('series-source-fill'), 'Обычным слотам дополнять из статей нечего');
+    week[0].message = 'Короткая запись\n\nИсточник: https://a.test/news/1';
+    check(api.seriesCalendar().includes('data-command="series-source-fill"') && api.seriesCalendar().includes('Дополнить из статей · 1'), 'Слоту из новости без полного текста и фото предлагается дополнение из статьи');
+    week[0].rewritten = true; week[0].media = [{id: 9, name: 'p.jpg', type: 'image', size: 5}];
+    check(!api.seriesCalendar().includes('series-source-fill'), 'Слот с полным текстом и фото дополнять не нужно');
+    week[0].media = []; week[0].rewritten = false; week[0].message = 'Готовый текст';
     check(/data-day="\d{4}-09-21"/.test(calendar) && calendar.includes('draggable="true" data-drag-slot="0" data-time="') && calendar.includes('перетащить на другой день'), 'Слот перетаскивается на другой день сетки, время остаётся при нём');
     const chips = api.sortableChips([{id: 5, name: 'a.jpg', type: 'image', size: 10}, {id: 6, name: 'b.jpg', type: 'image', size: 10}]);
     check(chips.includes('draggable="true" data-sort-media="0"') && chips.includes('data-sort-media="1"') && chips.includes('>первое<') && chips.includes('первое публикуется первым') && api.sortableChips([]).includes('Файлы не выбраны'), 'Фото в окне записи переставляются перетаскиванием, первое помечено');
