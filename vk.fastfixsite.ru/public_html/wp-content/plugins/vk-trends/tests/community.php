@@ -59,6 +59,7 @@ class VKT_Health {
 }
 function absint( $value ) { return abs( (int) $value ); }
 function admin_url( $path = '' ) { return 'https://example.test/wp-admin/' . ltrim( $path, '/' ); }
+function rest_url( $path = '' ) { return 'https://example.test/wp-json/' . ltrim( $path, '/' ); }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
 function sanitize_text_field( $value ) { return trim( strip_tags( (string) $value ) ); }
@@ -112,7 +113,7 @@ $status = VKT_Community::public_status();
 $assert( true === $status['configured'] && true === $status['callback_configured'], 'Community and callback configuration detected' );
 $assert( VKT_COMMUNITY_ID === $status['group_id'], 'Only safe community ID is public' );
 $assert( ! str_contains( json_encode( $status ), VKT_COMMUNITY_ACCESS_TOKEN ) && ! str_contains( json_encode( $status ), VKT_CALLBACK_SECRET ), 'Public status contains no secrets' );
-$assert( str_contains( $status['callback_url'], 'admin-post.php?action=vkt_callback' ), 'Callback endpoint URL generated' );
+$assert( str_contains( $status['callback_url'], 'vk-trends/v1/callback' ) && ! str_contains( $status['callback_url'], 'wp-admin' ), 'Callback endpoint URL generated' );
 $checked = VKT_Community::check();
 $assert( ! is_wp_error( $checked ) && 'Тестовая группа' === $checked['name'], 'Community identity checked through VK methods' );
 $assert( array( 'wall', 'manage' ) === $checked['permissions'], 'Only permission names returned' );

@@ -111,7 +111,7 @@
     // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
     let seriesEdit = null;
     // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
-    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true}, seriesImageRun = null;
+    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false}, seriesImageRun = null;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
@@ -443,7 +443,7 @@
         for (let i = 0; i < total; ++i) {
             const cursor = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
             const items = byDay.get(localStamp(cursor).slice(0, 10)) || [];
-            cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index, post, at}) => {
+            cells.push(`<div class="vkt-cal-day${items.length ? '' : ' is-empty'}" data-day="${localStamp(cursor).slice(0, 10)}"><span class="vkt-cal-date">${cursor.getDate()} ${monthShort[cursor.getMonth()]}</span>${items.map(({slot, index, post, at}) => {
                 if (post) {
                     const [label, tone] = queuedStatuses[post.status] || [post.status, ''];
                     // При дополнении серии чужие записи приглушены: видно, что именно правим.
@@ -451,14 +451,14 @@
                     const inner = `<strong>${esc(at)}</strong><span>${esc(String(post.message || 'Запись с вложением').slice(0, 70))}</span>${files(post.media_count)}${badge(esc(label), tone)}`;
                     const title = `${esc(post.series_title || 'Запланированная запись')}${post.groups_names ? ' → ' + esc(post.groups_names) : ''}`;
                     return post.editable
-                        ? `<button type="button" class="vkt-cal-slot is-queued is-editable is-${esc(post.status)}${other}" data-command="series-post" data-id="${Number(post.id)}" title="${title}">${inner}</button>`
+                        ? `<button type="button" class="vkt-cal-slot is-queued is-editable is-${esc(post.status)}${other}" data-command="series-post" data-id="${Number(post.id)}" draggable="true" data-drag-post="${Number(post.id)}" data-time="${esc(at)}" title="${title}">${inner}</button>`
                         : `<div class="vkt-cal-slot is-queued is-${esc(post.status)}${other}" title="${title}">${inner}</div>`;
                 }
                 const filled = slot.message.trim() || slot.media.length || slot.attachments.trim();
-                return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${files(slot.media.length)}</button>`;
+                return `<button type="button" class="vkt-cal-slot${filled ? ' is-filled' : ''}" data-command="series-slot" data-index="${Number(index)}" draggable="true" data-drag-slot="${Number(index)}" data-time="${esc(slot.at.slice(11))}"><strong>${esc(slot.at.slice(11))}</strong><span>${slot.message.trim() ? esc(slot.message.trim().slice(0, 70)) : 'пусто'}</span>${files(slot.media.length)}</button>`;
             }).join('')}</div>`);
         }
-        return `<div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
+        return `<p class="vkt-help">Запись можно перетащить на другой день — время останется прежним. Точные дату и время задайте в окне записи.</p><div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
     }
 
     function runningSeries() {
@@ -529,7 +529,7 @@
     }
     // Пачкой идут только записи с текстом и без файлов: готовые фото не перерисовываем.
     const seriesImageTargets = () => [
-        ...(seriesImage.slots ? seriesSlots.filter(slot => slot.message.trim() && !slot.media.length).map(slot => ({slot})) : []),
+        ...(seriesImage.slots ? seriesSlots.filter(slot => slot.message.trim() && (seriesImage.extra ? slot.media.length < 10 : !slot.media.length)).map(slot => ({slot})) : []),
         ...(seriesImage.queued ? seriesGroupPosts().filter(post => post.editable && !Number(post.media_count) && String(post.message || '').trim() && (!seriesTarget || post.series_id === seriesTarget)).map(post => ({post})) : []),
     ];
     const seriesImageProgress = run => `Готово ${run.done} из ${run.total}${run.failed ? `, не вышло ${run.failed}` : ''}${run.stop ? ' — останавливаемся' : ''}. Не закрывайте вкладку.`;
@@ -547,9 +547,9 @@
                 <label>Чем рисуем<select data-series-image="provider">${providers.map(([id, label]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
                 <label>Формат<select data-series-image="ratio">${ratios.map(value => `<option value="${esc(value)}" ${value === seriesImage.ratio ? 'selected' : ''}>${esc(ratioLabels[value] || value)}</option>`).join('')}</select></label>
             </div>
-            <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label></div>
+            <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label><label class="vkt-check"><input type="checkbox" data-series-image="extra" ${seriesImage.extra ? 'checked' : ''}>Добавлять и в слоты, где фото уже есть</label></div>
             <div class="vkt-form-actions">${run ? button('Остановить', 'series-images-stop') : `<button class="vkt-button">${icon('fire')} Нарисовать фото · <span data-series-images-count>${seriesImageTargets().length}</span></button>`}</div>
-            <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов. Готовое фото сразу прикрепляется к записи; убрать или заменить его можно в окне записи.'}</p>
+            <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов; с галочкой «Добавлять и в слоты, где фото уже есть» рисунок по теме записи встанет после уже прикреплённых фото. Убрать или переставить его можно в окне записи.'}</p>
             ${quotaNote(ai)}
         </form>`;
     }
@@ -569,7 +569,7 @@
                     if (target.slot) {
                         const media = await drawImage(seriesImagePrompt(target.slot.message, target.slot.imagePrompt || ''));
                         // Пока рисовали, слот могли убрать или приложить к нему файл руками.
-                        if (seriesSlots.includes(target.slot) && !target.slot.media.length) target.slot.media.push(media);
+                        if (seriesSlots.includes(target.slot) && (seriesImage.extra ? target.slot.media.length < 10 : !target.slot.media.length)) target.slot.media.push(media);
                     } else {
                         // В сетке только начало текста — для сюжета нужен весь.
                         const full = await act('publishing_get', {id: Number(target.post.id)});
@@ -679,6 +679,30 @@
         }
         if (validStamp(form.elements.at?.value)) target.at = form.elements.at.value;
     }
+    // Порядок файлов — порядок в записи VK: первое фото идёт обложкой. Меняется перетаскиванием.
+    const sortableChips = list => list.length
+        ? `<div class="vkt-media-chips is-sortable">${list.map((item, index) => mediaChip(item).replace('<figure class="vkt-media-chip"', `<figure class="vkt-media-chip" draggable="true" data-sort-media="${index}"`).replace('<figcaption>', `<figcaption><em class="vkt-flux-index">${index ? index + 1 : 'первое'}</em>`)).join('')}</div>${list.length > 1 ? '<small class="vkt-help">Перетащите фото, чтобы поменять порядок: первое публикуется первым.</small>' : ''}`
+        : '<div class="vkt-media-chips"><p class="vkt-muted">Файлы не выбраны.</p></div>';
+    const seriesDialogTarget = () => null !== seriesSlotTarget ? seriesSlots[seriesSlotTarget] : seriesEdit?.draft;
+    const reopenSeriesDialog = () => { if (!dialog.open) return; if (null !== seriesSlotTarget) seriesSlotDialog(seriesSlotTarget); else seriesPostDialog(0, false); };
+    const rewriteButton = attr => state.settings.ai?.configured ? `<div class="vkt-ai-row">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Рерайт текста`, 'series-rewrite', attr)}<small class="vkt-help">Перепишет текст записи другими словами: факты, цифры и ссылки останутся, нового не добавится.</small></div>` : '';
+    // Рерайт, а не новый пост: модель получает текст записи и не вправе менять факты.
+    async function seriesDialogRewrite(trigger) {
+        captureSeriesDialog();
+        const target = seriesDialogTarget();
+        if (!target) return;
+        if (!String(target.message || '').trim()) { toast('Рерайту нужен текст записи.', true); return; }
+        const note = $('#vkt-series-dialog-progress');
+        if (note) { note.hidden = false; note.textContent = 'Переписываем текст… Обычно это до минуты.'; }
+        trigger.disabled = true;
+        try {
+            const result = await act('ai_text', {model: aiModel, group_id: Number(seriesGroup), current: target.message, prompt: 'Сделай рерайт текущего черновика: перескажи его другими словами близко к тексту. Сохрани все факты, цифры, имена, даты, цитаты и ссылки, строку «Источник: …» оставь как есть. Ничего не добавляй от себя и не меняй смысл, объём — примерно тот же.'});
+            target.message = result.text;
+            toast(null !== seriesSlotTarget ? 'Текст переписан — проверьте его и сохраните слот.' : 'Текст переписан. Нажмите «Сохранить», чтобы очередь его получила.');
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { trigger.disabled = false; }
+        reopenSeriesDialog();
+    }
     const imageField = value => imagesReady() ? `<label>Промпт для фото<input name="image_prompt" value="${esc(value || '')}" maxlength="3000" placeholder="Пусто — по тексту записи и общему стилю"></label>` : '';
 
     // Товарный пост по методике VK Shops: нужен одной-двум записям серии, поэтому живёт в окне записи.
@@ -729,11 +753,12 @@
                 <input type="hidden" name="index" value="${Number(index)}">
                 <label>Время публикации<input type="datetime-local" name="at" value="${esc(slot.at)}" min="${esc(localStamp(new Date()))}" required></label>
                 <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(slot.message)}</textarea></label>
+                ${rewriteButton(`data-index="${Number(index)}"`)}
                 ${shopBox(slot, `data-index="${Number(index)}"`)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(slot.imagePrompt)}
-                <div class="vkt-media-chips">${slot.media.length ? slot.media.map(mediaChip).join('') : '<p class="vkt-muted">Файлы не выбраны.</p>'}</div>
-                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} Нарисовать фото`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
+                ${sortableChips(slot.media)}
+                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} ${slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи'}`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить слот</button></div>
             </form>`);
@@ -760,10 +785,11 @@
             <form data-form="series-post" class="vkt-form">
                 <label>Время публикации<input type="datetime-local" name="at" value="${esc(draft.at)}" min="${esc(localStamp(new Date()))}" required></label>
                 <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(draft.message)}</textarea></label>
+                ${rewriteButton('')}
                 ${shopBox(draft)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(draft.imagePrompt)}
-                <div class="vkt-media-chips">${draft.media.length ? draft.media.map(mediaChip).join('') : '<p class="vkt-muted">Файлы не выбраны.</p>'}</div>
+                ${sortableChips(draft.media)}
                 <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}${imagesReady() ? button(`${icon('fire')} ${draft.media.length ? 'Нарисовать ещё' : 'Нарисовать фото'}`, 'series-post-image') : ''}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button>${button('Убрать из серии', 'series-post-delete', `data-id="${Number(post.id)}"`)}</div>
@@ -1330,6 +1356,79 @@
         const form = groupNewsForm(group);
         return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode};
     };
+    // Фото к собранной новости: кандидаты со страницы статьи, отмеченные уйдут в запись.
+    const newsPhotosHtml = (post, index) => {
+        if (post.photos === undefined) return button(`${icon('search')} Найти фото`, 'group-news-photos', `data-index="${index}"`);
+        if (post.photos === null) return '<small class="vkt-muted">Ищем фото на странице статьи…</small>';
+        if (!post.photos.length) return '<small class="vkt-muted">На странице статьи фото не нашлось — его можно добавить позже в записи серии.</small>';
+        return post.photos.map((photo, at) => `<button type="button" class="vkt-news-photo ${photo.on ? 'is-on' : ''}" data-command="group-news-photo" data-index="${index}" data-photo="${at}" title="${photo.on ? 'Убрать из записи' : 'Взять в запись'}"><img src="${safeUrl(photo.url)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('') + `<small class="vkt-muted">В запись пойдут отмеченные: ${post.photos.filter(photo => photo.on).length}.</small>`;
+    };
+    function renderNewsPhotos(post) {
+        const index = (groupNewsResult?.posts || []).indexOf(post);
+        const box = index < 0 ? null : $(`[data-news-photos="${index}"]`);
+        if (box) box.innerHTML = newsPhotosHtml(post, index);
+    }
+    async function newsFindPhotos(post) {
+        post.photos = null;
+        renderNewsPhotos(post);
+        const urls = [];
+        // У дайджеста статей несколько — берём главный снимок первых трёх.
+        const links = (post.links && post.links.length ? post.links : [post.link]).filter(Boolean).slice(0, 3);
+        for (const link of links) {
+            try { urls.push(...((await act('group_news_photos', {link})).photos || []).slice(0, links.length > 1 ? 2 : 6)); }
+            catch { /* Статья не открылась — запись просто останется без её фото. */ }
+        }
+        // По умолчанию отмечены первые три: главный снимок статьи идёт первым.
+        post.photos = [...new Set(urls)].slice(0, 6).map((url, at) => ({url, on: at < 3}));
+        renderNewsPhotos(post);
+        persistDrafts();
+    }
+    // Ищем фото всем записям без него: в два потока, чтобы не ждать каждую статью по очереди.
+    async function newsFindAllPhotos() {
+        const queue = (groupNewsResult?.posts || []).filter(post => post.photos === undefined);
+        queue.forEach(post => { post.photos = null; });
+        const worker = async () => { while (queue.length) await newsFindPhotos(queue.shift()); };
+        await Promise.all([worker(), worker()]);
+    }
+    // Рерайт по текстам самих статей: пачками, каждая — один запрос к модели.
+    let newsWork = null;
+    async function newsRewriteAll(groupId) {
+        const result = groupNewsResult;
+        if (!result || result.mode === 'digest') return;
+        const queue = result.posts.filter(post => post.link && !post.rewritten);
+        const total = queue.length;
+        let done = 0;
+        const say = text => { result.note = text; const el = $('[data-news-note]'); if (el) el.textContent = text; };
+        for (const part of chunks(queue, 5)) {
+            say(`Переписываем по текстам статей: ${done} из ${total}. Пока идёт рерайт, записи показаны по анонсам.`);
+            try {
+                const answer = await act('group_news_rewrite', {id: groupId, model: aiModel, links: part.map(post => post.link)});
+                (answer.texts || []).forEach(item => {
+                    const post = part.find(entry => entry.link === item.link);
+                    if (!post) return;
+                    post.text = item.text; post.rewritten = true; done += 1;
+                    const box = $(`[data-news-text="${result.posts.indexOf(post)}"]`);
+                    if (box) box.textContent = post.text;
+                });
+            } catch (error) {
+                // Кончился лимит или модель недоступна — следующие пачки упадут так же.
+                if (429 === Number(error.payload?.data?.status) || /лимит|не подключена/i.test(error.message)) { say(`Рерайт остановлен: ${error.message}`); persistDrafts(); return; }
+            }
+        }
+        say(done === total ? `Тексты — рерайт самих статей: ${done}.` : `Рерайт по тексту статьи: ${done} из ${total}. Остальные статьи не открылись — эти записи написаны по анонсу.`);
+        persistDrafts();
+    }
+    // Отмеченные фото записи — в медиатеку. Не скачалось — запись идёт без этого снимка.
+    async function newsPostMedia(post) {
+        const media = [];
+        for (const photo of (post.photos || []).filter(item => item.on)) {
+            try {
+                if (!photo.media) photo.media = await act('group_news_photo_save', {url: photo.url});
+                media.push(photo.media);
+            } catch { /* Сайт не отдал файл. */ }
+        }
+        return media;
+    }
     function groupNewsPanel(group) {
         const saved = group.news || {};
         const form = groupNewsForm(group);
@@ -1345,13 +1444,15 @@
             <form data-form="group-news" class="vkt-form"><label class="vkt-check"><input type="checkbox" data-news="enabled">Это новостная группа</label>${saved.enabled ? `<div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить</button><span class="vkt-muted">Источники и выборка сохранятся — их можно включить обратно.</span></div>` : ''}</form></section>`;
         const checkHtml = check ? `<div class="vkt-news-check"><h3>Источники${check.fresh === undefined ? '' : ` · свежих новостей: ${num(check.fresh)}`}</h3><ul>${(check.sources || []).map(source => `<li class="${source.ok ? '' : 'is-failed'}"><span>${esc(source.url)}</span><small>${source.ok ? `${String(source.url).startsWith('Поиск') ? 'найдено' : 'читается · в ленте'} ${num(source.total)}, годных ${num(source.fresh)}${source.message ? ` · ${esc(source.message)}` : ''}` : esc(source.message)}</small></li>`).join('')}</ul>${(check.sample || []).length ? `<h3>Свежее сверху</h3><ul>${check.sample.map(item => `<li><span>${esc(item.title)}</span><small>${esc(item.source)}</small></li>`).join('')}</ul>` : ''}</div>` : '';
         const resultHtml = result && result.posts.length ? `<div class="vkt-news-result"><h3>${result.mode === 'digest' ? 'Дайджест готов' : `Готово записей: ${num(result.posts.length)}`} · модель выбирала из ${num(result.offered)} свежих</h3>
-                <ul>${result.posts.map((post, index) => `<li><div><strong>${esc(post.title)}</strong><small class="vkt-muted">${esc(post.source)}</small></div><p>${esc(post.text)}</p>${button('Убрать', 'group-news-drop', `data-index="${index}"`)}</li>`).join('')}</ul>
-                <div class="vkt-form-actions">${button(`${icon('clock')} Разложить по сетке серии`, 'group-news-series', '', true)}<span class="vkt-muted">Записи встанут в свободные слоты серии этой группы: там их можно поправить, добавить фото и поставить в очередь. Сами они не публикуются.</span></div></div>` : '';
+                <p class="vkt-help" data-news-note>${esc(result.note || '')}</p>
+                <p class="vkt-help">Что дальше: отметьте у записей фото и либо разложите всё по расписанию серии, либо публикуйте записи по одной. Отмеченные фото скачаются в медиатеку и прикрепятся к записи.</p>
+                <ul>${result.posts.map((post, index) => `<li><div><strong>${esc(post.title)}</strong><small class="vkt-muted">${esc(post.source)}</small></div><p data-news-text="${index}">${esc(post.text)}</p><div class="vkt-news-photos" data-news-photos="${index}">${newsPhotosHtml(post, index)}</div><span class="vkt-news-actions">${button(`${icon('send')} Опубликовать сейчас`, 'group-news-publish', `data-index="${index}"`)}${button('Убрать', 'group-news-drop', `data-index="${index}"`)}</span></li>`).join('')}</ul>
+                <div class="vkt-form-actions">${button(`${icon('clock')} Разложить все по сетке серии`, 'group-news-series', '', true)}<span class="vkt-muted">Записи с отмеченными фото встанут в свободные слоты серии этой группы. Там их можно поправить и кнопкой «Поставить в очередь» отправить на публикацию по расписанию.</span></div></div>` : '';
         return `<section class="vkt-panel vkt-group-news"><div class="vkt-panel-heading"><div><h2>Новости</h2><p>${intro}</p></div></div>
             <form data-form="group-news" class="vkt-form">
                 <label class="vkt-check"><input type="checkbox" data-news="enabled" checked>Это новостная группа</label>
                 <label>Откуда брать новости<select data-news="method">${option('search', 'Поиск в интернете', form.method)}${option('rss', 'RSS-ленты сайтов', form.method)}</select></label>
-                ${bySearch ? (engines.length ? `<label>Кто ищет<select data-news="engine">${engines.map(engine => option(engine.id, esc(engine.title), engines.some(item => item.id === form.engine) ? form.engine : engines[0].id)).join('')}</select><small class="vkt-help">Поиск и текст — разные модели: ищет выбранный здесь, посты пишет «Модель для текста» у кнопки сбора. ${engines.length > 1 ? '' : `Другого поиска пока нет: его даёт модель OpenRouter или Qwen${isAdmin() ? ' — подключается в «Настройках»' : ', модели подключает администратор'}. `}Сайты ниже необязательны: без них поиск идёт по всему интернету.</small></label>` : `<div class="vkt-info vkt-info-warning">Искать в интернете пока нечем: нужен ключ xAI либо модель OpenRouter или Qwen. ${isAdmin() ? 'Подключите модель в «Настройках».' : 'Модели подключает администратор.'} До тех пор работают только RSS-ленты.</div>`) : '<p class="vkt-help">Многие сайты RSS не отдают или прячут — тогда выберите «Поиск в интернете».</p>'}
+                ${bySearch ? (engines.length ? `<label>Кто ищет<select data-news="engine">${engines.map(engine => option(engine.id, esc(engine.title), engines.some(item => item.id === form.engine) ? form.engine : engines[0].id)).join('')}</select><small class="vkt-help">Поиск и текст выбираются отдельно: ищет выбранный здесь, посты пишет «Модель для текста» у кнопки сбора. «Поиск плагина» работает с любой моделью: она составляет запросы, новостную выдачу читает плагин. Сайты ниже необязательны: без них поиск идёт по всему интернету.</small></label>` : `<div class="vkt-info vkt-info-warning">Искать в интернете пока нечем: не подключена ни одна модель для текстов. ${isAdmin() ? 'Подключите модель в «Настройках».' : 'Модели подключает администратор.'} До тех пор работают только RSS-ленты.</div>`) : '<p class="vkt-help">Многие сайты RSS не отдают или прячут — тогда выберите «Поиск в интернете».</p>'}
                 <label>${bySearch ? 'Сайты, где искать в первую очередь — необязательно, по одному в строке, до 5' : `Источники — адрес сайта или его RSS-ленты, по одному в строке, до ${num(saved.max_sources || 15)}`}<textarea data-news="sources" rows="${bySearch ? 3 : 5}" class="vkt-code-input" placeholder="${bySearch ? 'https://www.kp.ru' : 'https://example.ru/rss&#10;https://example.com'}">${esc(form.sources)}</textarea></label>
                 <label>${bySearch ? 'Какие новости искать' : 'Какие новости брать'}<textarea data-news="topic" rows="4" maxlength="1500" placeholder="Например: только баскетбол НБА — матчи, обмены, травмы. Без слухов, ставок и политики.">${esc(form.topic)}</textarea></label>
                 <div class="vkt-form-row vkt-news-options">
@@ -2195,6 +2296,7 @@
         if (command==='series-media') { captureSeriesDialog(); mediaTarget = 'series'; seriesSlotTarget = Number(el.dataset.index); await mediaLibrary(); return; }
         if (command==='series-post-media') { captureSeriesDialog(); mediaTarget = 'series-post'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='series-slot-image' || command==='series-post-image') { await seriesDialogImage(el); return; }
+        if (command==='series-rewrite') { await seriesDialogRewrite(el); return; }
         if (command==='series-shop') { await seriesDialogShop(el); return; }
         if (command==='series-slot-add') {
             // Отдельная запись вне сетки: завтра в этот же час, дальше время правится в окне.
@@ -2252,16 +2354,43 @@
                 </form>`);
             return;
         }
+        if (command==='group-news-photo') {
+            const photo = groupNewsResult?.posts[Number(el.dataset.index)]?.photos?.[Number(el.dataset.photo)];
+            if (photo) { photo.on = !photo.on; renderNewsPhotos(groupNewsResult.posts[Number(el.dataset.index)]); persistDrafts(); }
+            return;
+        }
+        if (command==='group-news-photos') { const post = groupNewsResult?.posts[Number(el.dataset.index)]; if (post) await newsFindPhotos(post); return; }
+        if (command==='group-news-publish') {
+            const post = groupNewsResult?.posts[Number(el.dataset.index)];
+            if (!post || !window.confirm('Опубликовать эту запись в сообществе прямо сейчас?')) return;
+            el.disabled = true;
+            if (newsWork) { toast('Дожидаемся рерайта…'); await newsWork; }
+            try {
+                const result = await act('publishing_create', {message: post.text, attachments: '', media: (await newsPostMedia(post)).map(item => Number(item.id)), groups: [Number(groupNewsResult.groupId)], scheduled_at: '', signed: false, close_comments: false});
+                groupNewsResult.posts.splice(groupNewsResult.posts.indexOf(post), 1);
+                toast(result.warning || (result.status === 'published' ? 'Запись опубликована.' : 'Запись поставлена в очередь — её видно в «Автопостинге».'), !!result.warning);
+                persistDrafts();
+                render();
+            } catch (error) { toast(error.message, true, error.fix); el.disabled = false; }
+            return;
+        }
         if (command==='group-news-drop') { groupNewsResult?.posts.splice(Number(el.dataset.index), 1); render(); return; }
         if (command==='group-news-series') {
             const posts = groupNewsResult?.posts || [];
             if (!posts.length) return;
+            // Раскладывать недописанное нельзя: в сетку ушли бы тексты по анонсам.
+            if (newsWork) { toast('Дожидаемся рерайта — записи разложатся сразу после него…'); await newsWork; }
             seriesGroup = groupNewsResult.groupId; seriesTarget = '';
             // Сетки ещё нет — строим по текущим настройкам серии, как кнопкой «Построить сетку».
             if (!seriesSlots.length) seriesSlots = seriesPlan(seriesSetup);
             const free = seriesSlots.filter(slot => !slot.message.trim());
             const placed = posts.splice(0, free.length);
-            placed.forEach((post, index) => { free[index].message = post.text; });
+            if (placed.length) toast('Скачиваем отмеченные фото и раскладываем записи…');
+            for (const [index, post] of placed.entries()) {
+                free[index].message = post.text;
+                // Фото с сайта источника встаёт туда же, куда загруженное руками: в файлы слота.
+                (await newsPostMedia(post)).forEach(item => { if (free[index].media.length < 10 && !free[index].media.some(media => Number(media.id) === Number(item.id))) free[index].media.push(item); });
+            }
             if (!placed.length) { toast(seriesSlots.length ? 'В сетке серии нет свободных слотов. Добавьте время или период в «Серии» и повторите.' : 'Сетка серии не строится: проверьте дни и время в «Серии».', true); render(); return; }
             toast(posts.length ? `Разложено ${placed.length} из ${placed.length + posts.length}: слотов не хватило. Добавьте время или период и разложите остаток из карточки группы.` : `Записи разложены по сетке: ${placed.length}. Проверьте и поставьте в очередь.`, posts.length > 0);
             if (!posts.length) groupNewsResult = null;
@@ -2376,6 +2505,9 @@
                     groupNewsResult = {groupId: id, posts: found.posts || [], mode: found.mode, offered: found.offered};
                     groupNewsCheck = {groupId: id, sources: found.sources || []};
                     toast(found.mode === 'digest' ? 'Дайджест готов — проверьте его.' : `Готово записей: ${groupNewsResult.posts.length}. Проверьте их.`);
+                    // Фото ищем уже после показа записей: тексты читаются сразу, снимки подтягиваются.
+                    newsFindAllPhotos();
+                    newsWork = newsRewriteAll(id).finally(() => { newsWork = null; });
                 }
             }
             if (command==='group-news-reset') {
@@ -2878,6 +3010,59 @@
         if(event.target.name==='token_kind') { const fields=$('#vkt-user-token-fields'); if(fields) fields.hidden = event.target.value!=='user'; }
     });
     // Код из адреса живёт около минуты: подключаем сразу по вставке, не дожидаясь кнопки.
+    let dragged = null;
+    root.addEventListener('dragstart', event => {
+        const chip = event.target.closest?.('[data-sort-media]');
+        const card = event.target.closest?.('[data-drag-slot], [data-drag-post]');
+        dragged = chip ? {media: Number(chip.dataset.sortMedia)} : card ? (card.dataset.dragSlot !== undefined ? {slot: Number(card.dataset.dragSlot), time: card.dataset.time} : {post: Number(card.dataset.dragPost), time: card.dataset.time}) : null;
+        if (!dragged) return;
+        event.dataTransfer.effectAllowed = 'move';
+        // Firefox не начинает перетаскивание без данных.
+        event.dataTransfer.setData('text/plain', 'vkt');
+    });
+    const dropZone = event => !dragged ? null : dragged.media !== undefined ? event.target.closest?.('[data-sort-media]') : event.target.closest?.('[data-day]');
+    root.addEventListener('dragover', event => {
+        const zone = dropZone(event);
+        if (!zone) return;
+        event.preventDefault();
+        root.querySelectorAll('.is-drop').forEach(el => { if (el !== zone) el.classList.remove('is-drop'); });
+        zone.classList.add('is-drop');
+    });
+    root.addEventListener('dragend', () => { dragged = null; root.querySelectorAll('.is-drop').forEach(el => el.classList.remove('is-drop')); });
+    root.addEventListener('drop', async event => {
+        const zone = dropZone(event);
+        const item = dragged;
+        dragged = null;
+        if (!zone || !item) return;
+        event.preventDefault();
+        if (item.media !== undefined) {
+            captureSeriesDialog();
+            const list = seriesDialogTarget()?.media;
+            const to = Number(zone.dataset.sortMedia);
+            if (!list || to === item.media || !list[item.media]) return;
+            list.splice(to, 0, list.splice(item.media, 1)[0]);
+            persistDrafts();
+            reopenSeriesDialog();
+            return;
+        }
+        const at = `${zone.dataset.day}T${item.time}`;
+        if (!validStamp(at)) return;
+        if (new Date(at).getTime() < Date.now() + 60000) { toast('Это время уже прошло: перенести можно только на будущее.', true); render(); return; }
+        if (item.slot !== undefined) {
+            const slot = seriesSlots[item.slot];
+            if (!slot || slot.at === at) { render(); return; }
+            slot.at = at;
+            seriesSlots.sort((a, b) => a.at.localeCompare(b.at));
+            persistDrafts();
+            render();
+            return;
+        }
+        try {
+            await act('publishing_update', {id: item.post, post: {scheduled_at: new Date(at).toISOString()}});
+            toast('Запись перенесена.');
+            await load();
+        } catch (error) { toast(error.message, true, error.fix); render(); }
+    });
     root.addEventListener('paste', event => {
         const field = event.target;
         if (!field.matches?.('[data-form="oauth"] input[name="code"]')) return;

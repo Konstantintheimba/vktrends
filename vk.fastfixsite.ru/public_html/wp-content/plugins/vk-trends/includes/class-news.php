@@ -284,16 +284,25 @@ final class VKT_News {
      * подтверждена: поиск сам назвал её источником или страница открывается.
      * Модель с поиском иногда сочиняет адрес — такой новости в посте не место.
      */
-    public static function search( $settings, $group_name = '' ) {
+    public static function search( $settings, $group_name = '', $model = '' ) {
         $domains = array();
         foreach ( $settings['sources'] as $source ) {
             $domains[] = preg_replace( '/^www\./', '', (string) wp_parse_url( $source, PHP_URL_HOST ) );
         }
         $domains = array_values( array_unique( array_filter( $domains ) ) );
+        if ( 'feed' === VKT_AI::search_kind( $settings['engine'] ) ) {
+            return self::search_feed( $settings, $domains, $group_name, $model );
+        }
         // Фильтр по сайтам поиск принимает до пяти; больше — ищем везде, сайты остаются пожеланием.
         $found = VKT_AI::search_news( $settings['topic'], min( 30, $settings['count'] * 2 ), $settings['days'], count( $domains ) <= 5 ? $domains : array(), $group_name, $settings['engine'] );
         if ( is_wp_error( $found ) ) {
-            return $found;
+            // Выбранный поиск не ответил (ключ, страна сервера, сбой) — сбор не должен вставать: ищет плагин.
+            $spare = self::search_feed( $settings, $domains, $group_name, $model );
+            if ( is_wp_error( $spare ) ) {
+                return $found;
+            }
+            $spare['sources'][0]['message'] = trim( 'выбранный поиск не ответил, искал плагин. ' . $spare['sources'][0]['message'] );
+            return $spare;
         }
         $cited = array_flip( array_map( array( __CLASS__, 'canonical' ), $found['urls'] ) );
         $used = array_flip( $settings['used'] );
@@ -330,6 +339,150 @@ final class VKT_News {
         }
         $message = $unconfirmed ? 'отброшено без подтверждённой ссылки: ' . $unconfirmed : '';
         return array( 'items' => $items, 'sources' => array( array( 'url' => 'Поиск в интернете · ' . $found['provider'], 'ok' => true, 'total' => count( $found['items'] ), 'fresh' => count( $items ), 'message' => $message ) ) );
+    }
+
+    const MAX_PHOTOS = 6;
+    // Столько статей переписывается одним запросом к модели: больше — ответ выходит слишком длинным.
+    const REWRITE_CHUNK = 5;
+    const ARTICLE_MAX = 5000;
+
+    /**
+     * Текст статьи со страницы: абзацы из <article>, без меню, подписей и
+     * рекламы. По нему модель делает рерайт — в анонсе из выдачи для этого
+     * слишком мало фактов.
+     */
+    public static function article( $link ) {
+        $link = esc_url_raw( is_string( $link ) ? trim( $link ) : '', array( 'http', 'https' ) );
+        if ( '' === $link || ! wp_http_validate_url( $link ) ) {
+            return self::error( 'Неверный адрес статьи.' );
+        }
+        $body = self::fetch( $link );
+        if ( is_wp_error( $body ) ) {
+            return $body;
+        }
+        $scope = preg_match( '~<article\b.*?</article>~is', $body, $article ) ? $article[0] : $body;
+        $scope = (string) preg_replace( '~<(script|style|noscript|figure|aside|nav|header|footer|form)\b.*?</\1>~is', ' ', $scope );
+        preg_match_all( '~<p\b[^>]*>(.*?)</p>~is', $scope, $paragraphs );
+        $parts = array();
+        foreach ( $paragraphs[1] as $paragraph ) {
+            $line = trim( (string) preg_replace( '/\s+/u', ' ', html_entity_decode( wp_strip_all_tags( $paragraph ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) );
+            // Короткие строки — подписи, даты и «читайте также», а не текст статьи.
+            if ( mb_strlen( $line ) >= 40 ) {
+                $parts[] = $line;
+            }
+        }
+        $text = mb_substr( implode( "\n", $parts ), 0, self::ARTICLE_MAX );
+        return mb_strlen( $text ) < 300 ? self::error( 'на странице не нашлось текста статьи.', 404 ) : $text;
+    }
+
+    /**
+     * Фотографии со страницы статьи: главная картинка, которую сайт сам
+     * объявляет для соцсетей, и снимки из текста. Адреса только https —
+     * другие медиатека не скачает.
+     */
+    public static function photos( $link ) {
+        $link = esc_url_raw( is_string( $link ) ? trim( $link ) : '', array( 'http', 'https' ) );
+        if ( '' === $link || ! wp_http_validate_url( $link ) ) {
+            return self::error( 'Неверный адрес статьи.' );
+        }
+        $body = self::fetch( $link );
+        if ( is_wp_error( $body ) ) {
+            return $body;
+        }
+        $found = array();
+        $add = static function ( $src ) use ( &$found, $link ) {
+            $url = esc_url_raw( self::absolute( $src, $link ), array( 'https' ) );
+            // Один снимок сайты отдают в нескольких размерах — различаем по адресу без параметров.
+            $key = strtolower( (string) preg_replace( '/[?#].*$/', '', $url ) );
+            // Размер в имени файла вида 140x100 — миниатюра: в записи она будет мылом.
+            if ( preg_match( '~(?<!\d)(\d{2,4})x(\d{2,4})(?!\d)~', $key, $size ) && max( (int) $size[1], (int) $size[2] ) < 400 ) {
+                return;
+            }
+            if ( str_starts_with( $url, 'https://' ) && ! isset( $found[ $key ] ) && wp_http_validate_url( $url ) && ! preg_match( '~logo|icon|sprite|avatar|pixel|counter|banner|button|emoji|placeholder|\.svg|\.gif~i', $key ) ) {
+                $found[ $key ] = $url;
+            }
+        };
+        preg_match_all( '~<meta\b[^>]*>~i', $body, $metas );
+        foreach ( $metas[0] as $tag ) {
+            if ( preg_match( '~(?:property|name)\s*=\s*["\'](?:og:image(?::secure_url|:url)?|twitter:image(?::src)?)["\']~i', $tag ) && preg_match( '~content\s*=\s*["\']([^"\']+)~i', $tag, $content ) ) {
+                $add( $content[1] );
+            }
+        }
+        // Вне <article> на странице анонсы чужих новостей: их снимки к этой записи не относятся.
+        if ( preg_match( '~<article\b.*?</article>~is', $body, $article ) ) {
+            preg_match_all( '~<img\b[^>]*>~i', $article[0], $images );
+            foreach ( $images[0] as $tag ) {
+                if ( preg_match( '~\bwidth\s*=\s*["\']?(\d+)~i', $tag, $width ) && (int) $width[1] < 400 ) {
+                    continue;
+                }
+                if ( preg_match( '~\b(?:data-src|data-original|src)\s*=\s*["\']([^"\']+)~i', $tag, $src ) ) {
+                    $add( $src[1] );
+                }
+            }
+        }
+        return array( 'photos' => array_slice( array_values( $found ), 0, self::MAX_PHOTOS ) );
+    }
+
+    /** Выбранное фото — в медиатеку сайта: в VK файл уходит уже оттуда. */
+    public static function photo_save( $url ) {
+        $media = VKT_Media::sideload( is_string( $url ) ? $url : '', 'image' );
+        return is_wp_error( $media ) ? self::error( 'Фото с сайта источника не скачалось: сайт не отдал файл или это не изображение.', 502 ) : $media;
+    }
+
+    // Сколько раз за сбор спрашиваем выдачу: человек ждёт ответа.
+    const FEED_REQUESTS = 8;
+
+    /**
+     * Поиск плагина: модель для текста составляет запросы, новостную выдачу
+     * Bing читает сам плагин. Так ищет любая модель, в том числе без своего
+     * поиска (DeepSeek), а адрес статьи приходит из выдачи — выдумать его некому.
+     */
+    private static function search_feed( $settings, $domains, $group_name, $model ) {
+        $queries = VKT_AI::search_queries( $settings['topic'], $group_name, $model );
+        // Несколько сайтов через OR выдача не понимает — на каждый сайт свой запрос.
+        $lines = array();
+        foreach ( $queries as $query ) {
+            foreach ( $domains ? array_slice( $domains, 0, 5 ) : array( '' ) as $domain ) {
+                $lines[] = '' === $domain ? $query : $query . ' site:' . $domain;
+            }
+        }
+        $lines = array_slice( $lines, 0, self::FEED_REQUESTS );
+        $since = time() - $settings['days'] * DAY_IN_SECONDS;
+        $used = array_flip( $settings['used'] );
+        $seen = array();
+        $items = array();
+        $total = 0;
+        $failed = array();
+        foreach ( $lines as $line ) {
+            $started = microtime( true );
+            // interval: 7 — за сутки, 8 — за неделю; точный срок отсекаем сами по дате.
+            $body = self::fetch( add_query_arg( array( 'q' => rawurlencode( $line ), 'qft' => rawurlencode( 'interval="' . ( $settings['days'] > 1 ? 8 : 7 ) . '"' ), 'format' => 'rss', 'setlang' => 'ru', 'cc' => 'RU' ), 'https://www.bing.com/news/search' ) );
+            $found = is_wp_error( $body ) ? $body : self::parse( $body, 'https://www.bing.com/' );
+            $ms = (int) round( ( microtime( true ) - $started ) * 1000 );
+            if ( ! is_array( $found ) ) {
+                $failed[] = is_wp_error( $found ) ? $found->get_error_message() : 'выдача не читается';
+                VKT_Store::log( 'search.feed', 'news', 'error', 0, mb_substr( $line . ': ' . end( $failed ), 0, 250 ), $ms );
+                continue;
+            }
+            VKT_Store::log( 'search.feed', 'news', 'ok', 200, mb_substr( $line . ': найдено ' . count( $found ), 0, 250 ), $ms );
+            $total += count( $found );
+            foreach ( $found as $item ) {
+                // В выдаче ссылка идёт через счётчик поисковика — адрес статьи лежит в параметре url.
+                wp_parse_str( (string) wp_parse_url( $item['link'], PHP_URL_QUERY ), $query );
+                $link = esc_url_raw( rtrim( (string) preg_replace( '~([?&])utm_[a-z_]+=[^&#]*&?~i', '$1', (string) ( $query['url'] ?? $item['link'] ) ), '?&' ), array( 'http', 'https' ) );
+                $key = self::key( $link );
+                if ( '' === $link || ! wp_http_validate_url( $link ) || isset( $seen[ $key ] ) || isset( $used[ $key ] ) || ( null !== $item['date'] && $item['date'] < $since ) ) {
+                    continue;
+                }
+                $seen[ $key ] = true;
+                $items[] = array_merge( $item, array( 'link' => $link, 'source' => preg_replace( '/^www\./', '', (string) wp_parse_url( $link, PHP_URL_HOST ) ) ) );
+            }
+        }
+        if ( $failed && count( $failed ) === count( $lines ) ) {
+            return self::error( 'Поиск плагина не получил выдачу: ' . $failed[0] . '. Попробуйте позже или выберите другой поиск в поле «Кто ищет».', 502 );
+        }
+        usort( $items, static fn( $a, $b ) => (int) $b['date'] <=> (int) $a['date'] );
+        return array( 'items' => array_slice( $items, 0, self::MAX_ITEMS ), 'sources' => array( array( 'url' => 'Поиск плагина · запросы: ' . implode( '; ', $queries ), 'ok' => true, 'total' => $total, 'fresh' => count( $items ), 'message' => $failed ? 'не ответило запросов: ' . count( $failed ) : '' ) ) );
     }
 
     /**

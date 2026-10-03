@@ -191,6 +191,8 @@ final class VKT_Plugin {
         $admin_only = static function ( $request ) use ( $permission ) {
             return VKT_Account::is_admin() && $permission( $request );
         };
+        // VK приходит без пользователя и без nonce: событие проверяется секретом группы внутри обработчика.
+        register_rest_route( 'vk-trends/v1', '/callback', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => array( 'VKT_Community', 'callback' ) ) );
         register_rest_route( 'vk-trends/v1', '/users', array( 'methods' => 'GET', 'permission_callback' => $admin_only, 'callback' => static function () {
             $response = new WP_REST_Response( array( 'users' => VKT_Account::members() ) );
             $response->header( 'Cache-Control', 'no-store, private' );
@@ -654,6 +656,13 @@ final class VKT_Plugin {
                 return VKT_Groups::save_news( $data['id'] ?? 0, $data['news'] ?? array() );
             case 'group_news_check':
                 return VKT_Groups::check_news( $data['id'] ?? 0 );
+            case 'group_news_rewrite':
+                // Пачка до пяти статей — один текст из суточного лимита.
+                return self::metered( 'text', static fn() => VKT_Groups::rewrite_news( $data['id'] ?? 0, $data['links'] ?? array(), self::model_id( $data ) ) );
+            case 'group_news_photos':
+                return VKT_News::photos( $data['link'] ?? '' );
+            case 'group_news_photo_save':
+                return VKT_News::photo_save( $data['url'] ?? '' );
             case 'group_news_reset':
                 return VKT_Groups::reset_news( $data['id'] ?? 0 );
             case 'group_news_collect':

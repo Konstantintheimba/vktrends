@@ -396,6 +396,10 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-cal-date { font-size: 10px; color: #9aa8bd; }
 .vkt-cal-slot { font: inherit; color: inherit; text-align: left; cursor: pointer; border: 1px solid #dfeafb; background: #eff5ff; border-radius: 7px; padding: 5px 6px; display: grid; gap: 2px; }
 .vkt-cal-slot:hover { border-color: #b9d3ff; }
+.vkt-cal-slot[draggable="true"] { cursor: grab; }
+.vkt-cal-day.is-drop { border-color: var(--vkt-blue); background: #eef4ff; }
+.vkt-media-chips.is-sortable .vkt-media-chip { cursor: grab; }
+.vkt-media-chips.is-sortable .vkt-media-chip.is-drop { outline: 2px solid var(--vkt-blue); outline-offset: 2px; }
 .vkt-cal-slot.is-filled { border-color: #bfe3cc; background: #eefaf1; }
 .vkt-cal-slot strong { font-size: 11px; }
 .vkt-cal-slot span { font-size: 10px; line-height: 1.5; color: #6780a3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
@@ -601,6 +605,11 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-news-result li > div { display: flex; flex-direction: column; min-width: 0; }
 .vkt-news-result li small { font-size: 11px; }
 .vkt-news-result li p { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.vkt-news-result li .vkt-button { grid-column: 2; grid-row: 1; }
+.vkt-news-result li .vkt-news-actions { grid-column: 2; grid-row: 1; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.vkt-news-photos { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.vkt-news-photos small { flex-basis: 100%; }
+.vkt-news-photo { padding: 0; border: 2px solid transparent; border-radius: 8px; background: none; cursor: pointer; opacity: .45; line-height: 0; }
+.vkt-news-photo.is-on { border-color: var(--vkt-blue); opacity: 1; }
+.vkt-news-photo img { width: 112px; height: 84px; object-fit: cover; border-radius: 6px; }
 @media (max-width: 1100px) { .vkt-group-layout { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 760px) { .vkt-group-facts { grid-template-columns: minmax(0, 1fr); } .vkt-group-grid { grid-template-columns: minmax(0, 1fr); } .vkt-material { grid-template-columns: minmax(0, 1fr); } .vkt-news-options { grid-template-columns: minmax(0, 1fr); } }

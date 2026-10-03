@@ -448,13 +448,19 @@ final class VKT_AI {
      * в search(): остальной код знает только ID и название.
      * xAI ищет инструментом web_search, OpenRouter — плагином web поверх
      * любой своей модели (так в интернет ходит и DeepSeek), Qwen — своим
-     * поиском по флагу enable_search. У прямого DeepSeek поиска нет.
+     * поиском по флагу enable_search. У прямого DeepSeek поиска нет: для него
+     * и любой другой модели есть «поиск плагина» — запросы составляет модель
+     * для текста, выдачу читает сам плагин (VKT_News::search_feed()).
      */
     const SEARCH_PRESETS = array( 'openrouter' => 'поиск OpenRouter', 'qwen' => 'поиск Qwen' );
 
     private static function search_registry() {
         $list = array();
         $models = self::models();
+        if ( $models ) {
+            // Первым, то есть по умолчанию: ему не нужен ключ поиска и он не зависит от страны сервера.
+            $list['feed'] = array( 'title' => 'Поиск плагина · работает с любой моделью для текста (DeepSeek и другие)', 'kind' => 'feed' );
+        }
         $xai = self::configured() ? trim( (string) VKT_XAI_API_KEY ) : '';
         foreach ( $models as $model ) {
             if ( '' === $xai && 'xai' === $model['preset'] ) {
@@ -481,6 +487,42 @@ final class VKT_AI {
         return $out;
     }
 
+    /** Каким способом пойдёт поиск: выбранный поставщик, а если его уже нет — первый доступный. */
+    public static function search_kind( $provider ) {
+        $registry = self::search_registry();
+        $id = is_string( $provider ) && isset( $registry[ $provider ] ) ? $provider : (string) ( array_key_first( $registry ) ?? '' );
+        return '' === $id ? '' : $registry[ $id ]['kind'];
+    }
+
+    /**
+     * Поисковые запросы по описанию выборки. Описание пишут для редактора
+     * («только НБА, без слухов и ставок») — в строку поиска оно не годится.
+     * Модель не ответила — ищем по самому описанию: это хуже, но не тупик.
+     */
+    public static function search_queries( $topic, $group_name = '', $model = '' ) {
+        $topic = mb_substr( trim( (string) $topic ), 0, VKT_News::TOPIC_MAX );
+        $fallback = array( mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', $topic ) ), 0, 100 ) );
+        $result = self::chat( 'Составь поисковые запросы для поиска свежих новостей в новостном поисковике. Какие новости нужны: ' . $topic
+            . ( '' !== trim( (string) $group_name ) ? "\nДля сообщества VK «" . sanitize_text_field( (string) $group_name ) . '».' : '' )
+            . "\n\nОт одного до трёх коротких запросов на русском, по 2–5 слов, как их набирают в поиске: только о чём искать, без исключений, кавычек и операторов. Разные запросы — разные стороны темы."
+            . ' Верни строго JSON вида {"queries":["запрос"]} без пояснений.', 60, $model );
+        if ( is_wp_error( $result ) ) {
+            return $fallback;
+        }
+        $raw = trim( (string) $result );
+        if ( false !== ( $from = strpos( $raw, '{' ) ) && false !== ( $to = strrpos( $raw, '}' ) ) && $to > $from ) {
+            $raw = substr( $raw, $from, $to - $from + 1 );
+        }
+        $queries = array();
+        foreach ( (array) ( json_decode( $raw, true )['queries'] ?? array() ) as $query ) {
+            $query = is_string( $query ) ? mb_substr( trim( (string) preg_replace( '/[\s"()]+/u', ' ', wp_strip_all_tags( $query ) ) ), 0, 100 ) : '';
+            if ( '' !== $query && ! isset( $queries[ mb_strtolower( $query ) ] ) ) {
+                $queries[ mb_strtolower( $query ) ] = $query;
+            }
+        }
+        return $queries ? array_slice( array_values( $queries ), 0, 3 ) : $fallback;
+    }
+
     /**
      * Запрос с поиском в интернете. Возвращает текст ответа и адреса,
      * которые поставщик сам назвал источниками: по ним потом сверяются
@@ -490,12 +532,15 @@ final class VKT_AI {
         $registry = self::search_registry();
         $id = isset( $registry[ $provider ] ) ? $provider : (string) ( array_key_first( $registry ) ?? '' );
         if ( '' === $id ) {
-            return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: нужен ключ xAI либо модель OpenRouter или Qwen.', array(
+            return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: не подключена ни одна модель для текстов.', array(
                 'status' => 400,
                 'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Подключить модель — «Настройки»' ) : null,
             ) );
         }
         $entry = $registry[ $id ];
+        if ( 'feed' === $entry['kind'] ) {
+            return self::error( 'Поиск плагина идёт без модели с поиском — через VKT_News::search().', 400 );
+        }
         $domains = array_slice( array_values( array_unique( array_filter( array_map( 'strval', (array) $domains ) ) ) ), 0, 5 );
         if ( 'xai' === $entry['kind'] ) {
             $tool = array( 'type' => 'web_search' );
@@ -544,7 +589,7 @@ final class VKT_AI {
             $reason = self::reason( $data, $raw, $http, $key );
             VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $entry['title'] . ': ' . $reason, 0, 250 ), $duration );
             // Модель для текста поиск не меняет — подсказываем, где он выбирается на самом деле.
-            $hint = in_array( $http, array( 403, 451 ), true ) ? ' Кто ищет, выбирается в настройках новостей группы — поле «Кто ищет»; без поиска работают RSS-ленты.' : '';
+            $hint = in_array( $http, array( 403, 451 ), true ) ? ' Модель для текста поиск не меняет: в настройках новостей группы выберите в поле «Кто ищет» «Поиск плагина» — он работает с любой моделью.' : '';
             return self::error( $entry['title'] . ' отклонил поиск (HTTP ' . $http . '): ' . $reason . $hint, 422, 429 === $http || $http >= 500 );
         }
         $text = '';
@@ -648,6 +693,47 @@ final class VKT_AI {
      * номер: ссылок у неё нет, источник к записи приписывает плагин. Номер
      * возвращается назад, по нему текст сверяется с новостью.
      */
+    /**
+     * Рерайт статей в посты. Не сочинение по теме: модель пересказывает
+     * данный ей текст, поэтому факты остаются теми же, что в источнике.
+     * Возвращает тексты по номерам статей.
+     */
+    public static function rewrite_news( $items, $model = '', $context = '' ) {
+        $list = array();
+        foreach ( array_values( (array) $items ) as $index => $item ) {
+            $list[] = array( 'id' => $index + 1, 'text' => mb_substr( (string) $item['text'], 0, VKT_News::ARTICLE_MAX ) );
+        }
+        if ( ! $list ) {
+            return self::error( 'Нет статей для рерайта.' );
+        }
+        $input = 'Ты редактор новостного сообщества VK. Ниже тексты статей. По каждой сделай рерайт для поста на русском языке: перескажи статью своими словами близко к тексту.'
+            . ' Сохрани все факты, цифры, имена, даты и цитаты; ничего не добавляй от себя, не оценивай и не меняй смысл. Убери рекламу, призывы подписаться и ссылки на другие материалы.'
+            . ' Первая строка — заголовок, дальше суть новости абзацами, до 1500 символов. Ссылки и слово «Источник» не пиши: источник добавится автоматически. Без Markdown.'
+            . ' Верни строго JSON вида {"posts":[{"id":1,"text":"текст"}]} — id из списка, без пояснений.'
+            . "\n\nСтатьи:\n" . wp_json_encode( $list, JSON_UNESCAPED_UNICODE );
+        $result = self::chat( self::with_group( $input, $context ), 180, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $raw = trim( (string) $result );
+        if ( false !== ( $from = strpos( $raw, '{' ) ) && false !== ( $to = strrpos( $raw, '}' ) ) && $to > $from ) {
+            $raw = substr( $raw, $from, $to - $from + 1 );
+        }
+        $decoded = json_decode( $raw, true );
+        if ( ! is_array( $decoded ) ) {
+            return self::error( 'Модель ответила, но разобрать рерайт не удалось. Повторите запрос.', 502, true );
+        }
+        $texts = array();
+        foreach ( (array) ( $decoded['posts'] ?? array() ) as $post ) {
+            $id = is_array( $post ) ? (int) ( $post['id'] ?? 0 ) : 0;
+            $text = is_array( $post ) ? trim( wp_strip_all_tags( (string) ( $post['text'] ?? '' ) ) ) : '';
+            if ( $id >= 1 && $id <= count( $list ) && '' !== $text && ! isset( $texts[ $id ] ) ) {
+                $texts[ $id ] = mb_substr( $text, 0, 4000 );
+            }
+        }
+        return $texts;
+    }
+
     public static function generate_news( $items, $topic, $count, $mode, $model = '', $context = '' ) {
         $list = array();
         foreach ( array_values( (array) $items ) as $index => $item ) {

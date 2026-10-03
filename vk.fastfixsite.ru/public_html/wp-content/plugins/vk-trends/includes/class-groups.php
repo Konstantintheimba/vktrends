@@ -238,7 +238,7 @@ final class VKT_Groups {
     }
 
     /** Настройки и свежие новости группы — общее начало проверки и сбора. */
-    private static function fresh_news( $id ) {
+    private static function fresh_news( $id, $model = '' ) {
         $group = self::group( $id );
         if ( is_wp_error( $group ) ) {
             return $group;
@@ -248,7 +248,7 @@ final class VKT_Groups {
             if ( '' === $settings['topic'] ) {
                 return self::error( 'Опишите, какие новости искать, и сохраните настройки.' );
             }
-            $collected = VKT_News::search( $settings, (string) $group['name'] );
+            $collected = VKT_News::search( $settings, (string) $group['name'], $model );
             return is_wp_error( $collected ) ? $collected : array( $group, $settings, $collected );
         }
         if ( ! $settings['sources'] ) {
@@ -272,8 +272,40 @@ final class VKT_Groups {
      * источник добавляет плагин. Взятые новости запоминаются и в следующий
      * сбор не попадают.
      */
+    /**
+     * Рерайт собранных новостей по текстам самих статей. Статья не открылась
+     * или в ней не нашёлся текст — запись остаётся написанной по анонсу.
+     */
+    public static function rewrite_news( $id, $links, $model = '' ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $items = array();
+        foreach ( array_slice( array_values( array_unique( array_filter( (array) $links, 'is_string' ) ) ), 0, VKT_News::REWRITE_CHUNK ) as $link ) {
+            $text = VKT_News::article( $link );
+            if ( ! is_wp_error( $text ) ) {
+                $items[] = array( 'link' => $link, 'text' => $text );
+            }
+        }
+        if ( ! $items ) {
+            return self::error( 'Тексты статей не открылись: записи остались написанными по анонсам.', 404 );
+        }
+        $texts = VKT_AI::rewrite_news( $items, $model, self::context( $group ) );
+        if ( is_wp_error( $texts ) ) {
+            return $texts;
+        }
+        $out = array();
+        foreach ( $items as $index => $item ) {
+            if ( isset( $texts[ $index + 1 ] ) ) {
+                $out[] = array( 'link' => $item['link'], 'text' => $texts[ $index + 1 ] . "\n\nИсточник: " . $item['link'] );
+            }
+        }
+        return array( 'texts' => $out );
+    }
+
     public static function collect_news( $id, $model = '' ) {
-        $fresh = self::fresh_news( $id );
+        $fresh = self::fresh_news( $id, $model );
         if ( is_wp_error( $fresh ) ) {
             return $fresh;
         }

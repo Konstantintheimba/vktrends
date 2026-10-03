@@ -94,7 +94,16 @@ final class VKT_Community {
             && '' !== trim( (string) VKT_CALLBACK_SECRET );
     }
 
+    /**
+     * Адрес для VK. Не в /wp-admin/: хостинг (Beget) закрывает админские адреса
+     * проверкой cookie и отдаёт VK свою страницу вместо ответа сайта.
+     */
     public static function callback_url() {
+        return rest_url( 'vk-trends/v1/callback' );
+    }
+
+    /** Прежний адрес: сервер с ним в группе VK перенастраиваем, а не заводим второй. */
+    private static function legacy_callback_url() {
         return admin_url( 'admin-post.php?action=vkt_callback' );
     }
 
@@ -541,7 +550,7 @@ final class VKT_Community {
         }
         $server_id = 0;
         foreach ( (array) ( $servers['items'] ?? array() ) as $server ) {
-            if ( (string) ( $server['url'] ?? '' ) === $url ) {
+            if ( in_array( (string) ( $server['url'] ?? '' ), array( $url, self::legacy_callback_url() ), true ) ) {
                 $server_id = absint( $server['id'] ?? 0 );
             }
         }

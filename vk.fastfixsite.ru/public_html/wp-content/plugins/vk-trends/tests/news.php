@@ -23,6 +23,8 @@ function wp_http_validate_url( $url ) { $host = (string) parse_url( $url, PHP_UR
 function wp_date( $format, $stamp ) { return gmdate( $format, $stamp ); }
 function home_url( $path = '' ) { return 'https://site.test' . $path; }
 function get_option( $key, $default = false ) { return $GLOBALS['vkt_options'][ $key ] ?? $default; }
+function add_query_arg( $args, $url ) { return $url . '?' . implode( '&', array_map( static fn( $key, $value ) => $key . '=' . $value, array_keys( $args ), $args ) ); }
+function wp_parse_str( $string, &$result ) { parse_str( (string) $string, $result ); }
 function wp_remote_retrieve_response_code( $response ) { return $response['code'] ?? 200; }
 function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_safe_remote_get( $url, $args = array() ) {
@@ -144,7 +146,7 @@ $assert( array() === VKT_News::compose( $collected['items'], array( 'picks' => a
 
 // Поиск в интернете: запрос к xAI, сверка ссылок с источниками поиска и живая проверка остальных.
 $assert( 'search' === VKT_News::settings( array() )['method'] && is_wp_error( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => '' ), array() ) ) && ! is_wp_error( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => 'НБА' ), array() ) ), 'По умолчанию — поиск: ему нужна выборка, а источники необязательны' );
-$assert( array( array( 'id' => 'xai', 'title' => 'xAI Grok · web_search' ) ) === VKT_AI::search_providers(), 'С ключом xAI поиск доступен' );
+$assert( array( 'feed', 'xai' ) === array_column( VKT_AI::search_providers(), 'id' ) && 'xAI Grok · web_search' === VKT_AI::search_providers()[1]['title'], 'По умолчанию ищет плагин — ему не нужен ключ; xAI можно выбрать' );
 $found_json = json_encode( array( 'news' => array(
     array( 'title' => 'Обмен в НБА', 'summary' => 'Клубы обменялись <b>защитниками</b>.', 'url' => 'https://www.kp.ru/sport/trade/?utm_source=x', 'date' => gmdate( 'Y-m-d' ) ),
     array( 'title' => 'Живая без цитаты', 'summary' => 'Факт.', 'url' => 'https://tass.ru/sport/1', 'date' => '' ),
@@ -158,7 +160,7 @@ $GLOBALS['vkt_search_response'] = array( 'output' => array(
 ) );
 $GLOBALS['vkt_alive'] = array( 'https://tass.ru/sport/1' );
 $GLOBALS['vkt_checked'] = array();
-$search_settings = VKT_News::settings( array( 'enabled' => true, 'method' => 'search', 'topic' => 'Только НБА', 'count' => 5, 'days' => 3, 'sources' => array( 'https://www.kp.ru/', 'https://tass.ru' ), 'used' => array( VKT_News::key( 'https://kp.ru/used' ) ) ) );
+$search_settings = VKT_News::settings( array( 'enabled' => true, 'method' => 'search', 'engine' => 'xai', 'topic' => 'Только НБА', 'count' => 5, 'days' => 3, 'sources' => array( 'https://www.kp.ru/', 'https://tass.ru' ), 'used' => array( VKT_News::key( 'https://kp.ru/used' ) ) ) );
 $searched = VKT_News::search( $search_settings, 'Баскетбол' );
 $request = $GLOBALS['vkt_search_request'];
 $assert( VKT_AI::SEARCH_MODEL === $request['model'] && 'web_search' === $request['tools'][0]['type'] && array( 'kp.ru', 'tass.ru' ) === $request['tools'][0]['filters']['allowed_domains'], 'Запрос к xAI: инструмент web_search и сайты группы фильтром' );
@@ -167,7 +169,7 @@ $assert( array( 'Обмен в НБА', 'Живая без цитаты' ) === a
 $assert( 'https://www.kp.ru/sport/trade/' === $searched['items'][0]['link'] && 'kp.ru' === $searched['items'][0]['source'] && 'Клубы обменялись защитниками.' === $searched['items'][0]['summary'] && null === $searched['items'][1]['date'], 'Ссылка без utm-меток, источник — домен, теги из пересказа убраны' );
 $assert( array( 'https://tass.ru/sport/1', 'https://fake-site.test/news/42' ) === $GLOBALS['vkt_checked'], 'Живьём проверяются только ссылки, которых поиск источниками не назвал' );
 $assert( str_contains( $searched['sources'][0]['message'], 'отброшено без подтверждённой ссылки: 1' ) && 5 === $searched['sources'][0]['total'] && 2 === $searched['sources'][0]['fresh'] && str_contains( $searched['sources'][0]['url'], 'xAI Grok' ), 'В отчёте видно, кто искал и сколько отброшено' );
-$many_sites = VKT_News::settings( array( 'method' => 'search', 'topic' => 'Т', 'sources' => array_map( static fn( $i ) => "https://s$i.test", range( 1, 7 ) ) ) );
+$many_sites = VKT_News::settings( array( 'method' => 'search', 'engine' => 'xai', 'topic' => 'Т', 'sources' => array_map( static fn( $i ) => "https://s$i.test", range( 1, 7 ) ) ) );
 VKT_News::search( $many_sites );
 $assert( ! isset( $GLOBALS['vkt_search_request']['tools'][0]['filters'] ), 'Больше пяти сайтов — поиск без фильтра: xAI принимает не больше пяти' );
 $GLOBALS['vkt_search_response'] = array( 'output_text' => 'Ничего не нашёл.' );
@@ -181,19 +183,65 @@ $assert( is_wp_error( $denied ) && str_contains( $denied->get_error_message(), '
 $GLOBALS['vkt_search_code'] = 403;
 $GLOBALS['vkt_search_response'] = 'This service is not available in your region.';
 $region = VKT_News::search( $search_settings );
-$assert( is_wp_error( $region ) && str_contains( $region->get_error_message(), '«Кто ищет»' ), 'Отказ по региону подсказывает, где сменить поиск' );
+$assert( is_wp_error( $region ) && str_contains( $region->get_error_message(), '«Кто ищет»' ) && str_contains( $region->get_error_message(), 'Поиск плагина' ), 'Отказ по региону подсказывает, где сменить поиск и на какой' );
 $GLOBALS['vkt_options'][ VKT_AI::MODELS_OPTION ] = array( 'models' => array(
     'qw' => array( 'title' => 'Qwen Plus', 'preset' => 'qwen', 'base' => 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'model' => 'qwen-plus', 'key' => 'QWEN_KEY' ),
     'ds' => array( 'title' => 'DeepSeek', 'preset' => 'deepseek', 'base' => 'https://api.deepseek.com', 'model' => 'deepseek-chat', 'key' => 'DS_KEY' ),
     'or' => array( 'title' => 'OR DeepSeek', 'preset' => 'openrouter', 'base' => 'https://openrouter.ai/api/v1', 'model' => 'deepseek/deepseek-chat', 'key' => 'OR_KEY' ),
 ) );
-$assert( array( 'xai', 'qwen-qw', 'openrouter-or' ) === array_column( VKT_AI::search_providers(), 'id' ), 'Искать умеют xAI, Qwen и OpenRouter; прямой DeepSeek — нет' );
+$assert( array( 'feed', 'xai', 'qwen-qw', 'openrouter-or' ) === array_column( VKT_AI::search_providers(), 'id' ), 'Сами ищут xAI, Qwen и OpenRouter; прямой DeepSeek — через поиск плагина' );
 $GLOBALS['vkt_model_text'] = $found_json;
 $by_qwen = VKT_News::search( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'engine' => 'qwen-qw', 'topic' => 'Только НБА', 'sources' => array( 'https://www.kp.ru/', 'https://tass.ru' ) ), array() ) );
 $assert( ! is_wp_error( $by_qwen ) && str_starts_with( $GLOBALS['vkt_post_url'], 'https://dashscope-intl.aliyuncs.com/' ) && true === $GLOBALS['vkt_model_request']['enable_search'] && 'qwen-plus' === $GLOBALS['vkt_model_request']['model'], 'Выбранный Qwen ищет сам, xAI не трогается' );
 VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'openrouter-or', 'topic' => 'Т', 'sources' => array( 'https://tass.ru' ) ) ) );
 $assert( str_starts_with( $GLOBALS['vkt_post_url'], 'https://openrouter.ai/' ) && array( 'tass.ru' ) === $GLOBALS['vkt_model_request']['plugins'][0]['include_domains'], 'Выбранный OpenRouter ищет плагином web по названным сайтам' );
-VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'gone-1', 'topic' => 'Т' ) ) );
-$assert( str_ends_with( $GLOBALS['vkt_post_url'], '/v1/responses' ) && '' === VKT_News::settings( array( 'engine' => 'Не ID!' ) )['engine'], 'Отключённый поиск заменяется первым доступным, мусор в настройке не хранится' );
+$assert( 'feed' === VKT_AI::search_kind( 'gone-1' ) && 'feed' === VKT_AI::search_kind( '' ) && 'xai' === VKT_AI::search_kind( 'xai' ) && '' === VKT_News::settings( array( 'engine' => 'Не ID!' ) )['engine'], 'Отключённый или не выбранный поиск — это поиск плагина; мусор в настройке не хранится' );
+
+// Поиск плагина: запросы составляет модель для текста (DeepSeek), выдачу читает плагин.
+$feed_item = static fn( $title, $url, $ago ) => '<item><title>' . $title . '</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=' . rawurlencode( $url ) . '&amp;c=1&amp;mkt=ru-ru</link><description>Анонс ' . $title . '</description><pubDate>' . gmdate( 'r', time() - $ago ) . '</pubDate></item>';
+$feed = static fn( ...$items ) => '<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><title>Bing</title>' . implode( '', $items ) . '</channel></rss>';
+$bing = static fn( $line ) => add_query_arg( array( 'q' => rawurlencode( $line ), 'qft' => rawurlencode( 'interval="8"' ), 'format' => 'rss', 'setlang' => 'ru', 'cc' => 'RU' ), 'https://www.bing.com/news/search' );
+$GLOBALS['vkt_pages'] = array(
+    $bing( 'НБА обмены site:kp.ru' ) => $feed( $feed_item( 'Обмен в НБА', 'https://www.kp.ru/sport/trade/?utm_source=bing', 3600 ), $feed_item( 'Старая', 'https://www.kp.ru/sport/old/', 5 * 86400 ) ),
+    $bing( 'НБА травмы site:kp.ru' ) => $feed( $feed_item( 'Обмен в НБА', 'https://www.kp.ru/sport/trade/', 3600 ), $feed_item( 'Травма лидера', 'https://www.kp.ru/sport/injury/', 7200 ), $feed_item( 'Уже брали', 'https://www.kp.ru/sport/used/', 60 ) ),
+);
+$GLOBALS['vkt_fetched'] = array();
+$GLOBALS['vkt_model_text'] = '{"queries":["НБА обмены","НБА травмы","нба ОБМЕНЫ"]}';
+$feed_settings = VKT_News::settings( array( 'enabled' => true, 'method' => 'search', 'engine' => 'feed', 'topic' => 'Только НБА: обмены и травмы, без слухов', 'count' => 5, 'days' => 3, 'sources' => array( 'https://www.kp.ru/' ), 'used' => array( VKT_News::key( 'https://www.kp.ru/sport/used/' ) ) ) );
+$by_feed = VKT_News::search( $feed_settings, 'Баскетбол', 'ds' );
+$assert( 'deepseek-chat' === $GLOBALS['vkt_model_request']['model'] && str_contains( $GLOBALS['vkt_model_request']['messages'][0]['content'] ?? json_encode( $GLOBALS['vkt_model_request'], JSON_UNESCAPED_UNICODE ), 'без слухов' ), 'Запросы для поиска составляет выбранная модель для текста — DeepSeek' );
+$assert( array( $bing( 'НБА обмены site:kp.ru' ), $bing( 'НБА травмы site:kp.ru' ) ) === $GLOBALS['vkt_fetched'], 'Повтор запроса убран, сайт группы ушёл в запрос оператором site:' );
+$assert( ! is_wp_error( $by_feed ) && array( 'Обмен в НБА', 'Травма лидера' ) === array_column( $by_feed['items'], 'title' ) && 'https://www.kp.ru/sport/trade/' === $by_feed['items'][0]['link'] && 'kp.ru' === $by_feed['items'][0]['source'], 'Из выдачи взяты свежие и неиспользованные, без повторов; адрес статьи — настоящий, без счётчика поисковика' );
+$assert( 5 === $by_feed['sources'][0]['total'] && 2 === $by_feed['sources'][0]['fresh'] && str_contains( $by_feed['sources'][0]['url'], 'НБА обмены; НБА травмы' ), 'В отчёте видно, какими запросами искали' );
+$GLOBALS['vkt_model_text'] = 'Не могу помочь.';
+$GLOBALS['vkt_fetched'] = array();
+$GLOBALS['vkt_pages'] = array();
+$dead = VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'feed', 'topic' => 'Экономика новости', 'days' => 1 ) ), '', 'ds' );
+$assert( 1 === count( $GLOBALS['vkt_fetched'] ) && str_contains( $GLOBALS['vkt_fetched'][0], rawurlencode( 'Экономика новости' ) ) && str_contains( $GLOBALS['vkt_fetched'][0], rawurlencode( 'interval="7"' ) ) && is_wp_error( $dead ) && str_contains( $dead->get_error_message(), 'Поиск плагина не получил выдачу' ), 'Модель не дала запросов — ищем по описанию; выдача не ответила — понятная ошибка' );
+
+// Выбранный поиск не ответил — сбор не встаёт: ищет плагин.
+$GLOBALS['vkt_search_code'] = 403;
+$GLOBALS['vkt_search_response'] = 'This service is not available in your region.';
+$GLOBALS['vkt_model_text'] = '{"queries":["НБА обмены"]}';
+$GLOBALS['vkt_pages'] = array( $bing( 'НБА обмены site:kp.ru' ) => $feed( $feed_item( 'Обмен в НБА', 'https://www.kp.ru/sport/trade/', 3600 ) ) );
+$rescued = VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'xai', 'topic' => 'Только НБА', 'days' => 3, 'sources' => array( 'https://www.kp.ru/' ) ) ), '', 'ds' );
+$assert( ! is_wp_error( $rescued ) && array( 'Обмен в НБА' ) === array_column( $rescued['items'], 'title' ) && str_contains( $rescued['sources'][0]['message'], 'выбранный поиск не ответил' ), 'Grok отказал по региону — новости нашёл поиск плагина, и это видно в отчёте' );
+
+// Фото к новости: со страницы статьи, без чужих анонсов и служебных картинок.
+$GLOBALS['vkt_pages']['https://www.kp.ru/sport/trade/'] = '<html><head><meta property="og:image" content="https://s.kp.ru/photo/main.jpg?w=1200"><meta name="twitter:image" content="https://s.kp.ru/photo/main.jpg"></head><body><img src="https://s.kp.ru/other-news.jpg"><article><img src="/img/logo.png"><img width="120" src="https://s.kp.ru/small.jpg"><img data-src="//s.kp.ru/photo/second.jpg" width="900"><img src="http://s.kp.ru/insecure.jpg"><img src="/photo/third.webp"><img src="https://s.kp.ru/photo/second_140x100_crop.jpg"></article></body></html>';
+$assert( array( 'photos' => array( 'https://s.kp.ru/photo/main.jpg?w=1200', 'https://s.kp.ru/photo/second.jpg', 'https://www.kp.ru/photo/third.webp' ) ) === VKT_News::photos( 'https://www.kp.ru/sport/trade/' ), 'Фото статьи: главный снимок и снимки из текста, без логотипа, мелочи, миниатюр, повторов, http и чужих анонсов' );
+$assert( is_wp_error( VKT_News::photos( 'не адрес' ) ) && is_wp_error( VKT_News::photos( 'https://www.kp.ru/sport/gone/' ) ), 'Неверный адрес и неоткрывшаяся статья — ошибка, а не пустой список' );
+
+// Рерайт: текст берётся со страницы статьи, модель его пересказывает, источник приписывает плагин.
+$long = str_repeat( 'Клубы договорились об обмене защитниками, сделка закрыта вечером. ', 4 );
+$GLOBALS['vkt_pages']['https://www.kp.ru/sport/trade/'] = '<html><body><p>' . $long . ' Чужой анонс вне статьи.</p><article><header><p>' . $long . ' Шапка.</p></header><p>Фото: агентство</p><p>' . $long . '</p><script>var p = "<p>' . $long . ' код</p>";</script><p>По данным клуба, сумма сделки &mdash; 12&nbsp;млн. ' . $long . '</p></article></body></html>';
+$article = VKT_News::article( 'https://www.kp.ru/sport/trade/' );
+$assert( is_string( $article ) && str_contains( $article, 'сумма сделки — 12' ) && ! str_contains( $article, 'Чужой анонс' ) && ! str_contains( $article, 'Шапка' ) && ! str_contains( $article, 'Фото: агентство' ) && ! str_contains( $article, 'код' ) && 2 === count( explode( "\n", $article ) ), 'Текст статьи: абзацы из article без шапки, подписей, скриптов и чужих анонсов' );
+$GLOBALS['vkt_pages']['https://www.kp.ru/sport/short/'] = '<article><p>Коротко.</p></article>';
+$assert( is_wp_error( VKT_News::article( 'https://www.kp.ru/sport/short/' ) ) && is_wp_error( VKT_News::article( 'https://www.kp.ru/sport/gone/' ) ), 'Страница без текста и неоткрывшаяся — ошибка: такая запись останется по анонсу' );
+$GLOBALS['vkt_model_text'] = 'Вот рерайт: {"posts":[{"id":1,"text":"<b>Обмен</b> состоялся.\n\nСумма — 12 млн."},{"id":7,"text":"Чужой"},{"id":1,"text":"Дубль"}]}';
+$rewritten = VKT_AI::rewrite_news( array( array( 'link' => 'https://www.kp.ru/sport/trade/', 'text' => $article ) ), 'ds' );
+$sent = $GLOBALS['vkt_model_request']['messages'][0]['content'];
+$assert( array( 1 => "Обмен состоялся.\n\nСумма — 12 млн." ) === $rewritten && 'deepseek-chat' === $GLOBALS['vkt_model_request']['model'] && str_contains( $sent, 'рерайт' ) && str_contains( $sent, 'ничего не добавляй' ) && str_contains( $sent, 'сумма сделки — 12' ) && ! str_contains( $sent, 'kp.ru' ), 'Модель получает текст статьи и задачу рерайта без права добавлять; ссылки не видит, чужие номера и дубли отброшены' );
 
 echo "PASS: $checks news checks\n";
