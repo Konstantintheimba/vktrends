@@ -20,6 +20,7 @@ $vkt_pending = $vkt_admin ? VKT_Account::pending_count() : 0;
             <a href="#groups" data-nav="groups"><span data-icon="heart"></span>Мои сообщества</a>
             <a href="#publishing" data-nav="publishing"><span data-icon="send"></span>Автопостинг</a>
             <a href="#series" data-nav="series"><span data-icon="clock"></span>Серия постов</a>
+            <a href="#flux" data-nav="flux"><span data-icon="fire"></span>Генерация фото</a>
             <a href="#comments" data-nav="comments"><span data-icon="comment"></span>Комментарии</a>
             <a href="#videos" data-nav="videos"><span data-icon="play"></span>Мои ролики<span id="vkt-video-count" class="vkt-nav-count">0</span></a>
             <a href="#products" data-nav="products"><span data-icon="bag"></span>Товары</a>
@@ -34,7 +35,6 @@ $vkt_pending = $vkt_admin ? VKT_Account::pending_count() : 0;
         <?php if ( $vkt_admin ) : ?>
         <div class="vkt-nav-caption">ИНСТРУМЕНТЫ</div>
         <nav aria-label="Инструменты">
-            <a href="#flux" data-nav="flux"><span data-icon="fire"></span>Генерация фото</a>
             <a href="#users" data-nav="users"><span data-icon="people"></span>Пользователи<span id="vkt-users-count" class="vkt-nav-count" <?php echo $vkt_pending ? '' : 'hidden'; ?>><?php echo (int) $vkt_pending; ?></span></a>
             <a href="#api" data-nav="api"><span data-icon="code"></span>Тест API<span class="vkt-nav-dot"></span></a>
             <a href="#collector" data-nav="collector"><span data-icon="refresh"></span>Сбор данных</a>

@@ -447,8 +447,11 @@ final class VKT_AI {
      * Кто умеет искать в интернете. Новый поставщик — запись здесь и ветка
      * в search(): остальной код знает только ID и название.
      * xAI ищет инструментом web_search, OpenRouter — плагином web поверх
-     * любой своей модели (так в интернет ходит и DeepSeek).
+     * любой своей модели (так в интернет ходит и DeepSeek), Qwen — своим
+     * поиском по флагу enable_search. У прямого DeepSeek поиска нет.
      */
+    const SEARCH_PRESETS = array( 'openrouter' => 'поиск OpenRouter', 'qwen' => 'поиск Qwen' );
+
     private static function search_registry() {
         $list = array();
         $models = self::models();
@@ -462,8 +465,8 @@ final class VKT_AI {
             $list['xai'] = array( 'title' => 'xAI Grok · web_search', 'kind' => 'xai', 'key' => $xai );
         }
         foreach ( $models as $id => $model ) {
-            if ( 'openrouter' === $model['preset'] ) {
-                $list[ 'openrouter-' . $id ] = array( 'title' => $model['title'] . ' · поиск OpenRouter', 'kind' => 'openrouter', 'model' => $model );
+            if ( isset( self::SEARCH_PRESETS[ $model['preset'] ] ) ) {
+                $list[ $model['preset'] . '-' . $id ] = array( 'title' => $model['title'] . ' · ' . self::SEARCH_PRESETS[ $model['preset'] ], 'kind' => $model['preset'], 'model' => $model );
             }
         }
         return $list;
@@ -487,7 +490,7 @@ final class VKT_AI {
         $registry = self::search_registry();
         $id = isset( $registry[ $provider ] ) ? $provider : (string) ( array_key_first( $registry ) ?? '' );
         if ( '' === $id ) {
-            return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: нужен ключ xAI или модель OpenRouter.', array(
+            return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: нужен ключ xAI либо модель OpenRouter или Qwen.', array(
                 'status' => 400,
                 'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Подключить модель — «Настройки»' ) : null,
             ) );
@@ -503,13 +506,20 @@ final class VKT_AI {
             $key = $entry['key'];
             $body = array( 'model' => self::SEARCH_MODEL, 'input' => array( array( 'role' => 'user', 'content' => $input ) ), 'tools' => array( $tool ) );
         } else {
-            $plugin = array( 'id' => 'web', 'max_results' => 10 );
-            if ( $domains ) {
-                $plugin['include_domains'] = $domains;
-            }
             $url = $entry['model']['base'] . '/chat/completions';
             $key = $entry['model']['key'];
-            $body = array( 'model' => $entry['model']['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ), 'plugins' => array( $plugin ) );
+            $body = array( 'model' => $entry['model']['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ) );
+            if ( 'qwen' === $entry['kind'] ) {
+                // Фильтра по сайтам у поиска Qwen нет: сайты остаются пожеланием в тексте запроса.
+                $body['enable_search'] = true;
+                $body['search_options'] = array( 'forced_search' => true );
+            } else {
+                $plugin = array( 'id' => 'web', 'max_results' => 10 );
+                if ( $domains ) {
+                    $plugin['include_domains'] = $domains;
+                }
+                $body['plugins'] = array( $plugin );
+            }
         }
         $started = microtime( true );
         $response = wp_remote_post( $url, array(
@@ -533,7 +543,9 @@ final class VKT_AI {
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $reason = self::reason( $data, $raw, $http, $key );
             VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $entry['title'] . ': ' . $reason, 0, 250 ), $duration );
-            return self::error( $entry['title'] . ' отклонил поиск (HTTP ' . $http . '): ' . $reason, 422, 429 === $http || $http >= 500 );
+            // Модель для текста поиск не меняет — подсказываем, где он выбирается на самом деле.
+            $hint = in_array( $http, array( 403, 451 ), true ) ? ' Кто ищет, выбирается в настройках новостей группы — поле «Кто ищет»; без поиска работают RSS-ленты.' : '';
+            return self::error( $entry['title'] . ' отклонил поиск (HTTP ' . $http . '): ' . $reason . $hint, 422, 429 === $http || $http >= 500 );
         }
         $text = '';
         $urls = array();
@@ -568,7 +580,7 @@ final class VKT_AI {
      * Свежие новости по теме поиском в интернете: заголовок, суть и адрес
      * статьи. Писать посты здесь не просим — только найти и пересказать факты.
      */
-    public static function search_news( $topic, $limit, $days, $domains = array(), $group_name = '' ) {
+    public static function search_news( $topic, $limit, $days, $domains = array(), $group_name = '', $engine = '' ) {
         $limit = max( 3, min( 30, (int) $limit ) );
         $input = 'Найди в интернете свежие новости за последние ' . max( 1, (int) $days ) . ' сут. Сегодня ' . wp_date( 'd.m.Y', time() ) . '. Обязательно выполни поиск, не отвечай по памяти.'
             . "\n\nКакие новости нужны: " . mb_substr( trim( (string) $topic ), 0, VKT_News::TOPIC_MAX )
@@ -576,7 +588,7 @@ final class VKT_AI {
             . ( $domains ? "\nИщи в первую очередь на сайтах: " . implode( ', ', $domains ) . '.' : '' )
             . "\n\nВерни строго JSON без пояснений и Markdown: {\"news\":[{\"title\":\"заголовок на русском\",\"summary\":\"3–5 предложений с фактами из статьи: кто, что, когда, цифры\",\"url\":\"точный адрес страницы статьи, которую ты открыл\",\"date\":\"ГГГГ-ММ-ДД\"}]}."
             . ' До ' . $limit . ' разных новостей, самые важные первыми. Одно событие — одна запись. Адрес — только настоящей статьи из результатов поиска, не главной страницы сайта и не выдуманный. Не нашёл подходящего — верни {"news":[]}.';
-        $found = self::search( $input, $domains );
+        $found = self::search( $input, $domains, $engine );
         if ( is_wp_error( $found ) ) {
             return $found;
         }

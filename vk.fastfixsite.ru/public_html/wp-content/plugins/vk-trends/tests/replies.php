@@ -40,7 +40,7 @@ class VKT_Account {
     public static int $id = 5;
     public static array $switched = array();
     public static bool $active = true;
-    public static int $batch = 50;
+    public static int $batch = 300;
     public static function id() { return self::$id; }
     public static function limit( $key ) { return self::$batch; }
     public static function can_use() { return self::$active; }
@@ -163,8 +163,8 @@ $assert( str_contains( $schema['comment_replies'], 'guid varchar(64)' ), 'У о�
 $assert( is_wp_error( VKT_Replies::enqueue( array( 'group_id' => 400, 'items' => array( $item( 1 ) ) ) ) ), 'В группу чужого кабинета ответ не ставится' );
 $assert( is_wp_error( VKT_Replies::enqueue( array( 'group_id' => 300, 'items' => array( $item( 1 ) ) ) ) ), 'В выключенную группу ответ не ставится' );
 $assert( is_wp_error( VKT_Replies::posts( 400 ) ), 'Чужую стену через вкладку не прочитать' );
-$too_many = array_map( $item, range( 1, VKT_Replies::MAX_BATCH + 1 ) );
-$assert( is_wp_error( VKT_Replies::enqueue( array( 'group_id' => 100, 'items' => $too_many ) ) ), 'Пачка ограничена ' . VKT_Replies::MAX_BATCH . ' ответами' );
+$too_many = array_map( $item, range( 1, VKT_Replies::BATCH_CEILING + 1 ) );
+$assert( is_wp_error( VKT_Replies::enqueue( array( 'group_id' => 100, 'items' => $too_many ) ) ), 'Один запрос ограничен ' . VKT_Replies::BATCH_CEILING . ' ответами' );
 
 // Интервал: без разброса ответы идут ровно через заданные минуты.
 $before = time();
@@ -306,5 +306,14 @@ $assert( 4 === count( $media ) && array( 'type' => 'sticker', 'url' => 'https://
 $assert( 'https://vk.test/p360.jpg' === $media[1]['url'] && 'Группа — Песня' === $media[2]['title'] && '' === $media[2]['url'], 'Фото — превью около 320 px, аудио — подписью без тегов' );
 $assert( 'video' === $media[3]['type'] && '' === $media[3]['url'] && 'Ролик' === $media[3]['title'], 'Небезопасный адрес картинки отбрасывается, подпись остаётся' );
 $assert( array() === VKT_Replies::media_of( array( 'text' => 'Без вложений' ) ) && array() === VKT_Replies::media_of( array( 'attachments' => array( 'мусор', array() ) ) ), 'Комментарий без вложений и мусор в них не ломают разбор' );
+
+// Лимит кабинета — сколько ответов ждёт в очереди одновременно: что влезло, ставится, остальное возвращается пропущенным.
+$waiting_now = (int) $GLOBALS['wpdb']->get_var( "SELECT COUNT(*) FROM wp_vkt_comment_replies WHERE user_id=" . VKT_Account::id() . " AND status IN ('pending','sending')" );
+VKT_Account::$batch = $waiting_now + 2;
+$partial = VKT_Replies::enqueue( array( 'group_id' => 100, 'interval' => 1, 'items' => array( $item( 9001 ), $item( 9002 ), $item( 9003 ) ) ) );
+$assert( ! is_wp_error( $partial ) && 2 === $partial['created'] && 1 === count( $partial['skipped'] ) && 2 === $partial['skipped'][0]['index'] && ! empty( $partial['skipped'][0]['full'] ), 'В заполняющуюся очередь встаёт сколько влезло, лишний ответ помечен как не поместившийся' );
+$full = VKT_Replies::enqueue( array( 'group_id' => 100, 'items' => array( $item( 9004 ) ) ) );
+$assert( is_wp_error( $full ) && 429 === $full->data['status'] && str_contains( $full->get_error_message(), 'заполнена' ), 'В заполненную очередь ответы не ставятся, причина названа' );
+VKT_Account::$batch = 300;
 
 echo "All $checks offline reply checks passed.\n";

@@ -22,7 +22,7 @@ function esc_url_raw( $url, $protocols = null ) { return preg_match( '~^https?:/
 function wp_http_validate_url( $url ) { $host = (string) parse_url( $url, PHP_URL_HOST ); return str_contains( $host, '.' ) && ! preg_match( '/^(127\.|10\.|192\.168\.)/', $host ) ? $url : false; }
 function wp_date( $format, $stamp ) { return gmdate( $format, $stamp ); }
 function home_url( $path = '' ) { return 'https://site.test' . $path; }
-function get_option( $key, $default = false ) { return $default; }
+function get_option( $key, $default = false ) { return $GLOBALS['vkt_options'][ $key ] ?? $default; }
 function wp_remote_retrieve_response_code( $response ) { return $response['code'] ?? 200; }
 function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_safe_remote_get( $url, $args = array() ) {
@@ -35,6 +35,7 @@ function wp_safe_remote_head( $url, $args = array() ) {
     return in_array( $url, $GLOBALS['vkt_alive'] ?? array(), true ) ? array( 'code' => 200, 'body' => '' ) : array( 'code' => 404, 'body' => '' );
 }
 function wp_remote_post( $url, $args ) {
+    $GLOBALS['vkt_post_url'] = $url;
     if ( str_ends_with( $url, '/v1/responses' ) ) {
         $GLOBALS['vkt_search_request'] = json_decode( $args['body'], true );
         return array( 'code' => $GLOBALS['vkt_search_code'] ?? 200, 'body' => json_encode( $GLOBALS['vkt_search_response'] ) );
@@ -42,7 +43,7 @@ function wp_remote_post( $url, $args ) {
     $GLOBALS['vkt_model_request'] = json_decode( $args['body'], true );
     return array( 'body' => json_encode( array( 'choices' => array( array( 'message' => array( 'content' => $GLOBALS['vkt_model_text'] ) ) ) ) ) );
 }
-class VKT_Tokens { public static function unseal( $value ) { return ''; } }
+class VKT_Tokens { public static function unseal( $value ) { return $value; } }
 class VKT_Account { public static function is_admin() { return true; } }
 class VKT_Store { public static $log = array(); public static function log( ...$entry ) { self::$log[] = $entry; } }
 
@@ -175,5 +176,24 @@ $GLOBALS['vkt_search_response'] = array( 'error' => array( 'message' => 'model n
 $GLOBALS['vkt_search_code'] = 404;
 $denied = VKT_News::search( $search_settings );
 $assert( is_wp_error( $denied ) && str_contains( $denied->get_error_message(), 'model not found' ) && str_contains( $denied->get_error_message(), '404' ), 'Отказ xAI показан дословно' );
+
+// Выбор поиска: кто ищет, задаётся в настройках новостей, а не моделью для текста.
+$GLOBALS['vkt_search_code'] = 403;
+$GLOBALS['vkt_search_response'] = 'This service is not available in your region.';
+$region = VKT_News::search( $search_settings );
+$assert( is_wp_error( $region ) && str_contains( $region->get_error_message(), '«Кто ищет»' ), 'Отказ по региону подсказывает, где сменить поиск' );
+$GLOBALS['vkt_options'][ VKT_AI::MODELS_OPTION ] = array( 'models' => array(
+    'qw' => array( 'title' => 'Qwen Plus', 'preset' => 'qwen', 'base' => 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'model' => 'qwen-plus', 'key' => 'QWEN_KEY' ),
+    'ds' => array( 'title' => 'DeepSeek', 'preset' => 'deepseek', 'base' => 'https://api.deepseek.com', 'model' => 'deepseek-chat', 'key' => 'DS_KEY' ),
+    'or' => array( 'title' => 'OR DeepSeek', 'preset' => 'openrouter', 'base' => 'https://openrouter.ai/api/v1', 'model' => 'deepseek/deepseek-chat', 'key' => 'OR_KEY' ),
+) );
+$assert( array( 'xai', 'qwen-qw', 'openrouter-or' ) === array_column( VKT_AI::search_providers(), 'id' ), 'Искать умеют xAI, Qwen и OpenRouter; прямой DeepSeek — нет' );
+$GLOBALS['vkt_model_text'] = $found_json;
+$by_qwen = VKT_News::search( VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'engine' => 'qwen-qw', 'topic' => 'Только НБА', 'sources' => array( 'https://www.kp.ru/', 'https://tass.ru' ) ), array() ) );
+$assert( ! is_wp_error( $by_qwen ) && str_starts_with( $GLOBALS['vkt_post_url'], 'https://dashscope-intl.aliyuncs.com/' ) && true === $GLOBALS['vkt_model_request']['enable_search'] && 'qwen-plus' === $GLOBALS['vkt_model_request']['model'], 'Выбранный Qwen ищет сам, xAI не трогается' );
+VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'openrouter-or', 'topic' => 'Т', 'sources' => array( 'https://tass.ru' ) ) ) );
+$assert( str_starts_with( $GLOBALS['vkt_post_url'], 'https://openrouter.ai/' ) && array( 'tass.ru' ) === $GLOBALS['vkt_model_request']['plugins'][0]['include_domains'], 'Выбранный OpenRouter ищет плагином web по названным сайтам' );
+VKT_News::search( VKT_News::settings( array( 'method' => 'search', 'engine' => 'gone-1', 'topic' => 'Т' ) ) );
+$assert( str_ends_with( $GLOBALS['vkt_post_url'], '/v1/responses' ) && '' === VKT_News::settings( array( 'engine' => 'Не ID!' ) )['engine'], 'Отключённый поиск заменяется первым доступным, мусор в настройке не хранится' );
 
 echo "PASS: $checks news checks\n";

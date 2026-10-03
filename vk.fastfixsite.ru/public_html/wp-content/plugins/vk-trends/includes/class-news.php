@@ -36,6 +36,8 @@ final class VKT_News {
         return array(
             'enabled' => ! empty( $data['enabled'] ),
             'method' => in_array( $data['method'] ?? '', self::METHODS, true ) ? $data['method'] : 'search',
+            // Кто ищет: ID из VKT_AI::search_providers(). Пусто или уже отключённый — первый доступный.
+            'engine' => is_string( $data['engine'] ?? null ) && preg_match( '/^[a-z0-9_-]{2,60}$/', $data['engine'] ) ? $data['engine'] : '',
             'sources' => array_slice( $sources, 0, self::MAX_SOURCES ),
             'topic' => (string) ( $data['topic'] ?? '' ),
             'count' => in_array( (int) ( $data['count'] ?? 0 ), self::COUNTS, true ) ? (int) $data['count'] : 10,
@@ -81,6 +83,7 @@ final class VKT_News {
         return self::settings( array(
             'enabled' => $enabled,
             'method' => $method,
+            'engine' => $data['engine'] ?? '',
             'sources' => array_values( $sources ),
             'topic' => $topic,
             'count' => $data['count'] ?? 0,
@@ -288,7 +291,7 @@ final class VKT_News {
         }
         $domains = array_values( array_unique( array_filter( $domains ) ) );
         // Фильтр по сайтам поиск принимает до пяти; больше — ищем везде, сайты остаются пожеланием.
-        $found = VKT_AI::search_news( $settings['topic'], min( 30, $settings['count'] * 2 ), $settings['days'], count( $domains ) <= 5 ? $domains : array(), $group_name );
+        $found = VKT_AI::search_news( $settings['topic'], min( 30, $settings['count'] * 2 ), $settings['days'], count( $domains ) <= 5 ? $domains : array(), $group_name, $settings['engine'] );
         if ( is_wp_error( $found ) ) {
             return $found;
         }

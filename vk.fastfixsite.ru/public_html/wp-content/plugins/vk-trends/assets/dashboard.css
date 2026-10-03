@@ -437,6 +437,8 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 /* Стенд генерации фото */
 .vkt-flux-result { margin: 0; border: 1px solid var(--vkt-line); border-radius: 11px; overflow: hidden; background: #fbfcfe; }
 .vkt-flux-result img { display: block; width: 100%; height: auto; }
+.vkt-flux-gallery.is-many { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 8px; }
+.vkt-flux-gallery.is-many img { border-radius: 7px; }
 .vkt-flux-result figcaption { padding: 12px 14px; font-size: 11px; color: var(--vkt-muted); line-height: 1.7; }
 .vkt-flux-index { display: inline-block; margin-right: 6px; padding: 2px 6px; border-radius: 5px; background: #e9f1ff; color: #437cea; font-size: 9px; font-style: normal; font-weight: 600; }
 /* Комментарии */

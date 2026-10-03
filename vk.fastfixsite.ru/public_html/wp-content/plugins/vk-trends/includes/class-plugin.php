@@ -89,7 +89,8 @@ final class VKT_Plugin {
 
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_start', 'flux_status', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
+    // Стенд фото открыт всем кабинетам в пределах суточного лимита; баланс кредитов BFL — дело хозяина ключа.
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -140,7 +141,7 @@ final class VKT_Plugin {
             'oauth' => VKT_OAuth::public_status(),
             'vkid' => $admin ? VKT_VKID::public_status() : array( 'configured' => VKT_VKID::configured() ),
             'ai' => VKT_AI::public_status(),
-            'flux' => $admin ? VKT_Flux::public_status() : array( 'configured' => false ),
+            'flux' => VKT_Flux::public_status(),
             // Чем можно рисовать картинки к записям — всем кабинетам, в пределах суточного лимита.
             'images' => VKT_Images::providers(),
             'shops' => VKT_Shops::options(),
@@ -618,7 +619,7 @@ final class VKT_Plugin {
             case 'flux_credits':
                 return VKT_Flux::credits();
             case 'flux_start':
-                return VKT_Flux::start( is_array( $data ) ? $data : array() );
+                return self::metered( 'media', static fn() => VKT_Flux::start( is_array( $data ) ? $data : array() ) );
             case 'flux_status':
                 return VKT_Flux::status( $data['id'] ?? '' );
             case 'publishing_group_toggle':

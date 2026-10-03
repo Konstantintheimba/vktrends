@@ -95,6 +95,11 @@ foreach ( array( 'api' => array( 'method' => 'users.get' ), 'collect' => array()
     $result = $act( $a, $action, $data );
     $ok( is_wp_error( $result ) && 403 === ( $result->get_error_data()['status'] ?? 0 ), "Действие $action участнику закрыто" );
 }
+// Стенд фото открыт всем кабинетам, баланс кредитов общего ключа — только администратору.
+$flux = $act( $a, 'flux_start', array( 'model' => 'flux-2-pro', 'prompt' => 'Каталожное фото товара' ) );
+$ok( ! is_wp_error( $flux ) || 403 !== ( $flux->get_error_data()['status'] ?? 0 ), 'Стенд фото участнику открыт: отказ, если он есть, не по правам' );
+$credits = $act( $a, 'flux_credits' );
+$ok( is_wp_error( $credits ) && 403 === ( $credits->get_error_data()['status'] ?? 0 ), 'Баланс кредитов BFL участнику закрыт' );
 $result = $act( $a, 'settings', array( 'paused' => false ) );
 $ok( is_wp_error( $result ) && 403 === $result->get_error_data()['status'], 'Общие настройки сбора участник не меняет' );
 $result = $act( $a, 'settings', array( 'community_id' => 222, 'publishing_review' => false ) );
@@ -257,14 +262,14 @@ $ok( true === VKT_Account::ai_allow( 'text' ) && null === VKT_AI::public_status(
 
 // ——— Личные лимиты: администратор задаёт их каждому кабинету ———
 $ok( is_wp_error( $act( $a, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 999 ) ) ) ), 'Сам себе лимит участник не поднимет' );
-$ok( is_wp_error( $act( $admin, 'user_limits', array( 'id' => $admin, 'limits' => array( 'text' => 5 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => -1 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'replies_batch' => 500 ) ) ) ), 'Администратору лимит не ставится, значения вне пределов отклоняются' );
-$raised = $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 7, 'media' => '', 'replies_batch' => 3, 'sources' => '' ) ) );
+$ok( is_wp_error( $act( $admin, 'user_limits', array( 'id' => $admin, 'limits' => array( 'text' => 5 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => -1 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'replies_queue' => 5000 ) ) ) ), 'Администратору лимит не ставится, значения вне пределов отклоняются' );
+$raised = $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 7, 'media' => '', 'replies_queue' => 3, 'sources' => '' ) ) );
 $ok( ! is_wp_error( $raised ) && 7 === $raised['limits']['text']['limit'] && 7 === $raised['limits']['text']['own'] && null === $raised['limits']['media']['own'] && 1 === $raised['limits']['media']['limit'] && 2 === $raised['limits']['sources']['limit'], 'Личный лимит действует там, где задан; пустое поле оставляет общий' );
 wp_set_current_user( $a );
 $quota = VKT_AI::public_status()['quota'];
-$ok( 7 === $quota['text']['limit'] && $quota['text']['left'] > 0 && true === VKT_Account::ai_allow( 'text' ) && 3 === VKT_Account::limit( 'replies_batch' ), 'Поднятый лимит текстов сразу открывает генерацию; пачка ответов — по личному лимиту' );
+$ok( 7 === $quota['text']['limit'] && $quota['text']['left'] > 0 && true === VKT_Account::ai_allow( 'text' ) && 3 === VKT_Account::limit( 'replies_queue' ), 'Поднятый лимит текстов сразу открывает генерацию; очередь ответов — по личному лимиту' );
 wp_set_current_user( $b );
-$ok( 2 === VKT_AI::public_status()['quota']['text']['limit'] && 50 === VKT_Account::limit( 'replies_batch' ), 'У соседнего кабинета остались общие лимиты' );
+$ok( 2 === VKT_AI::public_status()['quota']['text']['limit'] && 300 === VKT_Account::limit( 'replies_queue' ), 'У соседнего кабинета остались общие лимиты' );
 wp_set_current_user( $admin );
 $listed = array_column( VKT_Account::members(), null, 'id' );
 $ok( 7 === $listed[ $a ]['limits']['text']['own'] && null === $listed[ $b ]['limits']['text']['own'] && is_int( $listed[ $a ]['limits']['text']['used'] ), 'В «Пользователях» видны личные лимиты и расход за сегодня' );

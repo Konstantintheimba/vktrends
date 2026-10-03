@@ -15,8 +15,12 @@ defined( 'ABSPATH' ) || exit;
  */
 final class VKT_Replies {
     const MAX_ATTEMPTS = 4;
-    // Сколько ответов кабинет ставит в очередь за раз по умолчанию; свой предел администратор задаёт в «Пользователях».
+    // Большой выбор комментариев интерфейс режет на пачки: отдельно для генерации и для постановки в очередь.
+    // Упала одна пачка — остальные уже сделаны или будут повторены, а не потеряны все разом.
+    const GENERATE_CHUNK = 20;
+    const QUEUE_CHUNK = 25;
     const MAX_BATCH = 50;
+    // Потолок одного запроса; сколько всего может ждать в очереди кабинета — лимит replies_queue в «Пользователях».
     const BATCH_CEILING = 100;
     // VK ограничил частоту (флуд, капча): на сколько очередь группы встаёт в первый раз. Дальше пауза удваивается.
     const HOLD = 30 * MINUTE_IN_SECONDS;
@@ -380,7 +384,9 @@ final class VKT_Replies {
                 'reading' => '' !== VKT_API::mode(),
                 'ai' => VKT_AI::public_status(),
                 'min_gap' => self::MIN_GAP,
-                'max_batch' => VKT_Account::limit( 'replies_batch' ),
+                'generate_chunk' => self::GENERATE_CHUNK,
+                'queue_chunk' => self::QUEUE_CHUNK,
+                'max_queue' => VKT_Account::limit( 'replies_queue' ),
                 // Планировщик сайта жив, если очередь разбиралась в последние минуты: иначе её двигает открытая вкладка.
                 'cron_stale' => ! $last_run || strtotime( $last_run . ' UTC' ) < time() - 5 * MINUTE_IN_SECONDS,
                 'max_length' => self::MAX_LENGTH,
@@ -584,10 +590,18 @@ final class VKT_Replies {
         if ( ! $items ) {
             return self::error( 'Не выбрано ни одного комментария.' );
         }
-        $batch = VKT_Account::limit( 'replies_batch' );
-        if ( count( $items ) > $batch ) {
-            return self::error( 'За один раз можно поставить не больше ' . $batch . ' ответов — это лимит вашего кабинета. Поставьте остальные следующей пачкой или попросите администратора поднять лимит.' );
+        if ( count( $items ) > self::BATCH_CEILING ) {
+            return self::error( 'В одном запросе не больше ' . self::BATCH_CEILING . ' ответов.' );
         }
+        // Лимит кабинета — сколько ответов ждёт одновременно. Что не поместилось, возвращаем как пропущенное: оно останется выбранным.
+        $limit = VKT_Account::limit( 'replies_queue' );
+        $waiting = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'comment_replies' ) . " WHERE user_id=%d AND status IN ('pending','sending')", VKT_Account::id() ) );
+        $free = max( 0, $limit - $waiting );
+        if ( ! $free ) {
+            return self::error( 'Очередь ответов кабинета заполнена: ждут отправки ' . $waiting . ' из ' . $limit . '. Дождитесь, пока часть уйдёт, или попросите администратора поднять лимит в «Пользователях».', 429 );
+        }
+        $overflow = array_slice( $items, $free, null, true );
+        $items = array_slice( $items, 0, $free, true );
         $interval = max( 0, min( self::MAX_INTERVAL, absint( $data['interval'] ?? 0 ) ) ) * MINUTE_IN_SECONDS;
         $jitter = ! empty( $data['jitter'] );
         $table = VKT_Store::table( 'comment_replies' );
@@ -608,6 +622,9 @@ final class VKT_Replies {
         $now = gmdate( 'Y-m-d H:i:s' );
         $created = array();
         $skipped = array();
+        foreach ( array_keys( $overflow ) as $index ) {
+            $skipped[] = array( 'index' => (int) $index, 'error' => 'Очередь кабинета заполнена: лимит ' . $limit . ' ожидающих ответов.', 'full' => true );
+        }
         $at = $start;
         foreach ( $items as $index => $item ) {
             $post_id = absint( is_array( $item ) ? ( $item['post_id'] ?? 0 ) : 0 );

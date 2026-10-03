@@ -4,7 +4,7 @@ const vm = require('vm');
 const assert = require('assert');
 const listeners = {};
 const requests = [];
-const element = {innerHTML: '', textContent: '', classList: {toggle() {}}, setAttribute() {}, querySelector() { return null; }};
+const element = {innerHTML: '', textContent: '', open: false, classList: {toggle() {}}, setAttribute() {}, querySelector() { return null; }, showModal() { this.open = true; }, close() { this.open = false; }};
 const root = {querySelector: () => element, querySelectorAll: () => [], addEventListener: (name, handler) => { listeners[name] = handler; }};
 const communities = [{id: 1, kind: 'domain', value: 'first', title: 'Первое'}, {id: 2, kind: 'owner', value: '-2', title: 'Второе <script>alert(1)</script>'}];
 const state = {sources: communities, stats: {videos: 0, posts: 0}, settings: {has_token: false, paused: false}};
@@ -17,8 +17,15 @@ const context = {
     window: {localStorage, vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/', account: {id: 1, name: 'Админ', is_admin: true, status: 'active'}}, addEventListener() {}},
     document: {getElementById: () => root}, location: {hash: '#posts'}, URL, URLSearchParams, Intl, Date,
     setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { if (form) return Object.entries(form.values); this.append = () => {}; },
-    fetch: async url => {
+    fetch: async (url, options = {}) => {
         requests.push(new URL(url));
+        // Проверки пачек подменяют ответ сервера на конкретное действие.
+        let sent = null;
+        try { sent = typeof options.body === 'string' ? JSON.parse(options.body) : null; } catch {}
+        if (sent && context.actionHook) { const hooked = context.actionHook(sent); if (hooked) return hooked; }
+        // Состояние вкладки «Комментарии» перечитывается после каждой пачки — отдаём то же, что на экране.
+        if (context.commentsState && /\/comments(\?|$)/.test(String(url))) return {ok: true, json: async () => context.commentsState};
+        if (sent && sent.action === 'comments_inbox' && context.commentsFeed) return {ok: true, json: async () => context.commentsFeed};
         if (String(url).includes('media-upload')) return {ok: true, json: async () => uploaded};
         return {ok: true, json: async () => String(url).includes('/state?') ? state : data};
     },
@@ -28,7 +35,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, commentsGenerate, commentsQueue, replyDrafts: () => commentsDrafts, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 // Черновики с прошлого захода подняты ещё до загрузки данных.
@@ -117,6 +124,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
         status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: true, media_configured: true, models: [{id: 'xai', title: 'xAI Grok', model: 'grok-4.6'}, {id: 'deepseek-1', title: 'DeepSeek <b>', model: 'deepseek-chat'}], default_model: 'xai', text_model: 'grok-4.6', image_model: 'grok-imagine-image-2.0', video_model: 'grok-imagine-video-1.5', image_ratios: ['portrait'], video_ratios: ['story']}, next: 0, last: null},
     });
     state.settings.publishing_review = false;
+    state.settings.images = [{id: 'xai', title: 'xAI · grok-imagine-image-2.0'}];
     const view = api.publishing();
     check(view.includes('id="vkt-composer-media"') && view.includes('data-media-upload'), 'Конструктор показывает файлы и загрузку с компьютера');
     check(view.includes('data-command="ai-text"') && view.includes('data-command="ai-image"') && view.includes('data-command="ai-video"'), 'Кнопки генерации доступны при настроенном ключе');
@@ -136,8 +144,14 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(!communityOnly.includes('data-media-upload') && !communityOnly.includes('data-command="ai-image"'), 'Без пользовательского токена кнопки файлов и картинок не показываются');
     check(communityOnly.includes('ошибкой 27') && communityOnly.includes('кодом 100'), 'Причина запрета названа конкретными кодами VK');
     api.setPublishing({groups: [], posts: [], status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: false}}});
+    // Картинку рисует любая модель реестра, видео — только xAI.
+    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Моя группа', screen_name: 'my_group', enabled: 1, can_post: 1, photo: ''}], posts: [], status: {token_ready: true, community_only: false, media_native: true, media_limit: 10, ai: {configured: false}}});
+    state.settings.images = [{id: 'bfl:flux-2-max', title: 'BFL · FLUX.2 [max]'}];
+    const fluxOnly = api.publishing();
+    check(fluxOnly.includes('data-command="ai-image"') && !fluxOnly.includes('data-command="ai-video"'), 'С одним FLUX картинка доступна, видео — нет');
+    state.settings.images = [];
     const plain = api.publishing();
-    check(!plain.includes('data-command="ai-image"'), 'Без ключа xAI кнопки генерации скрыты');
+    check(!plain.includes('data-command="ai-image"'), 'Без моделей для картинок кнопка генерации скрыта');
     // Регрессия: при заданной константе VKT_ACCESS_TOKEN ID приложения всё равно
     // должен сохраняться — иначе подключение VK ID не начать в принципе.
     Object.assign(state.settings, {
@@ -264,13 +278,13 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(api.initial() === 'users', 'Администратор открывает раздел «Пользователи»');
     api.setUsers([
         {id: 7, name: 'Иван <b>', avatar: '', vk_id: 38975563, status: 'pending', registered: '2026-09-18 10:00:00', last_login: '', sources: 0, groups: 0, posts: 0},
-        {id: 8, name: 'Мария', avatar: 'https://sun.userapi.com/a.jpg', vk_id: 1, status: 'active', registered: '2026-09-17 10:00:00', last_login: '2026-09-18 09:00:00', sources: 12, groups: 2, posts: 5, limits: {text: {own: 200, limit: 200, used: 31}, media: {own: null, limit: 5, used: 2}, replies_batch: {own: null, limit: 50, used: null}, sources: {own: null, limit: 100, used: null}}},
+        {id: 8, name: 'Мария', avatar: 'https://sun.userapi.com/a.jpg', vk_id: 1, status: 'active', registered: '2026-09-17 10:00:00', last_login: '2026-09-18 09:00:00', sources: 12, groups: 2, posts: 5, limits: {text: {own: 200, limit: 200, used: 31}, media: {own: null, limit: 5, used: 2}, replies_queue: {own: null, limit: 300, used: null}, sources: {own: null, limit: 100, used: null}}},
     ]);
     const usersView = api.users();
     check(usersView.includes('Иван &lt;b&gt;') && !usersView.includes('Иван <b>'), 'Имя из VK экранируется');
     check(usersView.includes('data-status="active"') && usersView.includes('Одобрить') && usersView.includes('Заблокировать'), 'Заявку можно одобрить, активного — заблокировать');
     check(usersView.includes('vk.com/id38975563') && usersView.includes('name="member_sources"'), 'Ссылка на профиль VK и форма лимитов на месте');
-    check(usersView.includes('data-command="user-limits" data-id="8"') && usersView.includes('<span class="vkt-limit-own">тексты 31/200</span>') && usersView.includes('<span class="">картинки 2/5</span>') && usersView.includes('ответов за раз 50'), 'У каждого кабинета видны лимиты и расход за сегодня, личный лимит выделен');
+    check(usersView.includes('data-command="user-limits" data-id="8"') && usersView.includes('<span class="vkt-limit-own">тексты 31/200</span>') && usersView.includes('<span class="">картинки 2/5</span>') && usersView.includes('ответов в очереди 300'), 'У каждого кабинета видны лимиты и расход за сегодня, личный лимит выделен');
     context.location.hash = '#posts';
 
     // Стенд генерации фото: только администратору, ключ и ответы сервиса на виду.
@@ -285,7 +299,13 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     context.location.hash = '#flux';
     check(api.initial() === 'flux', 'Администратор открывает стенд');
     api.setAccount({id: 7, name: 'Участник', is_admin: false, status: 'active'});
-    check(api.initial() === 'overview', 'Участнику стенд не открывается');
+    check(api.initial() === 'flux', 'Участник тоже открывает стенд');
+    state.settings.flux = {configured: true, max_references: 4, max_tolerance: 5, models: {'flux-2-pro': {title: 'FLUX.2 [pro]', hint: 'правки и генерация'}}};
+    const memberFlux = api.flux();
+    check(memberFlux.includes('data-form="flux"') && !memberFlux.includes('bfl_5mIgtpGqM…seVu') && !memberFlux.includes('data-command="flux-credits"'), 'Участнику стенд без ключа сайта и баланса кредитов');
+    check(memberFlux.includes('name="count"') && memberFlux.includes('<option value="10">10</option>') && !memberFlux.includes('<option value="11">'), 'Вариантов за запрос — от 1 до 10');
+    state.settings.flux = {configured: false};
+    check(api.flux().includes('сохраняет администратор'), 'Без ключа участнику сказано, кто подключает');
     api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
     context.location.hash = '#posts';
 
@@ -413,7 +433,12 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(html.includes('Обмен &lt;игроков&gt;') && html.includes('Текст &lt;i&gt;') && html.includes('data-command="group-news-series"') && html.includes('data-command="group-news-drop" data-index="1"') && html.includes('Уже использовано: 7') && html.includes('data-command="group-news-reset"'), 'Собранные записи экранированы, их можно убрать или разложить в серию');
     api.setNews({method: 'search'}, null, null);
     html = api.groups();
-    check(html.includes('Ищет xAI Grok · web_search') && html.includes('Какие новости искать') && html.includes('Сайты, где искать в первую очередь') && !html.includes('data-command="group-news-check"') && html.includes('data-command="group-news-collect"'), 'Поиск в интернете: видно, кто ищет, сайты необязательны, проверки лент нет');
+    check(html.includes('data-news="engine"') && html.includes('<option value="xai" selected>xAI Grok · web_search</option>') && html.includes('Другого поиска пока нет') && html.includes('Какие новости искать') && html.includes('Сайты, где искать в первую очередь') && !html.includes('data-command="group-news-check"') && html.includes('data-command="group-news-collect"'), 'Поиск в интернете: видно, кто ищет, сайты необязательны, проверки лент нет');
+    // Сохранённый выбор поиска показан в списке; модель для текста на него не влияет.
+    groupWith({materials: [], library: [], news: {enabled: true, method: 'search', engine: 'qwen-qw', search: [{id: 'xai', title: 'xAI Grok · web_search'}, {id: 'qwen-qw', title: 'Qwen <Plus> · поиск Qwen'}], sources: [], topic: 'НБА', count: 10, days: 1, mode: 'posts', used: 0}});
+    api.setNews(null, null, null);
+    html = api.groups();
+    check(html.includes('<option value="qwen-qw" selected>Qwen &lt;Plus&gt; · поиск Qwen</option>') && html.includes('<option value="xai" >xAI Grok · web_search</option>') && !html.includes('Другого поиска пока нет'), 'Кто ищет — выбирается из подключённых, сохранённый выбор отмечен');
     groupWith({materials: [], library: [], news: {enabled: true, method: 'search', search: [], sources: [], topic: 'НБА', count: 10, days: 1, mode: 'posts', used: 0}});
     check(api.groups().includes('Искать в интернете пока нечем'), 'Без модели с поиском блок объясняет, что подключить');
     groupWith({materials: [], library: [], news: {enabled: true, method: 'rss', search: [], sources: ['https://a.test/rss'], topic: '', count: 10, days: 1, mode: 'posts', used: 0}});
@@ -442,5 +467,47 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(html.includes('<img class="vkt-comment-media is-sticker" src="https://vk.test/s.png" alt="Стикер"') && html.includes('Аудио: Группа — &lt;Песня&gt;') && html.includes('data-comments-pick="5_62"'), 'Стикер показан картинкой, аудио — подписью; комментарий без текста можно выбрать');
     check(html.includes('data-comments-pick="5_63"') && html.includes('нажмите «Загрузить из VK»'), 'Старый комментарий без сохранённого вложения подсказывает перезагрузить ленту');
     check(html.includes('Планировщик сайта не разбирал очередь'), 'Если планировщик стоит, а в очереди есть ответы, вкладка объясняет, почему они идут только при ней');
+    // Большой выбор идёт пачками: сбой одной не отменяет остальные.
+    const many = Array.from({length: 45}, (_, index) => ({id: 100 + index, post_id: 5, post_text: 'Пост', from_id: 500 + index, author: `Автор ${index}`, text: `Вопрос ${index}`, answered: false, queued: '', thread: []}));
+    context.commentsState = {groups: [{group_id: 100, name: 'Своя', sender: 'community', callback_ready: 1}], queue: [], status: {reading: true, ai: {configured: true}, generate_chunk: 20, queue_chunk: 25, max_queue: 300}};
+    context.commentsFeed = {total: 45, comments: many};
+    api.setFeed(context.commentsState, context.commentsFeed);
+    api.selected().clear(); api.replyDrafts().clear();
+    const keys = many.map(item => `5_${item.id}`);
+    keys.forEach(key => api.pick(key));
+    const calls = [];
+    const fail = (status, message) => ({ok: false, status, json: async () => ({message, data: {status}})});
+    context.actionHook = sent => {
+        if (sent.action !== 'comments_generate') return null;
+        calls.push(sent.items.length);
+        // Вторая пачка падает: модель недоступна.
+        if (calls.length === 2) return fail(502, 'Модель не ответила.');
+        return {ok: true, json: async () => ({replies: sent.items.map((item, index) => ({index, text: `Ответ на ${item.comment}`}))})};
+    };
+    let made = await api.commentsGenerate(keys);
+    check(JSON.stringify(calls) === '[20,20,5]' && made.filled === 25 && made.failed === 20 && !made.stopped && made.error === 'Модель не ответила.', 'Генерация идёт пачками по 20: упавшая пачка не отменяет остальные');
+    check(api.replyDrafts().get('5_100') === 'Ответ на Вопрос 0' && !api.replyDrafts().has('5_120') && api.replyDrafts().get('5_144') === 'Ответ на Вопрос 44', 'Черновики ложатся к своим комментариям и после сбоя соседней пачки');
+    calls.length = 0;
+    context.actionHook = sent => { if (sent.action !== 'comments_generate') return null; calls.push(sent.items.length); return fail(429, 'Лимит генерации текстов на сегодня исчерпан.'); };
+    made = await api.commentsGenerate(keys);
+    check(calls.length === 1 && made.stopped && made.filled === 0, 'После исчерпанного лимита следующие пачки не отправляются');
+    // Очередь: 45 ответов — две пачки; вторая не прошла, первая осталась в очереди, остальное выбрано.
+    keys.forEach((key, index) => api.replyDrafts().set(key, `Текст ${index}`));
+    const queued = [];
+    context.actionHook = sent => {
+        if (sent.action !== 'comments_queue') return null;
+        queued.push(sent.items.length);
+        if (queued.length === 2) return fail(502, 'VK недоступен.');
+        return {ok: true, json: async () => ({created: sent.items.length, skipped: [], first_at: '2026-10-03 10:00:00', last_at: '2026-10-03 11:00:00'})};
+    };
+    await api.commentsQueue();
+    check(JSON.stringify(queued) === '[25,20]' && api.selected().size === 20 && api.selected().has('5_125') && !api.selected().has('5_124') && api.replyDrafts().get('5_125') === 'Текст 25', 'В очередь — пачками по 25: не прошедшая пачка остаётся выбранной вместе с текстами');
+    // Очередь кабинета заполнена: сервер взял часть пачки, остальное ждёт.
+    queued.length = 0;
+    context.actionHook = sent => sent.action === 'comments_queue' ? (queued.push(sent.items.length), {ok: true, json: async () => ({created: 5, first_at: '2026-10-03 10:00:00', last_at: '2026-10-03 10:10:00', skipped: sent.items.slice(5).map((item, index) => ({index: index + 5, error: 'Очередь кабинета заполнена: лимит 300 ожидающих ответов.', full: true}))})}) : null;
+    await api.commentsQueue();
+    check(queued.length === 1 && api.selected().size === 15 && !api.selected().has('5_129') && api.selected().has('5_130'), 'Заполненная очередь кабинета: что влезло — поставлено, остальное осталось выбранным');
+    context.actionHook = null; context.commentsState = null; context.commentsFeed = null;
+    api.selected().clear(); api.replyDrafts().clear();
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});
