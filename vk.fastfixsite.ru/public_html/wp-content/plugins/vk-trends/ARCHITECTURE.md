@@ -1,6 +1,6 @@
 # VK Trends — техническая документация
 
-Версия: **0.33.0**. Плагин WordPress для наблюдения за постами/видео сообществ VK, личных кабинетов, автопостинга и генерации картинок. Требования: WP 6.6+, PHP 8.0+, MySQL/MariaDB (InnoDB), OpenSSL, исходящий HTTPS к `api.vk.com`, `id.vk.ru`, `oauth.vk.com`, `api.bfl.ai`.
+Версия: **0.34.5**. Плагин WordPress для наблюдения за постами/видео сообществ VK, личных кабинетов, автопостинга и генерации картинок. Требования: WP 6.6+, PHP 8.0+, MySQL/MariaDB (InnoDB), OpenSSL, исходящий HTTPS к `api.vk.com`, `id.vk.ru`, `oauth.vk.com`, `api.bfl.ai`, `www.bing.com` (поиск новостей) и к сайтам статей.
 
 > Это справочник по **коду**, а не по функциональности. Что умеет плагин по версиям — в `README.md`. Здесь — как он устроен внутри и куда смотреть при правке.
 
@@ -79,7 +79,8 @@
   - `group_id()`, `token()`, `configured()`, `keys()`, `has_key($group_id)`, `add_key()`, `forget_key()`;
   - `check()` — проверка ключа (`groups.getTokenPermissions`);
   - `publish($params)` / `comment($params)` — запись/комментарий ключом сообщества;
-  - `callback()` / `process($raw)` — приём событий Callback API (проверка `secret`, `confirmation`).
+  - `callback()` / `process($raw)` — приём событий Callback API (проверка `secret`, `confirmation`);
+  - `callback_url()` — адрес для VK: REST-маршрут `wp-json/vk-trends/v1/callback`. Прежний `wp-admin/admin-post.php?action=vkt_callback` тоже принимается, но VK до него не доходит (см. раздел 10, хостинг). Автоподключение (`groups.addCallbackServer` / `editCallbackServer`) перенастраивает сервер со старым адресом, а не заводит второй.
 
 - **`VKT_Login`** (`class-login.php`) — вход участника через VK ID (PKCE, подписанная HttpOnly-cookie `vkt_login`, 15 мин). `boot()`, `start()`, `maybe_capture()`, `finish()`.
 
@@ -121,21 +122,28 @@
 ### Группы, генерация, материалы
 
 - **`VKT_Groups`** (`class-groups.php`) — «Мои сообщества».
-  - `group()`, `by_vk()`, `sync_tracking()`, `digest()`, `refresh_stats()`, `context($group,$with_history,$purpose)` (сборка контекста для модели), `save_passport()`, `save_material()`, `save_news()`, `collect_news()`.
+  - `group()`, `by_vk()`, `sync_tracking()`, `digest()`, `refresh_stats()`, `context($group,$with_history,$purpose)` (сборка контекста для модели), `save_passport()`, `save_material()`, `save_news()`, `collect_news($id,$model)`, `rewrite_news($id,$link,$model)` (полный пост по тексту одной статьи).
 
 - **`VKT_AI`** (`class-ai.php`, ~810 стр.) — генерация текста/картинок/видео + поиск.
-  - `chat()`, `generate_text()`, `generate_series()`, `generate_replies()`, `generate_shop_post()`, `generate_news()`, `draft_passport()`;
-  - `search()` / `search_news()` — интернет-поиск (xAI `web_search`, OpenRouter `web`);
+  - `chat()`, `generate_text()`, `generate_series()`, `generate_replies()`, `generate_shop_post()`, `generate_news()` (отбор новостей и короткий текст по анонсу), `rewrite_article()` (рерайт статьи целиком, одна статья — один запрос), `draft_passport()`;
+  - поиск: реестр `search_registry()` → `search_providers()` (для интерфейса), `search_kind($id)`. Виды: `feed` — поиск плагина, первый и по умолчанию; `xai` — `web_search` в `/v1/responses`; `openrouter` — плагин `web`; `qwen` — `enable_search`. Список пресетов с собственным поиском — `SEARCH_PRESETS`;
+  - `search()` / `search_news()` — поиск моделью (все виды, кроме `feed`); `search_queries($topic,$group,$model)` — запросы для поиска плагина, их составляет модель для текста;
   - `generate_image()`, `start_video()`, `video_status()`;
   - реестр моделей `vkt_text_models` (`save_model`, `set_default_model`, `check_model`).
 
-- **`VKT_Flux`** (`class-flux.php`) — BFL (Black Forest Labs) генерация фото. `start()`, `status()`, `credits()`, `probe()`, `moderation()`.
+- **`VKT_Flux`** (`class-flux.php`) — BFL (Black Forest Labs) генерация фото, раздел «Генерация фото». `start()`, `status()`, `credits()`, `probe()`, `moderation()`. Раздел открыт всем кабинетам: `flux_start` идёт через суточный лимит картинок (`VKT_Plugin::metered('media')`), задача и файлы-образцы привязаны к автору; ключ и `credits()` — только администратору.
 
-- **`VKT_Images`** (`class-images.php`) — реестр поставщиков картинок. `providers()`, `start($id,$prompt,$ratio)`, `status($id)`.
+- **`VKT_Images`** (`class-images.php`) — реестр поставщиков картинок. `providers()`, `start($id,$prompt,$ratio)`, `status($id)`. Им пользуются окно «Картинка» в «Автопостинге», «Фото к записям» серии и окно записи; новый поставщик — одна запись в `registry()`.
 
 - **`VKT_Materials`** (`class-materials.php`) — база ведения группы (`materials/*.md`). `library()`, `normalize()`, `pack()`, `upsert()`, `prompt($list,$purpose)`.
 
-- **`VKT_News`** (`class-news.php`) — новостная группа (RSS/поиск). `settings()`, `discover()`, `parse()`, `collect()`, `search()`, `compose()`.
+- **`VKT_News`** (`class-news.php`) — новостная группа (RSS/поиск).
+  - настройки: `settings()`, `clean()`; поле `engine` — кто ищет (ID из `VKT_AI::search_providers()`, пусто — первый доступный);
+  - RSS: `discover()`, `parse()`, `collect()`;
+  - поиск: `search($settings,$group,$model)` — выбирает путь по `VKT_AI::search_kind()`; если поиск моделью вернул ошибку, подстраховывает `search_feed()`;
+  - `search_feed()` — поиск плагина: запросы от `VKT_AI::search_queries()`, новостная выдача Bing в RSS (`bing.com/news/search?format=rss`), сайты группы через `site:` (по запросу на сайт), не больше `FEED_REQUESTS` обращений; адрес статьи достаётся из параметра `url` ссылки-счётчика;
+  - `article($link)` — текст статьи со страницы (абзацы из `<article>`, до `ARTICLE_MAX`); `photos($link)` — снимки статьи (`og:image`, `twitter:image`, `<img>` внутри `<article>`, до `MAX_PHOTOS`, только https); `photo_save($url)` — в медиатеку через `VKT_Media::sideload()`;
+  - `compose()` — ответ модели в записи, строку «Источник: …» приписывает плагин.
 
 - **`VKT_Shops`** (`class-shops.php`) — методика VK Shops («Товарный пост»). `brief($data)`, `options()`.
 
@@ -186,6 +194,8 @@
 
 Фронтенд (`assets/dashboard.js`, ~2900 строк) общается с сервером двумя путями:
 
+**REST POST `/callback`** — приём Callback API VK, без nonce и пользователя (`permission_callback` — `__return_true`, событие проверяется секретом группы в `VKT_Community::process()`); ответ — текст, не JSON.
+
 **REST GET** (`VKT_Plugin::routes()`, namespace `vk-trends/v1`): `/state`, `/posts`, `/communities`, `/publishing`, `/groups`, `/comments`, `/media`, `/media-upload` (POST multipart), `/post-history/{id}`, `/history/{id}`, `/users` (только админ). Доступ — `VKT_Account::can_use()` + nonce `X-WP-Nonce`.
 
 **REST POST `/action`** → `VKT_Plugin::action()`. Это **единый switch** на ~70 действий. Список действий и их обработчиков — прямо в `class-plugin.php:316-754`. Ключевые группы:
@@ -194,8 +204,9 @@
 - сбор: `collect`, `retry`, `source`, `sources_import`, `source_toggle`, `search`, `save_video`;
 - публикация: `publishing_sync`, `publishing_create`, `publishing_run`, `publishing_approve/retry/cancel`, `publishing_update/get`, `series_generate/queue/cancel`;
 - комментарии: `comments_inbox`, `comments_scan`, `comments_generate`, `comments_reply`, `comments_queue`, `comments_run/cancel/retry`, `comments_posts`, `comments_thread`;
-- группы: `group_detail`, `group_hide`, `group_passport`, `group_passport_draft`, `group_material_save/delete`, `group_news_*`, `group_stats`;
-- генерация: `ai_text`, `ai_image`, `ai_video_start/status`, `image_start/status`, `shop_post`, `flux_start/status/credits`;
+- группы: `group_detail`, `group_hide`, `group_passport`, `group_passport_draft`, `group_material_save/delete`, `group_stats`;
+- новости группы: `group_news_save/check/reset/collect`, `group_news_rewrite` (полный пост по статье, один текст лимита), `group_news_photos` (снимки статьи), `group_news_photo_save` (снимок в медиатеку);
+- генерация: `ai_text`, `ai_image` (прежний прямой путь в xAI, интерфейс им больше не пользуется), `ai_video_start/status`, `image_start/status`, `shop_post`, `flux_start/status` (все кабинеты, через лимит), `flux_credits` (админ);
 - админ: `user_status`, `user_limits`, `ai_model_*`, `vkid_start`;
 - прочее: `product`, `link`, `enqueue`, `delete`, `resolve_link`.
 
@@ -219,7 +230,7 @@
 
 ## 7. Cron и очереди
 
-- WP-cron крутится **только при заходах на сайт** — на боевом хостинге нужен системный cron раз в минуту на `wp-cron.php` (см. README, раздел «Расписание на хостинге»).
+- WP-cron крутится **только при заходах на сайт** — на боевом хостинге нужен системный cron раз в минуту на `wp-cron.php` (см. README, раздел «Расписание на хостинге»). На vk.fastfixsite.ru задача стоит в планировщике Beget с 03.10.2026: `wget -q -O /dev/null "https://vk.fastfixsite.ru/wp-cron.php?doing_wp_cron"`, расписание `* * * * *`. Своего «будильника» в плагине нет.
 - У cron нет пользователя → очередь публикаций выполняет каждое задание через `VKT_Account::act_as(автор)`, сборщик — от имени хозяина. **Это центральная идея личных кабинетов**: любой фоновый код, читающий личные ключи, обязан обернуться в `act_as()`.
 - Темп запросов к VK — блокировка `vkt_lock_api` (1 запрос/сек). Сборщик — `vkt_lock_collector` (120 сек). Обновление токена — `vkt_lock_token_refresh_<id>`.
 - Очередь ответов на комментарии: не больше одного ответа в одну группу за проход + пауза по группе; при флуд-контроле VK (коды 6/9/14/29) пачка сдвигается на 30 мин → час → два → четыре без списания попыток (`VKT_Replies::hold()`).
@@ -237,6 +248,19 @@
 7. Комментарии и интерфейс — **на русском**, комментарий объясняет *почему*, а не пересказывает код.
 
 Константы для хозяина сайта добавляются в `wp-config.php` (`VKT_*`) и читаются через `VKT_Tokens::constant_value()`.
+
+---
+
+## 8а. Фронтенд: что появилось в 0.34
+
+Всё в `assets/dashboard.js`, отдельных модулей нет.
+
+- **Варианты картинок.** `drawVariants(count, one, report)` — до `IMAGE_VARIANTS` (10) задач в два потока; останавливается после исчерпанного лимита или кредитов. Им пользуются окно «Картинка» (`aiDialog('image')`, обработчик формы `ai-image`) и стенд (`flux`). Варианты стенда связаны полем `batch` в `fluxRuns`.
+- **Собранные новости.** Состояние — `groupNewsResult` (`posts[]`: `text`, `link`, `links`, `photos[]`, `rewritten`; `note`), переживает перезагрузку через `persistDrafts()`. После сбора параллельно идут `newsFindAllPhotos()` и `newsRewriteAll()`; обещание рерайта лежит в `newsWork`, его дожидаются «Разложить все по сетке серии» и «Опубликовать сейчас». `newsPostMedia(post)` скачивает отмеченные фото в медиатеку.
+- **Слот серии из новости** помнит `link` и `rewritten`. `sourceLink(target)` берёт адрес статьи из слота или из строки «Источник: …» текста — так блок «Статья-источник» (`sourceBox`, `seriesSourceAction`) работает и у записей из очереди. `seriesSourceFill()` — «Дополнить из статей» для всех слотов разом.
+- **Окно записи серии** (`seriesSlotDialog`, `seriesPostDialog`): перед любой перерисовкой — `captureSeriesDialog()`, иначе набранное пропадёт; цель правки — `seriesDialogTarget()`, перерисовка — `reopenSeriesDialog()`. Кнопка «Рерайт текста» — `seriesDialogRewrite()` (действие `ai_text` с текущим текстом и жёсткой задачей рерайта).
+- **Перетаскивание.** Слушатели `dragstart` / `dragover` / `drop` / `dragend` на корне, состояние — переменная `dragged`. Фото в окне записи: чипы из `sortableChips()` с `data-sort-media`, порядок массива `media` и есть порядок вложений в VK. Сетка: карточки с `data-drag-slot` / `data-drag-post` бросаются на ячейку дня `data-day`; слот меняет `at`, запись из очереди — `publishing_update` с одним `scheduled_at`. Только мышь: на сенсорных экранах HTML5-перетаскивание не работает.
+- **Подсказки «где чинить».** `fixRules`: четвёртый элемент правила — «только администратору» (ключ BFL в разделе, который виден всем).
 
 ---
 
@@ -264,3 +288,21 @@ node tests/dashboard-commerce.cjs
 - **`VKT_Publisher::attempt()` / `VKT_Replies::attempt()`** — отправка в VK и повторы; правки очередей и живучести — здесь.
 - **`VKT_Store::install()`** — миграции схемы; ошибка тут ломает весь плагин при обновлении.
 - **`VKT_Account::act_as()`** — контекст исполнителя; фоновый код без него не видит личных ключей.
+- **Хостинг Beget и адреса в `/wp-admin/`.** На запрос без cookie Beget отдаёт свою страницу `document.cookie='beget=begetok'` вместо ответа сайта. Всё, куда стучится не браузер (Callback VK, любые вебхуки), должно быть REST-маршрутом или адресом вне `/wp-admin/`. Проверка снаружи: `curl -X POST` без cookie — в ответе должен быть ответ плагина, а не HTML со скриптом.
+- **Сервер в России.** xAI отвечает 403 «not available in your region»: поиск `web_search`, картинки и видео Grok с боя не работают. Поиск новостей поэтому по умолчанию идёт через `search_feed()`, а отказ поиска моделью подстраховывается им же.
+- **Сайты статей.** `VKT_News::fetch()` ходит с ботовым User-Agent, ждёт 8 секунд и читает не больше 1 МБ. Часть изданий текст и фото так не отдаёт (проверено 03.10.2026: gazeta.ru отвечает редиректом, страницы выпусков 1tv.ru — без текста) — запись остаётся короткой, по анонсу из выдачи. kp.ru и irk.ru читаются.
+- **Выдача Bing в RSS** — неофициальный вход: формат и параметры (`qft=interval="7"` — сутки, `"8"` — неделя) могут измениться без предупреждения, а условия Bing разрешают её только для личного некоммерческого использования. Замена на поисковый API с ключом — один метод `VKT_News::search_feed()`.
+- **Кэш браузера.** Скрипт подключается с `?ver=VKT_VERSION`: заливка без смены номера версии оставляет у пользователя старый `dashboard.js`.
+- **Лимит текстов при сборе новостей.** Сбор — один текст, составление запросов поиска не списывается, каждая статья в рерайте — ещё один текст (`group_news_rewrite`). Сбор 10 новостей — 11 текстов при лимите участника 30 в сутки.
+
+## 11. Что не проверено вживую (на 0.34.4)
+
+Проверено тестами и на тестовой установке, но не в браузере и не на бою:
+
+- рерайт статей настоящей моделью (DeepSeek) — длина и точность результата;
+- составление поисковых запросов настоящей моделью;
+- доступность `www.bing.com` с боевого сервера;
+- пачки вариантов картинок с BFL и xAI;
+- поиск Qwen (`enable_search`);
+- перетаскивание фото и записей в браузере;
+- подтверждение Callback в VK по новому адресу (на тестовой установке маршрут отдаёт строку подтверждения и принимает событие с верным секретом).

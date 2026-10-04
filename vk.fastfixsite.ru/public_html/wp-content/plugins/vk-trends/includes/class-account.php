@@ -135,7 +135,7 @@ final class VKT_Account {
         'media' => array( 'ai_media_daily', 5, 1000 ),
         'sources' => array( 'member_sources', 100, 500 ),
         // Сколько ответов на комментарии может одновременно ждать в очереди кабинета.
-        'replies_queue' => array( '', 300, 2000 ),
+        'replies_queue' => array( 'member_replies_queue', 300, 2000 ),
     );
 
     /** Личные лимиты кабинета: только те, что администратор задал этому человеку. */

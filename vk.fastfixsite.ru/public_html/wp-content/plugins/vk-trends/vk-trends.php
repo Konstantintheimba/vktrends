@@ -2,7 +2,7 @@
 /**
  * Plugin Name: VK Trends
  * Description: Дашборд постов, видео и товаров VK с личными кабинетами: вход через VK ID, свои источники и публикации, счётчики, динамика, автопостинг с генерацией текста и медиа, ответы на комментарии.
- * Version: 0.34.4
+ * Version: 0.34.5
  * Requires at least: 6.6
  * Requires PHP: 8.0
  * Author: FastFixSite
@@ -11,7 +11,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-define( 'VKT_VERSION', '0.34.4' );
+define( 'VKT_VERSION', '0.34.5' );
 define( 'VKT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'VKT_URL', plugin_dir_url( __FILE__ ) );
 

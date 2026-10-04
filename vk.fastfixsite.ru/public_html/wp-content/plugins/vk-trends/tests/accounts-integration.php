@@ -263,6 +263,12 @@ $ok( true === VKT_Account::ai_allow( 'text' ) && null === VKT_AI::public_status(
 // ——— Личные лимиты: администратор задаёт их каждому кабинету ———
 $ok( is_wp_error( $act( $a, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 999 ) ) ) ), 'Сам себе лимит участник не поднимет' );
 $ok( is_wp_error( $act( $admin, 'user_limits', array( 'id' => $admin, 'limits' => array( 'text' => 5 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => -1 ) ) ) ) && is_wp_error( $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'replies_queue' => 5000 ) ) ) ), 'Администратору лимит не ставится, значения вне пределов отклоняются' );
+// Общие значения по умолчанию меняет администратор — в том числе очередь ответов.
+$act( $admin, 'settings', array( 'member_replies_queue' => 150, 'ai_text_daily' => 2 ) );
+$ok( 150 === VKT_Account::limit( 'replies_queue', $b ) && 150 === VKT_Plugin::settings()['member_replies_queue'], 'Общий лимит очереди ответов задаётся в «Пользователях»' );
+$denied_default = $act( $a, 'settings', array( 'member_replies_queue' => 2000 ) );
+$ok( 150 === VKT_Plugin::settings()['member_replies_queue'], 'Участник общий лимит не поменяет' );
+$act( $admin, 'settings', array( 'member_replies_queue' => 300 ) );
 $raised = $act( $admin, 'user_limits', array( 'id' => $a, 'limits' => array( 'text' => 7, 'media' => '', 'replies_queue' => 3, 'sources' => '' ) ) );
 $ok( ! is_wp_error( $raised ) && 7 === $raised['limits']['text']['limit'] && 7 === $raised['limits']['text']['own'] && null === $raised['limits']['media']['own'] && 1 === $raised['limits']['media']['limit'] && 2 === $raised['limits']['sources']['limit'], 'Личный лимит действует там, где задан; пустое поле оставляет общий' );
 wp_set_current_user( $a );

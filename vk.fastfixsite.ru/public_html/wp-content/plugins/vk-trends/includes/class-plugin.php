@@ -79,13 +79,13 @@ final class VKT_Plugin {
             'api_version' => '5.199', 'source_hours' => 1, 'video_hours' => 6, 'paused' => true, 'homepage' => true, 'posts' => true, 'links' => true,
             'vkid_client_id' => 0, 'vkid_redirect' => '', 'app_id' => 0,
             // Лимиты участников. Администратора они не касаются.
-            'member_sources' => 100, 'ai_text_daily' => 30, 'ai_media_daily' => 5,
+            'member_sources' => 100, 'ai_text_daily' => 30, 'ai_media_daily' => 5, 'member_replies_queue' => 300,
         );
     }
 
     // Общие настройки сайта. Их меняет только администратор; ID своего
     // сообщества и ручная проверка публикаций — личные, у каждого кабинета.
-    const SITE_KEYS = array( 'api_version', 'token', 'token_kind', 'delete_token', 'refresh_token', 'device_id', 'client_id', 'expires_in', 'proxy', 'source_hours', 'video_hours', 'paused', 'homepage', 'posts', 'links', 'vkid_client_id', 'vkid_redirect', 'app_id', 'member_sources', 'ai_text_daily', 'ai_media_daily' );
+    const SITE_KEYS = array( 'api_version', 'token', 'token_kind', 'delete_token', 'refresh_token', 'device_id', 'client_id', 'expires_in', 'proxy', 'source_hours', 'video_hours', 'paused', 'homepage', 'posts', 'links', 'vkid_client_id', 'vkid_redirect', 'app_id', 'member_sources', 'ai_text_daily', 'ai_media_daily', 'member_replies_queue' );
 
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
@@ -392,7 +392,8 @@ final class VKT_Plugin {
                 foreach ( array( 'paused', 'homepage', 'posts', 'links' ) as $key ) {
                     if ( isset( $data[ $key ] ) ) { $settings[ $key ] = (bool) $data[ $key ]; }
                 }
-                foreach ( array( 'member_sources' => 500, 'ai_text_daily' => 1000, 'ai_media_daily' => 200 ) as $key => $max ) {
+                // Потолки те же, что у личных лимитов: общее значение не должно быть строже того, что можно дать одному.
+                foreach ( array( 'member_sources' => 500, 'ai_text_daily' => 5000, 'ai_media_daily' => 1000, 'member_replies_queue' => 2000 ) as $key => $max ) {
                     if ( isset( $data[ $key ] ) ) { $settings[ $key ] = min( $max, absint( $data[ $key ] ) ); }
                 }
                 // Прежние общие ключи переехали к пользователям.
