@@ -59,6 +59,7 @@ foreach ( array( 11 => 'image/jpeg', 12 => 'video/mp4', 13 => 'application/pdf' 
     $library[ $id ] = array( 'mime' => $mime, 'path' => $path );
 }
 function get_post_type( $id ) { global $library; return isset( $library[ $id ] ) ? 'attachment' : ''; }
+function get_post_meta( $id, $key = '', $single = false ) { global $library; return $library[ $id ]['meta'][ $key ] ?? ''; }
 function get_post_mime_type( $id ) { global $library; return $library[ $id ]['mime'] ?? ''; }
 function get_attached_file( $id ) { global $library; return $library[ $id ]['path'] ?? false; }
 function wp_get_attachment_url( $id ) { global $library; return isset( $library[ $id ] ) ? 'https://example.test/files/' . $id . '.bin' : false; }

@@ -30,6 +30,9 @@ function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_safe_remote_get( $url, $args = array() ) {
     $GLOBALS['vkt_fetched'][] = $url;
     $page = $GLOBALS['vkt_pages'][ $url ] ?? null;
+    foreach ( $GLOBALS['vkt_pages_prefix'] ?? array() as $prefix => $body ) {
+        if ( null === $page && str_starts_with( $url, $prefix ) ) { $page = $body; }
+    }
     return null === $page ? new WP_Error( 'http', 'cURL error 28: timeout' ) : ( is_array( $page ) ? $page : array( 'body' => $page ) );
 }
 function wp_safe_remote_head( $url, $args = array() ) {
@@ -50,6 +53,8 @@ class VKT_Account { public static function is_admin() { return true; } }
 class VKT_Store { public static $log = array(); public static function log( ...$entry ) { self::$log[] = $entry; } }
 
 require dirname( __DIR__ ) . '/includes/class-materials.php';
+require dirname( __DIR__ ) . '/includes/class-images.php';
+require dirname( __DIR__ ) . '/includes/class-cover.php';
 require dirname( __DIR__ ) . '/includes/class-news.php';
 require dirname( __DIR__ ) . '/includes/class-ai.php';
 
@@ -244,5 +249,35 @@ $rewritten = VKT_AI::rewrite_article( $article, 'ds' );
 $sent = $GLOBALS['vkt_model_request']['messages'][0]['content'];
 $assert( "Обмен состоялся.\n\nСумма — 12 млн." === $rewritten && 'deepseek-chat' === $GLOBALS['vkt_model_request']['model'] && str_contains( $sent, 'рерайт' ) && str_contains( $sent, 'не сокращай' ) && str_contains( $sent, 'Ничего не добавляй' ) && str_contains( $sent, 'сумма сделки — 12' ), 'Модель получает весь текст статьи и задачу полного рерайта: без сокращений и без добавлений' );
 $assert( is_wp_error( VKT_AI::rewrite_article( 'Коротко.', 'ds' ) ) && 12000 === VKT_News::ARTICLE_MAX, 'Без текста статьи рерайт не запускается; статья уходит целиком, до 12 тысяч знаков' );
+
+// Обложка сообщества: макет в настройках новостей группы, рисует плагин.
+$cover = VKT_News::settings( array( 'cover' => array( 'name' => "  БОП <b>|</b>  Новости ", 'label' => '', 'color' => 'red', 'ratio' => 'panorama' ) ) )['cover'];
+$assert( 'БОП | Новости' === $cover['name'] && '' === $cover['label'] && VKT_Cover::COLOR === $cover['color'] && 'landscape' === $cover['ratio'] && 'Новость' === VKT_News::settings( array() )['cover']['label'], 'Макет обложки: теги вырезаны, неверный цвет и формат заменены, метку можно убрать, по умолчанию «Новость»' );
+$kept = VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => 'НБА' ), array( 'cover' => array( 'name' => 'БОП', 'color' => '#c0392b' ) ) );
+$assert( 'БОП' === $kept['cover']['name'] && '#c0392b' === $kept['cover']['color'], 'Сохранение настроек новостей без блока обложки макет не стирает' );
+$assert( 'Заголовок новости' === VKT_Cover::title( "  Заголовок <i>новости</i>\n\nТекст поста." ) && 160 === mb_strlen( VKT_Cover::title( str_repeat( 'слово ', 60 ) ) ) && str_ends_with( VKT_Cover::title( str_repeat( 'слово ', 60 ) ), '…' ), 'Заголовок обложки — первая строка записи, длинный обрезается' );
+if ( VKT_Cover::available() ) {
+    $lines = VKT_Cover::wrap( 'Эксперт назвал частые ошибки при установке зимних шин', 60, 700 );
+    $assert( count( $lines ) >= 3 && 'Эксперт назвал частые ошибки при установке зимних шин' === implode( ' ', $lines ), 'Заголовок переносится по словам без потерь' );
+    $photo = imagecreatetruecolor( 400, 900 );
+    imagefilledrectangle( $photo, 0, 0, 400, 900, imagecolorallocate( $photo, 255, 255, 255 ) );
+    $image = VKT_Cover::render( VKT_Cover::settings( array( 'name' => 'БОП', 'color' => '#c0392b', 'ratio' => 'square' ) ), 'Заголовок', $photo );
+    $bottom = imagecolorat( $image, 1000, 1020 );
+    $top = imagecolorat( $image, 1000, 20 );
+    $assert( 1024 === imagesx( $image ) && 1024 === imagesy( $image ) && ( ( $bottom >> 16 ) & 255 ) > 170 && ( ( $bottom >> 8 ) & 255 ) < 90 && abs( ( ( $top >> 16 ) & 255 ) - ( ( $top >> 8 ) & 255 ) ) < 12, 'Обложка нужного размера: фото заполняет кадр, внизу градиент цвета сообщества, вверху — затемнённое фото' );
+    $made = VKT_Cover::make( VKT_Cover::settings( array( 'name' => 'БОП' ) ), "Заголовок\nТекст", 0, '', true );
+    $assert( is_array( $made ) && str_starts_with( $made['preview'], 'data:image/jpeg;base64,/9j/' ) && is_wp_error( VKT_Cover::make( VKT_Cover::settings( array() ), '   ', 0, '', true ) ), 'Пример обложки отдаётся картинкой без сохранения; без заголовка обложка не делается' );
+} else {
+    echo "SKIP: GD с FreeType не найден, отрисовка обложки не проверена\n";
+}
+
+// Картинки по запросу — с Викисклада: мелкие отброшены, автор и лицензия названы.
+$GLOBALS['vkt_pages_prefix']['https://commons.wikimedia.org/w/api.php'] = json_encode( array( 'query' => array( 'pages' => array(
+    '2' => array( 'index' => 2, 'imageinfo' => array( array( 'thumburl' => 'https://upload.wikimedia.org/b.jpg', 'width' => 3000, 'descriptionurl' => 'https://commons.wikimedia.org/wiki/File:B.jpg', 'extmetadata' => array( 'Artist' => array( 'value' => '<a href="#">Автор Б</a>' ), 'LicenseShortName' => array( 'value' => 'CC BY-SA 4.0' ) ) ) ) ),
+    '1' => array( 'index' => 1, 'imageinfo' => array( array( 'thumburl' => 'https://upload.wikimedia.org/a.jpg', 'width' => 1600, 'extmetadata' => array( 'LicenseShortName' => array( 'value' => 'CC0' ) ) ) ) ),
+    '3' => array( 'index' => 3, 'imageinfo' => array( array( 'thumburl' => 'https://upload.wikimedia.org/icon.png', 'width' => 120 ) ) ),
+) ) ) );
+$images = VKT_News::image_search( ' Subaru   Outback ' );
+$assert( array( 'https://upload.wikimedia.org/a.jpg', 'https://upload.wikimedia.org/b.jpg' ) === array_column( $images['images'], 'url' ) && 'CC0' === $images['images'][0]['credit'] && 'Автор Б · CC BY-SA 4.0' === $images['images'][1]['credit'] && 'Subaru Outback' === $images['query'] && is_wp_error( VKT_News::image_search( 'я' ) ), 'Поиск картинок: порядок выдачи, без значков, с автором и лицензией; пустой запрос не уходит' );
 
 echo "PASS: $checks news checks\n";

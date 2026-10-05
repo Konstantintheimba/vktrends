@@ -47,6 +47,10 @@ final class VKT_Media {
         unset( $item['path'] );
         $thumbnail = 'image' === $item['type'] ? wp_get_attachment_image_url( $item['id'], 'medium' ) : '';
         $item['thumbnail'] = $thumbnail ? esc_url_raw( $thumbnail, array( 'https', 'http' ) ) : '';
+        // Обложка сообщества: интерфейс заменяет её новой, а не накладывает макет поверх макета.
+        if ( get_post_meta( $item['id'], '_vkt_cover', true ) ) {
+            $item['cover'] = true;
+        }
         return $item;
     }
 

@@ -272,6 +272,20 @@ final class VKT_Groups {
      * источник добавляет плагин. Взятые новости запоминаются и в следующий
      * сбор не попадают.
      */
+    /** Обложка записи по макету сообщества. Название не задано — берётся имя группы. */
+    public static function cover( $id, $title, $media_id = 0, $url = '', $draft = null, $preview = false ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        // Пример в настройках рисуется по тому, что на экране, ещё до сохранения.
+        $settings = is_array( $draft ) ? VKT_Cover::settings( $draft ) : VKT_News::settings( $group['news'] ?? '' )['cover'];
+        if ( '' === $settings['name'] ) {
+            $settings['name'] = mb_substr( (string) $group['name'], 0, 60 );
+        }
+        return VKT_Cover::make( $settings, $title, $media_id, $url, $preview );
+    }
+
     /**
      * Полный пост по тексту самой статьи. Статья не открылась или в ней не
      * нашёлся текст — ошибка: запись остаётся такой, какой была.

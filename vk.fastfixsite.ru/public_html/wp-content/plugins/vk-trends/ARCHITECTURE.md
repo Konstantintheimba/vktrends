@@ -1,6 +1,6 @@
 # VK Trends — техническая документация
 
-Версия: **0.34.5**. Плагин WordPress для наблюдения за постами/видео сообществ VK, личных кабинетов, автопостинга и генерации картинок. Требования: WP 6.6+, PHP 8.0+, MySQL/MariaDB (InnoDB), OpenSSL, исходящий HTTPS к `api.vk.com`, `id.vk.ru`, `oauth.vk.com`, `api.bfl.ai`, `www.bing.com` (поиск новостей) и к сайтам статей.
+Версия: **0.35.0**. Плагин WordPress для наблюдения за постами/видео сообществ VK, личных кабинетов, автопостинга и генерации картинок. Требования: WP 6.6+, PHP 8.0+, MySQL/MariaDB (InnoDB), OpenSSL, исходящий HTTPS к `api.vk.com`, `id.vk.ru`, `oauth.vk.com`, `api.bfl.ai`, `www.bing.com` (поиск новостей) и к сайтам статей.
 
 > Это справочник по **коду**, а не по функциональности. Что умеет плагин по версиям — в `README.md`. Здесь — как он устроен внутри и куда смотреть при правке.
 
@@ -135,6 +135,12 @@
 
 - **`VKT_Images`** (`class-images.php`) — реестр поставщиков картинок. `providers()`, `start($id,$prompt,$ratio)`, `status($id)`. Им пользуются окно «Картинка» в «Автопостинге», «Фото к записям» серии и окно записи; новый поставщик — одна запись в `registry()`.
 
+- **`VKT_Cover`** (`class-cover.php`) — обложка записи в оформлении сообщества. Рисует GD с FreeType, шрифт `assets/fonts/PT_Sans-Web-Bold.ttf` (OFL).
+  - `settings($data)` — макет: `name`, `label`, `color`, `ratio`; хранится в настройках новостей группы (`VKT_News::settings()['cover']`);
+  - `render($settings,$title,$photo)` — сама картинка (фото «на весь кадр» → затемнение → градиент → название, заголовок с подбором кегля, плашка метки); от WordPress не зависит и проверяется офлайн;
+  - `make($settings,$title,$media_id,$url,$preview)` — фон из своей медиатеки или по адресу, сохранение в медиатеку с метой `_vkt_cover` (по ней `VKT_Media::public_item()` отдаёт `cover: true`); `$preview` — картинка в ответе без сохранения;
+  - вход для интерфейса — `VKT_Groups::cover()`: подставляет имя группы, если название в макете пустое.
+
 - **`VKT_Materials`** (`class-materials.php`) — база ведения группы (`materials/*.md`). `library()`, `normalize()`, `pack()`, `upsert()`, `prompt($list,$purpose)`.
 
 - **`VKT_News`** (`class-news.php`) — новостная группа (RSS/поиск).
@@ -143,6 +149,7 @@
   - поиск: `search($settings,$group,$model)` — выбирает путь по `VKT_AI::search_kind()`; если поиск моделью вернул ошибку, подстраховывает `search_feed()`;
   - `search_feed()` — поиск плагина: запросы от `VKT_AI::search_queries()`, новостная выдача Bing в RSS (`bing.com/news/search?format=rss`), сайты группы через `site:` (по запросу на сайт), не больше `FEED_REQUESTS` обращений; адрес статьи достаётся из параметра `url` ссылки-счётчика;
   - `article($link)` — текст статьи со страницы (абзацы из `<article>`, до `ARTICLE_MAX`); `photos($link)` — снимки статьи (`og:image`, `twitter:image`, `<img>` внутри `<article>`, до `MAX_PHOTOS`, только https); `photo_save($url)` — в медиатеку через `VKT_Media::sideload()`;
+  - `image_search($query)` — картинки по запросу с Викисклада (API `commons.wikimedia.org`, до 8, не уже 600 px, с автором и лицензией);
   - `compose()` — ответ модели в записи, строку «Источник: …» приписывает плагин.
 
 - **`VKT_Shops`** (`class-shops.php`) — методика VK Shops («Товарный пост»). `brief($data)`, `options()`.
@@ -205,7 +212,7 @@
 - публикация: `publishing_sync`, `publishing_create`, `publishing_run`, `publishing_approve/retry/cancel`, `publishing_update/get`, `series_generate/queue/cancel`;
 - комментарии: `comments_inbox`, `comments_scan`, `comments_generate`, `comments_reply`, `comments_queue`, `comments_run/cancel/retry`, `comments_posts`, `comments_thread`;
 - группы: `group_detail`, `group_hide`, `group_passport`, `group_passport_draft`, `group_material_save/delete`, `group_stats`;
-- новости группы: `group_news_save/check/reset/collect`, `group_news_rewrite` (полный пост по статье, один текст лимита), `group_news_photos` (снимки статьи), `group_news_photo_save` (снимок в медиатеку);
+- новости группы: `group_news_save/check/reset/collect`, `group_news_rewrite` (полный пост по статье, один текст лимита), `group_news_photos` (снимки статьи), `group_news_photo_save` (снимок в медиатеку), `cover_make` (обложка сообщества, `preview` — без сохранения), `image_search` (картинки с Викисклада);
 - генерация: `ai_text`, `ai_image` (прежний прямой путь в xAI, интерфейс им больше не пользуется), `ai_video_start/status`, `image_start/status`, `shop_post`, `flux_start/status` (все кабинеты, через лимит), `flux_credits` (админ);
 - админ: `user_status`, `user_limits`, `ai_model_*`, `vkid_start`;
 - прочее: `product`, `link`, `enqueue`, `delete`, `resolve_link`.
@@ -260,6 +267,7 @@
 - **Слот серии из новости** помнит `link` и `rewritten`. `sourceLink(target)` берёт адрес статьи из слота или из строки «Источник: …» текста — так блок «Статья-источник» (`sourceBox`, `seriesSourceAction`) работает и у записей из очереди. `seriesSourceFill()` — «Дополнить из статей» для всех слотов разом.
 - **Окно записи серии** (`seriesSlotDialog`, `seriesPostDialog`): перед любой перерисовкой — `captureSeriesDialog()`, иначе набранное пропадёт; цель правки — `seriesDialogTarget()`, перерисовка — `reopenSeriesDialog()`. Кнопка «Рерайт текста» — `seriesDialogRewrite()` (действие `ai_text` с текущим текстом и жёсткой задачей рерайта).
 - **Перетаскивание.** Слушатели `dragstart` / `dragover` / `drop` / `dragend` на корне, состояние — переменная `dragged`. Фото в окне записи: чипы из `sortableChips()` с `data-sort-media`, порядок массива `media` и есть порядок вложений в VK. Сетка: карточки с `data-drag-slot` / `data-drag-post` бросаются на ячейку дня `data-day`; слот меняет `at`, запись из очереди — `publishing_update` с одним `scheduled_at`. Только мышь: на сенсорных экранах HTML5-перетаскивание не работает.
+- **Оформление записи (0.35).** `designBox(target)` в окне слота и записи: обложка (`applyCover()` — фон берётся из первого фото без метки `cover`, прежняя обложка убирается, новая встаёт первой) и поиск картинок (`target.found`). `seriesCoversFill()` — обложки всем слотам сетки. Настройки макета — поля `cover_*` в `groupNewsForm()`.
 - **Подсказки «где чинить».** `fixRules`: четвёртый элемент правила — «только администратору» (ключ BFL в разделе, который виден всем).
 
 ---
@@ -292,6 +300,7 @@ node tests/dashboard-commerce.cjs
 - **Сервер в России.** xAI отвечает 403 «not available in your region»: поиск `web_search`, картинки и видео Grok с боя не работают. Поиск новостей поэтому по умолчанию идёт через `search_feed()`, а отказ поиска моделью подстраховывается им же.
 - **Сайты статей.** `VKT_News::fetch()` ходит с ботовым User-Agent, ждёт 8 секунд и читает не больше 1 МБ. Часть изданий текст и фото так не отдаёт (проверено 03.10.2026: gazeta.ru отвечает редиректом, страницы выпусков 1tv.ru — без текста) — запись остаётся короткой, по анонсу из выдачи. kp.ru и irk.ru читаются.
 - **Выдача Bing в RSS** — неофициальный вход: формат и параметры (`qft=interval="7"` — сутки, `"8"` — неделя) могут измениться без предупреждения, а условия Bing разрешают её только для личного некоммерческого использования. Замена на поисковый API с ключом — один метод `VKT_News::search_feed()`.
+- **Обложка требует GD с FreeType** на сервере (`VKT_Cover::available()`); без них `cover_make` отвечает кодом 501. Формат WebP у фона читается, только если GD собран с его поддержкой.
 - **Кэш браузера.** Скрипт подключается с `?ver=VKT_VERSION`: заливка без смены номера версии оставляет у пользователя старый `dashboard.js`.
 - **Лимит текстов при сборе новостей.** Сбор — один текст, составление запросов поиска не списывается, каждая статья в рерайте — ещё один текст (`group_news_rewrite`). Сбор 10 новостей — 11 текстов при лимите участника 30 в сутки.
 
@@ -305,4 +314,5 @@ node tests/dashboard-commerce.cjs
 - пачки вариантов картинок с BFL и xAI;
 - поиск Qwen (`enable_search`);
 - перетаскивание фото и записей в браузере;
+- обложка и поиск картинок в браузере, наличие GD с FreeType на боевом хостинге;
 - подтверждение Callback в VK по новому адресу (на тестовой установке маршрут отдаёт строку подтверждения и принимает событие с верным секретом).

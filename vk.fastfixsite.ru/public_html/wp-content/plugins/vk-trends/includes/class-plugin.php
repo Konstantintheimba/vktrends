@@ -660,6 +660,10 @@ final class VKT_Plugin {
             case 'group_news_rewrite':
                 // Каждая статья — отдельный запрос к модели и один текст из суточного лимита.
                 return self::metered( 'text', static fn() => VKT_Groups::rewrite_news( $data['id'] ?? 0, $data['link'] ?? '', self::model_id( $data ) ) );
+            case 'cover_make':
+                return VKT_Groups::cover( $data['group_id'] ?? 0, $data['title'] ?? '', $data['media_id'] ?? 0, $data['url'] ?? '', is_array( $data['cover'] ?? null ) ? $data['cover'] : null, ! empty( $data['preview'] ) );
+            case 'image_search':
+                return VKT_News::image_search( $data['query'] ?? '' );
             case 'group_news_photos':
                 return VKT_News::photos( $data['link'] ?? '' );
             case 'group_news_photo_save':

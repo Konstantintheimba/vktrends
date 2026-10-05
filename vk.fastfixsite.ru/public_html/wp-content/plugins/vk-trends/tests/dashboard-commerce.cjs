@@ -223,6 +223,9 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(api.seriesCalendar().includes('data-command="series-source-fill"') && api.seriesCalendar().includes('Дополнить из статей · 1'), 'Слоту из новости без полного текста и фото предлагается дополнение из статьи');
     week[0].rewritten = true; week[0].media = [{id: 9, name: 'p.jpg', type: 'image', size: 5}];
     check(!api.seriesCalendar().includes('series-source-fill'), 'Слот с полным текстом и фото дополнять не нужно');
+    check(api.seriesCalendar().includes('data-command="series-covers-fill"') && api.seriesCalendar().includes('Обложки сообщества · 1'), 'Записи с текстом без обложки предлагается обложка сообщества');
+    week[0].media = [{id: 11, name: 'c.jpg', type: 'image', size: 5, cover: true}];
+    check(!api.seriesCalendar().includes('series-covers-fill') && api.sortableChips(week[0].media).includes('>обложка<'), 'Запись с обложкой первой больше не предлагается, обложка помечена');
     week[0].media = []; week[0].rewritten = false; week[0].message = 'Готовый текст';
     check(/data-day="\d{4}-09-21"/.test(calendar) && calendar.includes('draggable="true" data-drag-slot="0" data-time="') && calendar.includes('перетащить на другой день'), 'Слот перетаскивается на другой день сетки, время остаётся при нём');
     const chips = api.sortableChips([{id: 5, name: 'a.jpg', type: 'image', size: 10}, {id: 6, name: 'b.jpg', type: 'image', size: 10}]);
@@ -448,6 +451,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(html.includes('фото не нашлось') && html.includes('Ищем фото на странице статьи'), 'Понятно, когда фото ищется и когда его нет');
     api.setNews({method: 'search'}, null, null);
     html = api.groups();
+    check(html.includes('data-news="cover_name"') && html.includes('type="color" data-news="cover_color"') && html.includes('data-command="group-cover-preview"'), 'В настройках новостей группы есть макет обложки и его пример');
     check(html.includes('data-news="engine"') && html.includes('<option value="xai" selected>xAI Grok · web_search</option>') && html.includes('Поиск плагина') && html.includes('Какие новости искать') && html.includes('Сайты, где искать в первую очередь') && !html.includes('data-command="group-news-check"') && html.includes('data-command="group-news-collect"'), 'Поиск в интернете: видно, кто ищет, сайты необязательны, проверки лент нет');
     // Сохранённый выбор поиска показан в списке; модель для текста на него не влияет.
     groupWith({materials: [], library: [], news: {enabled: true, method: 'search', engine: 'qwen-qw', search: [{id: 'xai', title: 'xAI Grok · web_search'}, {id: 'qwen-qw', title: 'Qwen <Plus> · поиск Qwen'}], sources: [], topic: 'НБА', count: 10, days: 1, mode: 'posts', used: 0}});

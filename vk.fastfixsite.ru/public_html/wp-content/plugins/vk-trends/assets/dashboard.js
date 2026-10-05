@@ -461,7 +461,10 @@
         const fromNews = seriesSourceTargets().length;
         const fill = seriesSourceRun ? `<div class="vkt-info" data-series-source-note>Дополняем из статей: ${seriesSourceRun.done} из ${seriesSourceRun.total}. Не закрывайте вкладку.</div>`
             : fromNews ? `<div class="vkt-info">Записей из новостей без полного текста или без фото: ${fromNews}. ${button(`${icon('fire')} Дополнить из статей · ${fromNews}`, 'series-source-fill', '', true)} <small class="vkt-muted">Плагин откроет каждую статью, напишет по ней полный пост и сохранит к записи до трёх её фото.</small></div>` : '';
-        return `${fill}<p class="vkt-help">Запись можно перетащить на другой день — время останется прежним. Точные дату и время задайте в окне записи.</p><div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
+        const bare = seriesCoverTargets().length;
+        const covers = seriesCoverRun ? `<div class="vkt-info" data-series-cover-note>Обложки: ${seriesCoverRun.done + seriesCoverRun.failed} из ${seriesCoverRun.total}. Не закрывайте вкладку.</div>`
+            : bare ? `<div class="vkt-info">Записей без обложки сообщества: ${bare}. ${button(`${icon('fire')} Обложки сообщества · ${bare}`, 'series-covers-fill')} <small class="vkt-muted">Первое фото каждой записи станет фоном обложки с названием паблика и заголовком. Макет настраивается в карточке группы, блок «Новости».</small></div>` : '';
+        return `${fill}${covers}<p class="vkt-help">Запись можно перетащить на другой день — время останется прежним. Точные дату и время задайте в окне записи.</p><div class="vkt-calendar"><div class="vkt-cal-head">${weekdayNames.map(([, label]) => `<span>${label}</span>`).join('')}</div><div class="vkt-cal-grid">${cells.join('')}</div></div>`;
     }
 
     function runningSeries() {
@@ -675,6 +678,8 @@
         target.message = form.elements.message.value;
         target.attachments = form.elements.attachments.value;
         target.imagePrompt = form.elements.image_prompt?.value || '';
+        target.imageQuery = form.elements.image_query?.value || '';
+        target.coverKeep = !!form.elements.cover_keep?.checked;
         if (form.elements.shop_title) {
             const field = name => form.elements[name]?.value || '';
             target.shop = {product: field('shop_product'), title: field('shop_title'), url: field('shop_url'), hook: field('shop_hook'), format: field('shop_format'), facts: field('shop_facts')};
@@ -684,7 +689,7 @@
     }
     // Порядок файлов — порядок в записи VK: первое фото идёт обложкой. Меняется перетаскиванием.
     const sortableChips = list => list.length
-        ? `<div class="vkt-media-chips is-sortable">${list.map((item, index) => mediaChip(item).replace('<figure class="vkt-media-chip"', `<figure class="vkt-media-chip" draggable="true" data-sort-media="${index}"`).replace('<figcaption>', `<figcaption><em class="vkt-flux-index">${index ? index + 1 : 'первое'}</em>`)).join('')}</div>${list.length > 1 ? '<small class="vkt-help">Перетащите фото, чтобы поменять порядок: первое публикуется первым.</small>' : ''}`
+        ? `<div class="vkt-media-chips is-sortable">${list.map((item, index) => mediaChip(item).replace('<figure class="vkt-media-chip"', `<figure class="vkt-media-chip" draggable="true" data-sort-media="${index}"`).replace('<figcaption>', `<figcaption><em class="vkt-flux-index">${item.cover ? 'обложка' : index ? index + 1 : 'первое'}</em>`)).join('')}</div>${list.length > 1 ? '<small class="vkt-help">Перетащите фото, чтобы поменять порядок: первое публикуется первым.</small>' : ''}`
         : '<div class="vkt-media-chips"><p class="vkt-muted">Файлы не выбраны.</p></div>';
     const seriesDialogTarget = () => null !== seriesSlotTarget ? seriesSlots[seriesSlotTarget] : seriesEdit?.draft;
     const reopenSeriesDialog = () => { if (!dialog.open) return; if (null !== seriesSlotTarget) seriesSlotDialog(seriesSlotTarget); else seriesPostDialog(0, false); };
@@ -730,6 +735,83 @@
         } catch (error) { toast(error.message, true, error.fix); }
         finally { trigger.disabled = false; }
         reopenSeriesDialog();
+    }
+    const firstLine = text => String(text || '').trim().split(/\r?\n/)[0].trim();
+    // Обложка и картинки из интернета — у любой записи, не только из новостей.
+    function designBox(target) {
+        const found = target.found;
+        const first = target.media[0];
+        const results = found === undefined ? '' : !found.length ? '<small class="vkt-muted">По этому запросу картинок не нашлось. Попробуйте название на английском или короче.</small>'
+            : `<div class="vkt-news-photos">${found.map((item, at) => `<button type="button" class="vkt-news-photo is-on" data-command="series-found-pick" data-photo="${at}" title="${esc(item.credit || 'Сохранить и прикрепить')}"><img src="${safeUrl(item.url)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('')}<small class="vkt-muted">Нажмите на картинку — она сохранится в медиатеку и прикрепится к записи. Источник — Викисклад: файлы с открытой лицензией, автор виден при наведении.</small></div>`;
+        return `<fieldset class="vkt-media"><legend>Оформление</legend>
+            <div class="vkt-media-actions">${button(`${icon('fire')} ${first?.cover ? 'Переделать обложку' : 'Обложка сообщества'}`, 'series-cover')}<label class="vkt-check"><input type="checkbox" name="cover_keep" ${target.coverKeep ? 'checked' : ''}>Исходное фото оставить в записи</label></div>
+            <small class="vkt-help">Обложка — первое фото записи с названием сообщества, заголовком (первая строка текста) и градиентом. Встаёт на первое место вместо исходного фото; без фото фоном будет градиент. Чтобы фоном стал рисунок, сначала нарисуйте его и перетащите первым.</small>
+            <div class="vkt-form-inline"><label>Найти картинку в интернете<input name="image_query" maxlength="120" value="${esc(target.imageQuery || '')}" placeholder="Например: Subaru Outback"></label>${button(`${icon('search')} Найти`, 'series-image-search')}</div>${results}</fieldset>`;
+    }
+    async function seriesDesignAction(trigger, kind) {
+        captureSeriesDialog();
+        const target = seriesDialogTarget();
+        if (!target) return;
+        const note = $('#vkt-series-dialog-progress');
+        const say = text => { if (note) { note.hidden = false; note.textContent = text; } };
+        trigger.disabled = true;
+        try {
+            if (kind === 'cover') {
+                const title = firstLine(target.message);
+                if (!title) { toast('Для обложки нужен текст записи: заголовком станет его первая строка.', true); return; }
+                say('Собираем обложку…');
+                await applyCover(target, title);
+                toast(null !== seriesSlotTarget ? 'Обложка готова и стоит первой.' : 'Обложка готова. Нажмите «Сохранить», чтобы запись в очереди её получила.');
+            } else if (kind === 'search') {
+                if (String(target.imageQuery || '').trim().length < 2) { toast('Впишите, что искать.', true); return; }
+                say('Ищем картинки…');
+                target.found = (await act('image_search', {query: target.imageQuery})).images || [];
+            } else {
+                const item = (target.found || [])[Number(trigger.dataset.photo)];
+                if (!item) return;
+                if (target.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return; }
+                say('Сохраняем картинку в медиатеку…');
+                target.media.push({...(await act('group_news_photo_save', {url: item.url})), source: item.url});
+                target.found = target.found.filter(entry => entry !== item);
+                toast('Картинка сохранена и прикреплена.');
+            }
+            persistDrafts();
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { trigger.disabled = false; }
+        reopenSeriesDialog();
+    }
+    // Обложка встаёт первой. Фон — первое фото записи; прежняя обложка заменяется, а не копится.
+    async function applyCover(target, title) {
+        const base = target.media.find(item => item.type === 'image' && !item.cover);
+        const made = await act('cover_make', {group_id: Number(seriesGroup), title, media_id: base ? Number(base.id) : 0});
+        target.media = target.media.filter(item => !item.cover && (target.coverKeep || item !== base));
+        target.media.unshift(made);
+        if (target.media.length > 10) target.media.length = 10;
+    }
+    // Слоты с текстом, у которых первой стоит не обложка.
+    const seriesCoverTargets = () => seriesSlots.filter(slot => firstLine(slot.message) && !slot.media[0]?.cover);
+    let seriesCoverRun = null;
+    async function seriesCoversFill() {
+        if (seriesCoverRun) return;
+        const queue = seriesCoverTargets();
+        if (!queue.length) return;
+        if (!window.confirm(`Сделать обложки сообщества для ${queue.length} записей? Первое фото каждой записи станет фоном обложки и заменится ею.`)) return;
+        const run = seriesCoverRun = {total: queue.length, done: 0, failed: 0, error: ''};
+        render();
+        const worker = async () => {
+            while (queue.length) {
+                const slot = queue.shift();
+                try { await applyCover(slot, firstLine(slot.message)); run.done += 1; }
+                catch (error) { run.failed += 1; run.error = error.message; if (501 === Number(error.payload?.data?.status)) queue.length = 0; }
+                persistDrafts();
+                const el = $('[data-series-cover-note]');
+                if (el) el.textContent = `Обложки: ${run.done + run.failed} из ${run.total}. Не закрывайте вкладку.`;
+            }
+        };
+        await Promise.all([worker(), worker()]);
+        seriesCoverRun = null;
+        toast(run.failed ? `Обложек готово ${run.done} из ${run.total}. Ошибка: ${run.error}` : `Обложки готовы: ${run.done}.`, run.failed > 0);
+        render();
     }
     // Слоты из новостей, которым есть что взять из статьи: полный текст или фото.
     const seriesSourceTargets = () => seriesSlots.filter(slot => sourceLink(slot) && (!slot.rewritten || !slot.media.length));
@@ -840,6 +922,7 @@
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(slot.imagePrompt)}
                 ${sourceBox(slot)}
+                ${designBox(slot)}
                 ${sortableChips(slot.media)}
                 <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} ${slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи'}`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
@@ -873,6 +956,7 @@
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(draft.imagePrompt)}
                 ${sourceBox(draft)}
+                ${designBox(draft)}
                 ${sortableChips(draft.media)}
                 <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}${imagesReady() ? button(`${icon('fire')} ${draft.media.length ? 'Нарисовать ещё' : 'Нарисовать фото'}`, 'series-post-image') : ''}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
@@ -1434,11 +1518,11 @@
     // Настройки новостей как в форме: сохранённое, поверх — несохранённые правки.
     const groupNewsForm = group => {
         const saved = group.news || {};
-        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', ...(groupNewsDraft || {})};
+        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', cover_name: saved.cover?.name || '', cover_label: saved.cover?.label ?? 'Новость', cover_color: saved.cover?.color || '#1f6fe5', cover_ratio: saved.cover?.ratio || 'landscape', ...(groupNewsDraft || {})};
     };
     const groupNewsPayload = group => {
         const form = groupNewsForm(group);
-        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode};
+        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode, cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}};
     };
     // Фото к собранной новости: кандидаты со страницы статьи, отмеченные уйдут в запись.
     const newsPhotosHtml = (post, index) => {
@@ -1548,6 +1632,12 @@
                     <label>Свежесть<select data-news="days">${(saved.day_options || [1, 3, 7]).map(value => option(value, dayLabels[value] || `за ${value} дн.`, form.days)).join('')}</select></label>
                     <label>Что получить<select data-news="mode">${option('posts', 'Отдельный пост на каждую новость', form.mode)}${option('digest', 'Один пост-дайджест', form.mode)}</select></label>
                 </div>
+                <fieldset class="vkt-media"><legend>Обложка сообщества</legend>
+                    <small class="vkt-help">Единый макет для записей: фото, поверх — градиент вашего цвета, название сообщества, заголовок новости и метка. По нему паблик узнают в ленте. Обложка делается в окне записи серии или кнопкой «Обложки сообщества» над сеткой.</small>
+                    <div class="vkt-form-row"><label>Название на обложке<input data-news="cover_name" maxlength="60" value="${esc(form.cover_name)}" placeholder="${esc(group.name || 'как у сообщества')}"></label><label>Метка<input data-news="cover_label" maxlength="30" value="${esc(form.cover_label)}" placeholder="пусто — без метки"></label></div>
+                    <div class="vkt-form-row"><label>Цвет градиента<input type="color" data-news="cover_color" value="${esc(form.cover_color)}"></label><label>Формат<select data-news="cover_ratio">${['landscape', 'square', 'portrait'].map(value => option(value, ratioLabels[value], form.cover_ratio)).join('')}</select></label></div>
+                    <div class="vkt-media-actions">${button(`${icon('eye')} Показать пример`, 'group-cover-preview')}</div>
+                </fieldset>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить настройки</button>${bySearch ? '' : button('Проверить источники', 'group-news-check')}${groupNewsDraft ? '<span class="vkt-muted">Есть несохранённые правки — сбор и проверка сохранят их сами.</span>' : ''}</div>
             </form>
             ${checkHtml}
@@ -2386,6 +2476,8 @@
         if (command==='series-slot-image' || command==='series-post-image') { await seriesDialogImage(el); return; }
         if (command==='series-rewrite') { await seriesDialogRewrite(el); return; }
         if (command==='series-source-text' || command==='series-source-photos' || command==='series-source-pick') { await seriesSourceAction(el, command === 'series-source-text' ? 'text' : command === 'series-source-photos' ? 'photos' : 'pick'); return; }
+        if (command==='series-cover' || command==='series-image-search' || command==='series-found-pick') { await seriesDesignAction(el, command === 'series-cover' ? 'cover' : command === 'series-image-search' ? 'search' : 'pick'); return; }
+        if (command==='series-covers-fill') { seriesCoversFill().catch(error => { seriesCoverRun = null; toast(error.message, true, error.fix); render(); }); return; }
         if (command==='series-source-fill') { seriesSourceFill().catch(error => { seriesSourceRun = null; toast(error.message, true, error.fix); render(); }); return; }
         if (command==='series-shop') { await seriesDialogShop(el); return; }
         if (command==='series-slot-add') {
@@ -2442,6 +2534,16 @@
                     <div class="vkt-form-row">${field('replies_queue', 'Ответов на комментарии в очереди', 'Сколько ответов может одновременно ждать отправки. Выбрать можно больше — лишнее останется выбранным до освобождения очереди.')}${field('sources', 'Источников', 'Сколько чужих сообществ можно отслеживать.')}</div>
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить лимиты</button></div>
                 </form>`);
+            return;
+        }
+        if (command==='group-cover-preview') {
+            const form = groupNewsForm(groupDetail);
+            el.disabled = true;
+            try {
+                const made = await act('cover_make', {group_id: groupOpen, preview: true, title: 'Так будет выглядеть заголовок новости на обложке сообщества', cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}});
+                modal(`<h2>Пример обложки</h2><p class="vkt-muted">Фон здесь — чистый градиент; в записи под ним будет фото. Настройки ещё не сохранены — нажмите «Сохранить настройки» в карточке группы.</p><img class="vkt-cover-preview" src="${made.preview}" alt="">`);
+            } catch (error) { toast(error.message, true, error.fix); }
+            finally { el.disabled = false; }
             return;
         }
         if (command==='group-news-photo') {

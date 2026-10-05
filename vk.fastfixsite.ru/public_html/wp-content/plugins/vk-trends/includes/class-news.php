@@ -44,6 +44,8 @@ final class VKT_News {
             'days' => in_array( (int) ( $data['days'] ?? 0 ), self::DAYS, true ) ? (int) $data['days'] : 1,
             'mode' => in_array( $data['mode'] ?? '', self::MODES, true ) ? $data['mode'] : 'posts',
             'used' => array_slice( array_values( array_filter( (array) ( $data['used'] ?? array() ), 'is_string' ) ), -self::USED_MAX ),
+            // Макет обложки сообщества: название, цвет градиента, метка, формат.
+            'cover' => VKT_Cover::settings( $data['cover'] ?? array() ),
         );
     }
 
@@ -90,6 +92,7 @@ final class VKT_News {
             'days' => $data['days'] ?? 0,
             'mode' => $data['mode'] ?? '',
             'used' => $current['used'] ?? array(),
+            'cover' => $data['cover'] ?? ( $current['cover'] ?? array() ),
         ) );
     }
 
@@ -420,6 +423,43 @@ final class VKT_News {
             }
         }
         return array( 'photos' => array_slice( array_values( $found ), 0, self::MAX_PHOTOS ) );
+    }
+
+    /**
+     * Картинки по запросу — с Викисклада: там у каждого файла открытая
+     * лицензия и назван автор. Нужны, когда к записи надо приложить сам
+     * предмет новости (машину, здание, человека), а в статье его снимка нет.
+     */
+    public static function image_search( $query ) {
+        $query = mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( is_string( $query ) ? $query : '' ) ) ), 0, 120 );
+        if ( mb_strlen( $query ) < 2 ) {
+            return self::error( 'Впишите, что искать: название предмета, модели или места.' );
+        }
+        $response = wp_safe_remote_get( add_query_arg( array(
+            'action' => 'query', 'format' => 'json', 'generator' => 'search', 'gsrnamespace' => 6, 'gsrlimit' => 12,
+            'gsrsearch' => rawurlencode( $query . ' filetype:bitmap' ),
+            'prop' => 'imageinfo', 'iiprop' => rawurlencode( 'url|size|extmetadata' ), 'iiurlwidth' => 1280,
+            'iiextmetadatafilter' => rawurlencode( 'LicenseShortName|Artist' ),
+        ), 'https://commons.wikimedia.org/w/api.php' ), array( 'timeout' => 15, 'user-agent' => 'VK Trends/' . VKT_VERSION . ' (' . home_url( '/' ) . ')' ) );
+        $data = is_wp_error( $response ) ? null : json_decode( (string) wp_remote_retrieve_body( $response ), true );
+        if ( ! is_array( $data ) ) {
+            return self::error( 'Поиск картинок не ответил. Попробуйте позже.', 502 );
+        }
+        $pages = array_values( (array) ( $data['query']['pages'] ?? array() ) );
+        usort( $pages, static fn( $a, $b ) => (int) ( $a['index'] ?? 0 ) <=> (int) ( $b['index'] ?? 0 ) );
+        $items = array();
+        foreach ( $pages as $page ) {
+            $info = $page['imageinfo'][0] ?? array();
+            $url = esc_url_raw( (string) ( $info['thumburl'] ?? $info['url'] ?? '' ), array( 'https' ) );
+            // Мелкие картинки — значки и схемы, в запись они не годятся.
+            if ( '' === $url || (int) ( $info['width'] ?? 0 ) < 600 ) {
+                continue;
+            }
+            $author = mb_substr( trim( wp_strip_all_tags( (string) ( $info['extmetadata']['Artist']['value'] ?? '' ) ) ), 0, 60 );
+            $license = sanitize_text_field( (string) ( $info['extmetadata']['LicenseShortName']['value'] ?? '' ) );
+            $items[] = array( 'url' => $url, 'credit' => trim( $author . ( '' !== $author && '' !== $license ? ' · ' : '' ) . $license ), 'page' => esc_url_raw( (string) ( $info['descriptionurl'] ?? '' ), array( 'https' ) ) );
+        }
+        return array( 'images' => array_slice( $items, 0, 8 ), 'query' => $query );
     }
 
     /** Выбранное фото — в медиатеку сайта: в VK файл уходит уже оттуда. */
