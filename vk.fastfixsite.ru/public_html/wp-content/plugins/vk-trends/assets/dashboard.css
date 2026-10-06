@@ -614,3 +614,32 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-news-photo img { width: 112px; height: 84px; object-fit: cover; border-radius: 6px; }
 @media (max-width: 1100px) { .vkt-group-layout { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 760px) { .vkt-group-facts { grid-template-columns: minmax(0, 1fr); } .vkt-group-grid { grid-template-columns: minmax(0, 1fr); } .vkt-material { grid-template-columns: minmax(0, 1fr); } .vkt-news-options { grid-template-columns: minmax(0, 1fr); } }
+/* Оповещения: колокольчик в шапке и окно с каналами. */
+.vkt-bell { position: relative; }
+.vkt-bell-count { position: absolute; top: -3px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #e5484d; color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
+.vkt-notify-list { list-style: none; margin: 0 0 22px; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 44vh; overflow-y: auto; }
+.vkt-notify-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--vkt-line); border-left: 3px solid #c9d3e2; border-radius: 10px; background: #fff; }
+.vkt-notify-item.is-error { border-left-color: #e5484d; }
+.vkt-notify-item.is-warning { border-left-color: #e9a23b; }
+.vkt-notify-item.is-new { background: #f5f9ff; }
+.vkt-notify-item > div { flex: 1; min-width: 0; }
+.vkt-notify-item strong { display: block; font-size: 13px; }
+.vkt-notify-item p { margin: 3px 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.vkt-notify-item > .vkt-button { flex: 0 0 auto; }
+.vkt-notify-channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
+.vkt-notify-channels h4 { margin: 0 0 10px; font-size: 13px; }
+@media (max-width: 760px) { .vkt-notify-channels { grid-template-columns: minmax(0, 1fr); } .vkt-notify-item { flex-wrap: wrap; } }
+/* Нейросети: карточки поставщиков и итог проверки ключа. */
+.vkt-providers { display: flex; flex-direction: column; gap: 12px; }
+.vkt-provider { border: 1px solid var(--vkt-line); border-radius: 10px; padding: 16px; background: #fbfcfe; display: flex; flex-direction: column; gap: 12px; }
+.vkt-provider.is-on { background: #fff; border-color: #cfe0fb; }
+.vkt-provider header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.vkt-provider header strong { font-size: 14px; }
+.vkt-provider-caps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vkt-provider-caps li { display: flex; gap: 10px; font-size: 12px; line-height: 1.6; padding-left: 10px; border-left: 3px solid #c9d3e2; overflow-wrap: anywhere; }
+.vkt-provider-caps li.is-ok { border-left-color: #2fa36b; }
+.vkt-provider-caps li.is-bad { border-left-color: #e5484d; }
+.vkt-provider-caps strong { flex: 0 0 76px; }
+.vkt-provider-models summary { cursor: pointer; font-size: 12px; color: #66758b; }
+.vkt-provider-models p { margin: 8px 0 0; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+

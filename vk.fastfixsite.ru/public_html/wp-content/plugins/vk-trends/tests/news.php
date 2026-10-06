@@ -280,4 +280,37 @@ $GLOBALS['vkt_pages_prefix']['https://commons.wikimedia.org/w/api.php'] = json_e
 $images = VKT_News::image_search( ' Subaru   Outback ' );
 $assert( array( 'https://upload.wikimedia.org/a.jpg', 'https://upload.wikimedia.org/b.jpg' ) === array_column( $images['images'], 'url' ) && 'CC0' === $images['images'][0]['credit'] && 'Автор Б · CC BY-SA 4.0' === $images['images'][1]['credit'] && 'Subaru Outback' === $images['query'] && is_wp_error( VKT_News::image_search( 'я' ) ), 'Поиск картинок: порядок выдачи, без значков, с автором и лицензией; пустой запрос не уходит' );
 
+// Автосбор: настройки, счёт упоминаний и отбор.
+$auto = VKT_News::settings( array( 'auto' => array( 'enabled' => 1, 'hours' => 5, 'pick' => 'x', 'limit' => 99, 'photo' => 'gif', 'model' => 'Bad Model', 'series' => 'DROP', 'last' => str_repeat( 'я', 900 ) ) ) )['auto'];
+$assert( $auto['enabled'] && 3 === $auto['hours'] && 'mentions' === $auto['pick'] && 10 === $auto['limit'] && 'article' === $auto['photo'] && '' === $auto['model'] && '' === $auto['series'] && 400 === mb_strlen( $auto['last'] ), 'Настройки автосбора вне списков приводятся к значениям по умолчанию' );
+$kept = VKT_News::clean( array( 'enabled' => true, 'method' => 'rss', 'sources' => 'sport.test/rss', 'auto' => array( 'enabled' => true, 'hours' => 2, 'pick' => 'all', 'last' => 'подделка', 'series' => 'sforged1234' ) ), array( 'auto' => array( 'last' => 'Поставлено 2', 'last_at' => 100, 'series' => 'sabcdef1234', 'series_day' => '2026-10-05' ), 'recent' => array( 'Старое событие' ) ) );
+$assert( ! is_wp_error( $kept ) && $kept['auto']['enabled'] && 2 === $kept['auto']['hours'] && 'all' === $kept['auto']['pick'] && 'Поставлено 2' === $kept['auto']['last'] && 100 === $kept['auto']['last_at'] && 'sabcdef1234' === $kept['auto']['series'] && array( 'Старое событие' ) === $kept['recent'], 'Форма меняет только выбор человека: итог захода, серия дня и память о событиях остаются' );
+$assert( ! VKT_News::clean( array( 'enabled' => false, 'auto' => array( 'enabled' => true ) ), array() )['auto']['enabled'], 'У выключенной новостной группы автосбор тоже выключен' );
+$item = static fn( $title, $source, $ago, $summary = '' ) => array( 'title' => $title, 'link' => 'https://' . $source . '/' . md5( $title ), 'date' => $now - $ago, 'summary' => $summary, 'source' => $source );
+$pool = array(
+    $item( 'Погода в Иркутске испортится к выходным', 'a.test', 10 ),
+    $item( 'Зенит обыграл Спартак в матче тура со счётом 3:1', 'a.test', 20 ),
+    $item( 'Спартак проиграл Зениту матч тура — 1:3', 'b.test', 30, 'Подробный анонс матча с составами и голами.' ),
+    $item( 'Нападающий Иванов перешёл в Динамо за рекордную сумму', 'b.test', 40 ),
+    $item( 'Иванов перешёл в Динамо: рекордная сумма трансфера', 'c.test', 50 ),
+    $item( 'Матч тура: Зенит победил Спартак', 'c.test', 60 ),
+    $item( 'Зенит и Спартак: разбор матча тура', 'a.test', 70 ),
+);
+$ranked = VKT_News::rank( $pool );
+$assert( 3 === count( $ranked ) && array( 3, 2, 1 ) === array_column( $ranked, 'mentions' ), 'Семь статей — три события; вторая статья того же сайта упоминанием не считается' );
+$assert( 'b.test' === $ranked[0]['source'] && 3 === count( $ranked[0]['also'] ) && array() === $ranked[2]['also'], 'Событие пересказывается по самому подробному анонсу, остальные статьи о нём запомнены' );
+$assert( 2 === count( VKT_News::rank( $pool, array( 'Зенит обыграл Спартак в матче тура' ) ) ), 'Событие, о котором сообщество уже писало, отбрасывается' );
+list( $short, $count, $hint ) = VKT_News::shortlist( $pool, array( 'pick' => 'mentions', 'limit' => 2 ) );
+$assert( 3 === count( $short ) && 2 === $count && 3 === $short[0]['mentions'] && str_contains( $hint, 'mentions' ), '«Самое упоминаемое»: список по убыванию упоминаний, с запасом на неподходящее' );
+list( $short, $count, $hint ) = VKT_News::shortlist( $pool, array( 'pick' => 'all', 'limit' => 2 ) );
+$assert( 2 === count( $short ) && 2 === $count && str_starts_with( $short[0]['title'], 'Погода' ) && str_contains( $hint, 'всё найденное' ), '«Всё найденное»: свежее первым, не больше предела, без повторов события' );
+list( $short, $count ) = VKT_News::shortlist( $pool, array( 'pick' => 'model', 'limit' => 1 ) );
+$assert( 3 === count( $short ) && 1 === $count, '«Самое интересное»: модель выбирает из всех событий' );
+$GLOBALS['vkt_model_text'] = '{"news":[{"id":1,"text":"Матч"}]}';
+$answer = VKT_AI::generate_news( $ranked, 'Спорт', 2, 'posts', '', '', 'Бери сверху вниз.' );
+$sent = (string) $GLOBALS['vkt_model_request']['messages'][0]['content'];
+$assert( str_contains( $sent, 'Бери сверху вниз.' ) && str_contains( $sent, '"mentions":3' ), 'Напутствие автосбора и счётчик упоминаний уходят модели' );
+$composed = VKT_News::compose( $ranked, $answer, 'posts' );
+$assert( 1 === count( $composed ) && 3 === $composed[0]['mentions'] && 3 === count( $composed[0]['also'] ) && array( $ranked[0]['link'] ) === $composed[0]['links'], 'Запись помнит все статьи своего события' );
+
 echo "PASS: $checks news checks\n";

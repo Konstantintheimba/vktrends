@@ -23,6 +23,15 @@ final class VKT_News {
     const MAX_ITEMS = 60;
     // Сколько уже использованных новостей помним, чтобы не предлагать их снова.
     const USED_MAX = 600;
+    // Автосбор: как часто, что брать и сколько записей ставить за один заход.
+    const AUTO_HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
+    // mentions — о чём пишут чаще всего, model — самое интересное на взгляд модели, all — всё найденное.
+    const AUTO_PICKS = array( 'mentions', 'model', 'all' );
+    const AUTO_PHOTOS = array( 'article', 'cover', 'none' );
+    const AUTO_MAX = 10;
+    // Упоминания считаются по всему найденному, а не по шестидесяти самым свежим.
+    const POOL_ITEMS = 200;
+    const RECENT_MAX = 80;
 
     private static function error( $message, $status = 400 ) {
         return new WP_Error( 'vkt_news', $message, array( 'status' => $status ) );
@@ -44,8 +53,34 @@ final class VKT_News {
             'days' => in_array( (int) ( $data['days'] ?? 0 ), self::DAYS, true ) ? (int) $data['days'] : 1,
             'mode' => in_array( $data['mode'] ?? '', self::MODES, true ) ? $data['mode'] : 'posts',
             'used' => array_slice( array_values( array_filter( (array) ( $data['used'] ?? array() ), 'is_string' ) ), -self::USED_MAX ),
+            // Заголовки событий, уже взятых автосбором: о том же событии завтра выйдут новые статьи с новыми ссылками.
+            'recent' => array_slice( array_values( array_filter( (array) ( $data['recent'] ?? array() ), 'is_string' ) ), -self::RECENT_MAX ),
             // Макет обложки сообщества: название, цвет градиента, метка, формат.
             'cover' => VKT_Cover::settings( $data['cover'] ?? array() ),
+            'auto' => self::auto( $data['auto'] ?? array() ),
+        );
+    }
+
+    /**
+     * Автосбор: настройки из формы и то, что плагин запоминает сам —
+     * когда и чем закончился последний заход и в какую серию он кладёт записи.
+     */
+    public static function auto( $raw ) {
+        $raw = is_array( $raw ) ? $raw : array();
+        return array(
+            'enabled' => ! empty( $raw['enabled'] ),
+            'hours' => in_array( (int) ( $raw['hours'] ?? 0 ), self::AUTO_HOURS, true ) ? (int) $raw['hours'] : 3,
+            'pick' => in_array( $raw['pick'] ?? '', self::AUTO_PICKS, true ) ? $raw['pick'] : 'mentions',
+            'limit' => max( 1, min( self::AUTO_MAX, (int) ( $raw['limit'] ?? 3 ) ) ),
+            // Полный пост по тексту статьи вместо короткого по анонсу: каждая статья — ещё один текст лимита.
+            'rewrite' => ! empty( $raw['rewrite'] ),
+            'photo' => in_array( $raw['photo'] ?? '', self::AUTO_PHOTOS, true ) ? $raw['photo'] : 'article',
+            'model' => is_string( $raw['model'] ?? null ) && preg_match( '/^[a-z0-9_-]{2,40}$/', $raw['model'] ) ? $raw['model'] : '',
+            'last_at' => max( 0, (int) ( $raw['last_at'] ?? 0 ) ),
+            'last_ok' => ! empty( $raw['last_ok'] ),
+            'last' => mb_substr( (string) ( $raw['last'] ?? '' ), 0, 400 ),
+            'series' => is_string( $raw['series'] ?? null ) && preg_match( '/^s[0-9a-z]{6,39}$/', $raw['series'] ) ? $raw['series'] : '',
+            'series_day' => is_string( $raw['series_day'] ?? null ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $raw['series_day'] ) ? $raw['series_day'] : '',
         );
     }
 
@@ -82,6 +117,14 @@ final class VKT_News {
         if ( $enabled && 'search' === $method && '' === $topic ) {
             return self::error( 'Опишите, какие новости искать: без этого поиску нечего спрашивать.' );
         }
+        // Форма присылает только то, что человек выбрал; чем кончился прошлый заход, помнит плагин.
+        $auto = $current['auto'] ?? array();
+        if ( is_array( $data['auto'] ?? null ) ) {
+            $auto = array_merge( $auto, array_intersect_key( $data['auto'], array_flip( array( 'enabled', 'hours', 'pick', 'limit', 'rewrite', 'photo', 'model' ) ) ) );
+        }
+        if ( ! $enabled ) {
+            $auto['enabled'] = false;
+        }
         return self::settings( array(
             'enabled' => $enabled,
             'method' => $method,
@@ -92,7 +135,9 @@ final class VKT_News {
             'days' => $data['days'] ?? 0,
             'mode' => $data['mode'] ?? '',
             'used' => $current['used'] ?? array(),
+            'recent' => $current['recent'] ?? array(),
             'cover' => $data['cover'] ?? ( $current['cover'] ?? array() ),
+            'auto' => $auto,
         ) );
     }
 
@@ -260,7 +305,7 @@ final class VKT_News {
             $report[] = array( 'url' => $url, 'ok' => true, 'total' => count( $found ), 'fresh' => $fresh, 'message' => '' );
         }
         usort( $items, static fn( $a, $b ) => (int) $b['date'] <=> (int) $a['date'] );
-        return array( 'items' => array_slice( $items, 0, self::MAX_ITEMS ), 'sources' => $report );
+        return array( 'items' => array_slice( $items, 0, (int) ( $settings['pool'] ?? self::MAX_ITEMS ) ), 'sources' => $report );
     }
 
     /** Адрес для сравнения: без протокола, www, меток и хвостового слеша. */
@@ -521,7 +566,90 @@ final class VKT_News {
             return self::error( 'Поиск плагина не получил выдачу: ' . $failed[0] . '. Попробуйте позже или выберите другой поиск в поле «Кто ищет».', 502 );
         }
         usort( $items, static fn( $a, $b ) => (int) $b['date'] <=> (int) $a['date'] );
-        return array( 'items' => array_slice( $items, 0, self::MAX_ITEMS ), 'sources' => array( array( 'url' => 'Поиск плагина · запросы: ' . implode( '; ', $queries ), 'ok' => true, 'total' => $total, 'fresh' => count( $items ), 'message' => $failed ? 'не ответило запросов: ' . count( $failed ) : '' ) ) );
+        return array( 'items' => array_slice( $items, 0, (int) ( $settings['pool'] ?? self::MAX_ITEMS ) ), 'sources' => array( array( 'url' => 'Поиск плагина · запросы: ' . implode( '; ', $queries ), 'ok' => true, 'total' => $total, 'fresh' => count( $items ), 'message' => $failed ? 'не ответило запросов: ' . count( $failed ) : '' ) ) );
+    }
+
+    /** Слова заголовка для сравнения: без коротких, обрезанные до четырёх букв — «матч», «матча» и «матче» совпадают. */
+    private static function stems( $title ) {
+        preg_match_all( '/[\p{L}\p{N}]{4,}/u', mb_strtolower( (string) $title ), $found );
+        $stems = array();
+        foreach ( $found[0] as $word ) {
+            $stems[ mb_substr( $word, 0, 4 ) ] = true;
+        }
+        return $stems;
+    }
+
+    /**
+     * Одно событие из разных источников — одна новость со счётчиком
+     * упоминаний. Сходство считается по словам заголовка: общих основ не
+     * меньше трёх и не меньше половины более короткого заголовка. Сверху то,
+     * о чём пишут больше изданий; при равенстве — более свежее. $recent —
+     * заголовки уже опубликованных событий: похожее на них отбрасывается.
+     */
+    /** Насколько два заголовка об одном: доля общих основ от более короткого. Меньше трёх общих — не об одном. */
+    private static function likeness( $a, $b ) {
+        $common = count( array_intersect_key( $a, $b ) );
+        $smaller = min( count( $a ), count( $b ) );
+        return $common >= 3 && $smaller ? $common / $smaller : 0;
+    }
+
+    public static function rank( $items, $recent = array() ) {
+        $taken = array_map( array( __CLASS__, 'stems' ), (array) $recent );
+        $clusters = array();
+        foreach ( array_values( (array) $items ) as $item ) {
+            $stems = self::stems( $item['title'] );
+            foreach ( $taken as $old ) {
+                // Событие уже публиковалось: свежая статья о нём — не новость для подписчика.
+                if ( self::likeness( $stems, $old ) >= 0.5 ) {
+                    continue 2;
+                }
+            }
+            $best = -1;
+            $best_score = 0;
+            foreach ( $clusters as $index => $cluster ) {
+                $score = self::likeness( $stems, $cluster['stems'] );
+                if ( $score >= 0.5 && $score > $best_score ) {
+                    $best = $index;
+                    $best_score = $score;
+                }
+            }
+            if ( $best < 0 ) {
+                // Сравниваем всегда с первым заголовком группы: иначе цепочка похожих увела бы её к другой теме.
+                $clusters[] = array( 'stems' => $stems, 'lead' => $item, 'sources' => array( (string) $item['source'] => true ), 'date' => (int) $item['date'], 'links' => array( $item['link'] ) );
+                continue;
+            }
+            $clusters[ $best ]['links'][] = $item['link'];
+            $clusters[ $best ]['sources'][ (string) $item['source'] ] = true;
+            $clusters[ $best ]['date'] = max( $clusters[ $best ]['date'], (int) $item['date'] );
+            // Пересказывать лучше по самому подробному анонсу.
+            if ( mb_strlen( (string) $item['summary'] ) > mb_strlen( (string) $clusters[ $best ]['lead']['summary'] ) ) {
+                $clusters[ $best ]['lead'] = $item;
+            }
+        }
+        // Две статьи одного сайта — одно упоминание: иначе издание накручивало бы событие само себе.
+        usort( $clusters, static fn( $a, $b ) => array( count( $b['sources'] ), count( $b['links'] ), $b['date'] ) <=> array( count( $a['sources'] ), count( $a['links'] ), $a['date'] ) );
+        // also — остальные статьи о том же: использованными отмечаются все, иначе следующий заход взял бы событие снова.
+        return array_map( static fn( $cluster ) => array_merge( $cluster['lead'], array( 'mentions' => count( $cluster['sources'] ), 'also' => array_values( array_diff( $cluster['links'], array( $cluster['lead']['link'] ) ) ) ) ), $clusters );
+    }
+
+    /**
+     * Что из найденного автосбор отдаёт модели, сколько записей просит и с
+     * каким напутствием. Повторы одного события убраны при любом выборе:
+     * дважды одну новость сообщество публиковать не должно.
+     */
+    public static function shortlist( $items, $auto, $recent = array() ) {
+        $ranked = self::rank( $items, $recent );
+        $limit = (int) $auto['limit'];
+        if ( 'mentions' === $auto['pick'] ) {
+            // С запасом: часть самых упоминаемых может не подойти сообществу по выборке.
+            return array( array_slice( $ranked, 0, max( 10, $limit * 3 ) ), $limit, 'Список отсортирован по числу изданий, написавших о событии (поле mentions): чем выше новость, тем она заметнее. Бери сверху вниз и пропускай только то, что сообществу не подходит.' );
+        }
+        usort( $ranked, static fn( $a, $b ) => (int) $b['date'] <=> (int) $a['date'] );
+        if ( 'all' === $auto['pick'] ) {
+            $ranked = array_slice( $ranked, 0, $limit );
+            return array( $ranked, count( $ranked ), 'Владелец просил публиковать всё найденное: напиши запись по каждой новости списка, пропусти только рекламу и повтор одного события.' );
+        }
+        return array( array_slice( $ranked, 0, self::MAX_ITEMS ), $limit, 'Выбирай самое интересное и значимое для подписчиков: то, что захочется обсудить или переслать.' );
     }
 
     /**
@@ -533,7 +661,7 @@ final class VKT_News {
         foreach ( (array) ( $answer['picks'] ?? array() ) as $pick ) {
             $item = $items[ (int) $pick['id'] - 1 ] ?? null;
             if ( $item && '' !== trim( (string) $pick['text'] ) ) {
-                $picked[] = array( 'text' => trim( (string) $pick['text'] ), 'title' => $item['title'], 'link' => $item['link'], 'source' => $item['source'] );
+                $picked[] = array( 'text' => trim( (string) $pick['text'] ), 'title' => $item['title'], 'link' => $item['link'], 'source' => $item['source'], 'mentions' => (int) ( $item['mentions'] ?? 1 ), 'also' => (array) ( $item['also'] ?? array() ) );
             }
         }
         if ( ! $picked ) {
@@ -550,6 +678,9 @@ final class VKT_News {
             'link' => '',
             'source' => implode( ', ', array_unique( array_column( $picked, 'source' ) ) ),
             'links' => array_column( $picked, 'link' ),
+            'mentions' => 1,
+            'also' => array_merge( array(), ...array_column( $picked, 'also' ) ),
+            'titles' => array_column( $picked, 'title' ),
         ) );
     }
 }

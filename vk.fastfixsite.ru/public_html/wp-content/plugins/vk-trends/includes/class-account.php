@@ -252,6 +252,7 @@ final class VKT_Account {
         $usage = self::ai_usage( $user_id );
         ++$usage[ $kind ];
         update_user_meta( $user_id, 'vkt_ai_usage', $usage );
+        VKT_Notify::limit( $user_id, $kind, $usage[ $kind ], self::limit( $kind, $user_id ) );
     }
 
     // ——— Раздел «Пользователи» ———
@@ -325,5 +326,6 @@ final class VKT_Account {
         $wpdb->delete( VKT_Store::table( 'outbound_posts' ), array( 'user_id' => $user_id ) );
         $wpdb->delete( VKT_Store::table( 'publishing_groups' ), array( 'user_id' => $user_id ) );
         VKT_Replies::purge_user( $user_id );
+        VKT_Notify::purge_user( $user_id );
     }
 }

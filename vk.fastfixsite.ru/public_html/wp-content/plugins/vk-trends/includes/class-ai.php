@@ -12,6 +12,7 @@ final class VKT_AI {
     // Готовые настройки поставщиков: адрес и модель подставляются в форму, их можно поправить.
     const PRESETS = array(
         'xai' => array( 'title' => 'xAI Grok', 'base' => 'https://api.x.ai/v1', 'model' => 'grok-4.6' ),
+        'openai' => array( 'title' => 'OpenAI', 'base' => 'https://api.openai.com/v1', 'model' => 'gpt-5.4-mini' ),
         'deepseek' => array( 'title' => 'DeepSeek', 'base' => 'https://api.deepseek.com', 'model' => 'deepseek-chat' ),
         'qwen' => array( 'title' => 'Qwen (Alibaba Cloud)', 'base' => 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'model' => 'qwen-plus' ),
         'gemini' => array( 'title' => 'Google Gemini', 'base' => 'https://generativelanguage.googleapis.com/v1beta/openai', 'model' => 'gemini-2.5-flash' ),
@@ -26,8 +27,37 @@ final class VKT_AI {
     const IMAGE_RATIOS = array( 'portrait' => '3:4', 'square' => '1:1', 'landscape' => '16:9', 'story' => '9:16' );
     const VIDEO_RATIOS = array( 'story' => '9:16', 'square' => '1:1', 'landscape' => '16:9' );
 
+    const KEYS_OPTION = 'vkt_ai_keys';
+
+    /**
+     * Ключи поставщиков: один на поставщика, им пользуются все его модели.
+     * Сменить или удалить ключ можно в одном месте, не перебирая модели.
+     * Константа VKT_XAI_API_KEY из wp-config.php главнее сохранённого ключа
+     * xAI: так было до появления раздела «Нейросети».
+     */
+    private static function keys() {
+        $saved = get_option( self::KEYS_OPTION, array() );
+        $saved = is_array( $saved ) ? $saved : array();
+        $out = array();
+        foreach ( $saved as $preset => $entry ) {
+            $key = isset( self::PRESETS[ $preset ] ) && is_array( $entry ) ? VKT_Tokens::unseal( (string) ( $entry['key'] ?? '' ) ) : '';
+            if ( '' !== $key ) {
+                $out[ $preset ] = array( 'key' => $key, 'base' => (string) ( $entry['base'] ?? '' ) ?: self::PRESETS[ $preset ]['base'], 'saved_at' => (string) ( $entry['saved_at'] ?? '' ), 'locked' => false );
+            }
+        }
+        if ( defined( 'VKT_XAI_API_KEY' ) && '' !== trim( (string) VKT_XAI_API_KEY ) ) {
+            $out['xai'] = array( 'key' => trim( (string) VKT_XAI_API_KEY ), 'base' => self::PRESETS['xai']['base'], 'saved_at' => '', 'locked' => true );
+        }
+        return $out;
+    }
+
+    private static function xai_key() {
+        return (string) ( self::keys()['xai']['key'] ?? '' );
+    }
+
+    /** Картинки и видео Grok: есть ли ключ xAI — из wp-config.php или из раздела «Нейросети». */
     public static function configured() {
-        return defined( 'VKT_XAI_API_KEY' ) && '' !== trim( (string) VKT_XAI_API_KEY );
+        return '' !== self::xai_key();
     }
 
     /** Для текстов годится любая сохранённая модель, а не только xAI. */
@@ -42,15 +72,18 @@ final class VKT_AI {
      */
     private static function models() {
         $stored = get_option( self::MODELS_OPTION, array() );
+        $keys = self::keys();
         $models = array();
-        if ( self::configured() ) {
-            $models['xai'] = array( 'title' => 'xAI Grok (wp-config.php)', 'preset' => 'xai', 'base' => self::PRESETS['xai']['base'], 'model' => self::TEXT_MODEL, 'key' => trim( (string) VKT_XAI_API_KEY ), 'builtin' => true );
+        if ( isset( $keys['xai'] ) ) {
+            $models['xai'] = array( 'title' => $keys['xai']['locked'] ? 'xAI Grok (wp-config.php)' : 'xAI Grok', 'preset' => 'xai', 'base' => self::PRESETS['xai']['base'], 'model' => self::TEXT_MODEL, 'key' => $keys['xai']['key'], 'builtin' => true, 'shared' => true );
         }
         foreach ( (array) ( $stored['models'] ?? array() ) as $id => $entry ) {
             if ( ! is_array( $entry ) || ! preg_match( '/^[a-z0-9_-]{2,40}$/', (string) $id ) ) {
                 continue;
             }
-            $key = VKT_Tokens::unseal( (string) ( $entry['key'] ?? '' ) );
+            // Модель без своего ключа работает ключом поставщика; удалён он — модель выключена, пока ключ не вернут.
+            $own = VKT_Tokens::unseal( (string) ( $entry['key'] ?? '' ) );
+            $key = '' !== $own ? $own : (string) ( $keys[ (string) ( $entry['preset'] ?? '' ) ]['key'] ?? '' );
             if ( '' === $key ) {
                 continue;
             }
@@ -61,6 +94,7 @@ final class VKT_AI {
                 'model' => (string) ( $entry['model'] ?? '' ),
                 'key' => $key,
                 'builtin' => false,
+                'shared' => '' === $own,
             );
         }
         return $models;
@@ -83,6 +117,7 @@ final class VKT_AI {
                 'model' => $model['model'],
                 'host' => (string) wp_parse_url( $model['base'], PHP_URL_HOST ),
                 'builtin' => $model['builtin'],
+                'shared' => $model['shared'],
                 'preview' => mb_substr( $model['key'], 0, 6 ) . '…' . mb_substr( $model['key'], -4 ),
             );
         }
@@ -102,7 +137,16 @@ final class VKT_AI {
         $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
         $model = trim( (string) ( $data['model'] ?? '' ) ) ?: self::PRESETS[ $preset ]['model'];
         $title = sanitize_text_field( (string) ( $data['title'] ?? '' ) ) ?: self::PRESETS[ $preset ]['title'] . ' · ' . $model;
-        $key = trim( (string) ( $data['key'] ?? '' ) );
+        $own = trim( (string) ( $data['key'] ?? '' ) );
+        $shared = self::keys()[ $preset ] ?? null;
+        // Поле ключа пустое — модель берёт ключ и адрес поставщика из раздела «Нейросети».
+        $key = '' !== $own ? $own : (string) ( $shared['key'] ?? '' );
+        if ( '' === $own && $shared && '' === trim( (string) ( $data['base'] ?? '' ) ) ) {
+            $base = untrailingslashit( $shared['base'] );
+        }
+        if ( '' === $key ) {
+            return self::error( 'У поставщика «' . self::PRESETS[ $preset ]['title'] . '» нет сохранённого ключа: подключите его выше или впишите ключ для этой модели.' );
+        }
         if ( '' === $base || ! wp_http_validate_url( $base ) ) {
             return self::error( 'Нужен адрес API по https — например, https://api.deepseek.com.' );
         }
@@ -116,7 +160,7 @@ final class VKT_AI {
         if ( is_wp_error( $probe ) ) {
             return $probe;
         }
-        $sealed = VKT_Tokens::seal( $key );
+        $sealed = '' === $own ? '' : VKT_Tokens::seal( $own );
         if ( is_wp_error( $sealed ) ) {
             return $sealed;
         }
@@ -133,7 +177,7 @@ final class VKT_AI {
     public static function delete_model( $id ) {
         $stored = (array) get_option( self::MODELS_OPTION, array() );
         if ( ! isset( $stored['models'][ $id ] ) ) {
-            return self::error( 'xai' === $id ? 'Модель из wp-config.php убирается там же — константой VKT_XAI_API_KEY.' : 'Модель не найдена.', 404 );
+            return self::error( 'xai' === $id ? 'Эта модель живёт, пока есть ключ xAI: уберите ключ поставщика.' : 'Модель не найдена.', 404 );
         }
         unset( $stored['models'][ $id ] );
         if ( ( $stored['default'] ?? '' ) === $id ) {
@@ -163,6 +207,185 @@ final class VKT_AI {
         return is_wp_error( $answer ) ? $answer : array( 'answer' => mb_substr( $answer, 0, 60 ) );
     }
 
+    // ——— Ключи поставщиков: подключение, проверка, удаление ———
+
+    /** Поставщики для раздела «Нейросети»: подключён ли ключ и что показала последняя проверка. Сами ключи наружу не уходят. */
+    public static function providers() {
+        $keys = self::keys();
+        $saved = get_option( self::KEYS_OPTION, array() );
+        $out = array();
+        foreach ( self::PRESETS as $id => $preset ) {
+            $entry = $keys[ $id ] ?? null;
+            $out[] = array(
+                'id' => $id,
+                'title' => $preset['title'],
+                'base' => $entry ? $entry['base'] : $preset['base'],
+                'connected' => (bool) $entry,
+                'locked' => $entry && $entry['locked'],
+                'preview' => $entry ? mb_substr( $entry['key'], 0, 6 ) . '…' . mb_substr( $entry['key'], -4 ) : '',
+                'saved_at' => $entry ? $entry['saved_at'] : '',
+                'probe' => is_array( $saved[ $id ]['probe'] ?? null ) ? $saved[ $id ]['probe'] : null,
+            );
+        }
+        return $out;
+    }
+
+    /** К чему относится модель по названию: текст, картинки, видео или служебное (звук, векторы, модерация). */
+    private static function model_kind( $id ) {
+        if ( preg_match( '/sora|video|veo/i', $id ) ) {
+            return 'video';
+        }
+        if ( preg_match( '/image|dall-e|imagine/i', $id ) ) {
+            return 'image';
+        }
+        return preg_match( '/embed|tts|whisper|transcri|audio|realtime|moderation|speech|rerank|guard/i', $id ) ? 'other' : 'text';
+    }
+
+    /**
+     * Что умеет ключ: список моделей поставщика, разложенный по видам, пробный
+     * текстовый запрос и — у OpenAI — жив ли адрес генерации видео. Платных
+     * запросов, кроме одного слова текста, проверка не делает.
+     */
+    private static function probe( $preset, $base, $key ) {
+        $base = untrailingslashit( $base );
+        $args = array( 'timeout' => 20, 'redirection' => 0, 'sslverify' => true, 'limit_response_size' => 2097152, 'headers' => array( 'Authorization' => 'Bearer ' . $key ) );
+        $response = wp_remote_get( $base . '/models', $args );
+        $http = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+        $raw = is_wp_error( $response ) ? '' : (string) wp_remote_retrieve_body( $response );
+        $data = json_decode( $raw, true );
+        $listed = 200 === $http && is_array( $data['data'] ?? null );
+        if ( 401 === $http ) {
+            return self::error( self::PRESETS[ $preset ]['title'] . ' отверг ключ (HTTP 401): ' . self::reason( $data, $raw, $http, $key ), 401 );
+        }
+        $today = gmdate( 'Y-m-d' );
+        $kinds = array( 'text' => array(), 'image' => array(), 'video' => array() );
+        $retired = array();
+        foreach ( $listed ? $data['data'] : array() as $item ) {
+            $id = sanitize_text_field( (string) ( $item['id'] ?? '' ) );
+            $kind = self::model_kind( $id );
+            if ( '' === $id || ! isset( $kinds[ $kind ] ) ) {
+                continue;
+            }
+            // Поставщик держит отключённую модель в списке: по названию она есть, а запрос к ней уже не пройдёт.
+            $off = is_string( $item['shutdown_date'] ?? null ) && $item['shutdown_date'] < $today;
+            if ( $off ) {
+                $retired[ $kind ][] = $id . ' — отключена с ' . $item['shutdown_date'];
+            } else {
+                $kinds[ $kind ][] = $id;
+            }
+        }
+        foreach ( $kinds as &$ids ) {
+            sort( $ids );
+        }
+        unset( $ids );
+        // Пробный текст — моделью по умолчанию; у своего поставщика её нет, берём первую из списка.
+        $model = '' !== self::PRESETS[ $preset ]['model'] ? self::PRESETS[ $preset ]['model'] : (string) ( $kinds['text'][0] ?? '' );
+        $answer = '' === $model ? self::error( 'поставщик не назвал ни одной модели для текста.' ) : self::chat( 'Ответь одним словом: готово', 30, array( 'title' => self::PRESETS[ $preset ]['title'] . ' · ' . $model, 'preset' => $preset, 'base' => $base, 'model' => $model, 'key' => $key ) );
+        if ( ! $listed && is_wp_error( $answer ) ) {
+            return $answer;
+        }
+        $video_note = '';
+        if ( 'openai' === $preset && $kinds['video'] ) {
+            $videos = wp_remote_get( $base . '/videos?limit=1', $args );
+            $code = is_wp_error( $videos ) ? 0 : (int) wp_remote_retrieve_response_code( $videos );
+            if ( 200 !== $code ) {
+                $video_note = 'Адрес генерации видео ответил кодом ' . $code . ' — модели в списке есть, но видео этим ключом не сделать.';
+                $kinds['video'] = array();
+            }
+        }
+        if ( ! $kinds['video'] && '' === $video_note ) {
+            $video_note = ! empty( $retired['video'] ) ? 'Видео недоступно: ' . implode( '; ', $retired['video'] ) . '.' : 'Моделей для видео у этого ключа нет.';
+        }
+        return array(
+            'at' => gmdate( 'Y-m-d H:i:s' ),
+            'listed' => $listed,
+            'text' => array( 'ok' => ! is_wp_error( $answer ), 'model' => $model, 'message' => is_wp_error( $answer ) ? $answer->get_error_message() : mb_substr( $answer, 0, 60 ), 'models' => array_slice( $kinds['text'], 0, 120 ) ),
+            'image' => array_slice( $kinds['image'], 0, 40 ),
+            'video' => array( 'models' => array_slice( $kinds['video'], 0, 20 ), 'note' => $video_note ),
+        );
+    }
+
+    private static function store_key( $preset, $entry ) {
+        $saved = get_option( self::KEYS_OPTION, array() );
+        $saved = is_array( $saved ) ? $saved : array();
+        if ( null === $entry ) {
+            unset( $saved[ $preset ] );
+        } else {
+            $saved[ $preset ] = array_merge( (array) ( $saved[ $preset ] ?? array() ), $entry );
+        }
+        update_option( self::KEYS_OPTION, $saved, false );
+    }
+
+    /**
+     * Подключает ключ поставщика: сначала проверка, потом сохранение. Если у
+     * поставщика ещё нет ни одной модели для текста, добавляется его модель
+     * по умолчанию — ключ начинает работать сразу.
+     */
+    public static function save_key( $data ) {
+        $preset = sanitize_key( (string) ( $data['preset'] ?? '' ) );
+        if ( ! isset( self::PRESETS[ $preset ] ) ) {
+            return self::error( 'Неизвестный поставщик.' );
+        }
+        if ( ! empty( self::keys()[ $preset ]['locked'] ) ) {
+            return self::error( 'Ключ xAI задан в wp-config.php константой VKT_XAI_API_KEY — меняется там же.' );
+        }
+        $key = trim( (string) ( $data['key'] ?? '' ) );
+        $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
+        if ( ! preg_match( '/^[!-~]{8,512}$/', $key ) ) {
+            return self::error( 'Вставьте ключ API целиком.' );
+        }
+        if ( '' === $base || ! wp_http_validate_url( $base ) ) {
+            return self::error( 'Нужен адрес API по https — например, https://api.openai.com/v1.' );
+        }
+        $probe = self::probe( $preset, $base, $key );
+        if ( is_wp_error( $probe ) ) {
+            return $probe;
+        }
+        $sealed = VKT_Tokens::seal( $key );
+        if ( is_wp_error( $sealed ) ) {
+            return $sealed;
+        }
+        self::store_key( $preset, array( 'key' => $sealed, 'base' => $base, 'saved_at' => gmdate( 'Y-m-d H:i:s' ), 'probe' => $probe ) );
+        $has_model = (bool) array_filter( self::models(), static fn( $model ) => $model['preset'] === $preset );
+        if ( ! $has_model && $probe['text']['ok'] ) {
+            $stored = (array) get_option( self::MODELS_OPTION, array() );
+            $id = $preset . '-' . substr( md5( $base . '|' . $probe['text']['model'] ), 0, 8 );
+            $stored['models'][ $id ] = array( 'title' => self::PRESETS[ $preset ]['title'] . ' · ' . $probe['text']['model'], 'preset' => $preset, 'base' => $base, 'model' => $probe['text']['model'], 'key' => '', 'created_at' => gmdate( 'Y-m-d H:i:s' ) );
+            if ( empty( $stored['default'] ) ) {
+                $stored['default'] = $id;
+            }
+            update_option( self::MODELS_OPTION, $stored, false );
+        }
+        return array( 'ok' => true, 'title' => self::PRESETS[ $preset ]['title'], 'probe' => $probe );
+    }
+
+    /** Повторная проверка сохранённого ключа: итог запоминается и виден в карточке поставщика. */
+    public static function check_key( $preset ) {
+        $entry = self::keys()[ $preset ] ?? null;
+        if ( ! $entry ) {
+            return self::error( 'У этого поставщика нет сохранённого ключа.', 404 );
+        }
+        $probe = self::probe( $preset, $entry['base'], $entry['key'] );
+        if ( is_wp_error( $probe ) ) {
+            return $probe;
+        }
+        self::store_key( $preset, array( 'probe' => $probe ) );
+        return array( 'ok' => true, 'title' => self::PRESETS[ $preset ]['title'], 'probe' => $probe );
+    }
+
+    /** Удаляет ключ поставщика. Его модели без своего ключа выключаются и вернутся, когда ключ подключат снова. */
+    public static function delete_key( $preset ) {
+        $entry = self::keys()[ $preset ] ?? null;
+        if ( ! $entry ) {
+            return self::error( 'У этого поставщика нет сохранённого ключа.', 404 );
+        }
+        if ( $entry['locked'] ) {
+            return self::error( 'Ключ xAI задан в wp-config.php константой VKT_XAI_API_KEY — убирается там же.' );
+        }
+        self::store_key( $preset, null );
+        return array( 'ok' => true );
+    }
+
     /**
      * Один запрос к модели для текстов. $model — ID из списка или сама
      * запись модели (при проверке перед сохранением). Пустой ID — модель по умолчанию.
@@ -172,7 +395,7 @@ final class VKT_AI {
             $models = self::models();
             $id = is_string( $model ) && isset( $models[ $model ] ) ? $model : self::default_model();
             if ( '' === $id ) {
-                return self::error( 'Не подключена ни одна модель для текстов. Добавьте её в «Настройках».', 400 );
+                return self::error( 'Не подключена ни одна модель для текстов. Добавьте её в разделе «Нейросети».', 400 );
             }
             $model = $models[ $id ];
         }
@@ -201,7 +424,7 @@ final class VKT_AI {
             return new WP_Error( 'vkt_ai', $name . ' отклонил запрос (HTTP ' . $http . '): ' . $reason, array(
                 'status' => 422,
                 'retryable' => 429 === $http || $http >= 500,
-                'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Выбрать другую модель — «Настройки»' ) : null,
+                'fix' => VKT_Account::is_admin() ? array( 'view' => 'models', 'label' => 'Выбрать другую модель — «Нейросети»' ) : null,
             ) );
         }
         $text = self::choice_text( $data );
@@ -248,6 +471,8 @@ final class VKT_AI {
             'configured' => self::text_configured(),
             'media_configured' => self::configured(),
             'models' => self::text_models(),
+            // Ключи поставщиков и итоги их проверки — только администратору.
+            'providers' => VKT_Account::is_admin() ? self::providers() : array(),
             'default_model' => self::default_model(),
             'presets' => self::PRESETS,
             'text_model' => self::TEXT_MODEL,
@@ -271,7 +496,7 @@ final class VKT_AI {
 
     private static function request( $method, $path, $body = null, $timeout = 90 ) {
         if ( ! self::configured() ) {
-            return self::error( 'Ключ xAI не настроен на сервере.' );
+            return self::error( 'Ключ xAI не подключён: сохраните его в разделе «Нейросети».' );
         }
         $args = array(
             'method' => $method,
@@ -280,7 +505,7 @@ final class VKT_AI {
             'sslverify' => true,
             'limit_response_size' => 2097152,
             'headers' => array(
-                'Authorization' => 'Bearer ' . trim( (string) VKT_XAI_API_KEY ),
+                'Authorization' => 'Bearer ' . self::xai_key(),
                 'Content-Type' => 'application/json',
             ),
         );
@@ -297,7 +522,7 @@ final class VKT_AI {
         $http = wp_remote_retrieve_response_code( $response );
         $data = json_decode( wp_remote_retrieve_body( $response ), true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
-            $message = self::reason( $data, (string) wp_remote_retrieve_body( $response ), $http, trim( (string) VKT_XAI_API_KEY ) );
+            $message = self::reason( $data, (string) wp_remote_retrieve_body( $response ), $http, self::xai_key() );
             VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', $http, mb_substr( 'xAI: ' . $message, 0, 250 ), $duration );
             return self::error( 'xAI отклонил запрос (HTTP ' . $http . '): ' . mb_substr( $message, 0, 220 ), in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
         }
@@ -461,7 +686,7 @@ final class VKT_AI {
             // Первым, то есть по умолчанию: ему не нужен ключ поиска и он не зависит от страны сервера.
             $list['feed'] = array( 'title' => 'Поиск плагина · работает с любой моделью для текста (DeepSeek и другие)', 'kind' => 'feed' );
         }
-        $xai = self::configured() ? trim( (string) VKT_XAI_API_KEY ) : '';
+        $xai = self::xai_key();
         foreach ( $models as $model ) {
             if ( '' === $xai && 'xai' === $model['preset'] ) {
                 $xai = $model['key'];
@@ -534,7 +759,7 @@ final class VKT_AI {
         if ( '' === $id ) {
             return new WP_Error( 'vkt_ai', 'Искать в интернете нечем: не подключена ни одна модель для текстов.', array(
                 'status' => 400,
-                'fix' => VKT_Account::is_admin() ? array( 'view' => 'settings', 'label' => 'Подключить модель — «Настройки»' ) : null,
+                'fix' => VKT_Account::is_admin() ? array( 'view' => 'models', 'label' => 'Подключить модель — «Нейросети»' ) : null,
             ) );
         }
         $entry = $registry[ $id ];
@@ -718,10 +943,12 @@ final class VKT_AI {
         return '' === $post ? self::error( 'Модель не вернула текст.', 502, true ) : mb_substr( $post, 0, 15000 );
     }
 
-    public static function generate_news( $items, $topic, $count, $mode, $model = '', $context = '' ) {
+    /** $hint — напутствие автосбора: по какому признаку отбирать из списка. */
+    public static function generate_news( $items, $topic, $count, $mode, $model = '', $context = '', $hint = '' ) {
         $list = array();
         foreach ( array_values( (array) $items ) as $index => $item ) {
-            $list[] = array( 'id' => $index + 1, 'title' => (string) $item['title'], 'summary' => mb_substr( (string) $item['summary'], 0, 400 ), 'source' => (string) $item['source'], 'date' => null === $item['date'] ? '' : wp_date( 'd.m H:i', (int) $item['date'] ) );
+            $list[] = array( 'id' => $index + 1, 'title' => (string) $item['title'], 'summary' => mb_substr( (string) $item['summary'], 0, 400 ), 'source' => (string) $item['source'], 'date' => null === $item['date'] ? '' : wp_date( 'd.m H:i', (int) $item['date'] ) )
+                + ( isset( $item['mentions'] ) ? array( 'mentions' => (int) $item['mentions'] ) : array() );
         }
         if ( ! $list ) {
             return self::error( 'Нет новостей для отбора.' );
@@ -734,6 +961,7 @@ final class VKT_AI {
             . ' Одно событие из разных источников бери один раз. Подходящих меньше — верни меньше, не добирай неподходящими. Самое важное ставь первым.'
             . ' Ссылки и слово «Источник» не пиши: источник к каждой записи добавится автоматически. Без Markdown.'
             . ( $digest ? ' В intro — одна вводная строка дайджеста.' : '' )
+            . ( '' !== $hint ? ' ' . $hint : '' )
             . ' Верни строго JSON вида {' . ( $digest ? '"intro":"вводная строка",' : '' ) . '"news":[{"id":1,"text":"текст"}]} — id из списка, без пояснений.'
             . "
 

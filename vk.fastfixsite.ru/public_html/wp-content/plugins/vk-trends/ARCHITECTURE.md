@@ -166,6 +166,12 @@
 
 - **`VKT_Health`** (`class-health.php`) — неполадки и «где чинить». `issues()`, `fix_for($slot,$code)`.
 
+- **Ключи поставщиков нейросетей** — в `VKT_AI`: опция `vkt_ai_keys` (поставщик из `PRESETS` → зашифрованный ключ, адрес, итог проверки `probe`). `keys()` — единственное место, где ключ достаётся; константа `VKT_XAI_API_KEY` главнее сохранённого ключа xAI. Модель в `vkt_text_models` с пустым `key` работает ключом своего поставщика. `probe()` раскладывает `GET {base}/models` на текст/картинки/видео (`model_kind()` — по названию), отбрасывает модели с прошедшей `shutdown_date` и делает один пробный `chat()`. Новый поставщик — запись в `PRESETS`. Раздел интерфейса — `models()` в `dashboard.js` (вид `models`, «Нейросети»).
+
+- **`VKT_Notify`** (`class-notify.php`) — оповещения: колокольчик (таблица `notifications`) и сообщения в VK (`messages.send` ключом сообщества-бота) и Telegram. `add()` (с паузой на повтор по `kind`), `admins()`, `limit()` (из `VKT_Account::ai_spend`), `funds()` (из `VKT_Store::log` на ошибках контекста `ai`), `health()` (неполадки `VKT_Health` в оповещения), `cron()` (привязка Telegram, сверки, отправка очереди), `save_site()`/`save_prefs()`, `tg_link()`/`tg_poll()`. Ключи бота — опция `vkt_notify` (зашифрованы), личные каналы — usermeta `vkt_notify`. Новый канал — ветка в `send()` и поле в `site()`/`prefs()`.
+
+- **`VKT_Autonews`** (`class-autonews.php`) — автосбор новостей по расписанию. `plan()` пишет срок в `publishing_groups.news_auto_at`, `cron()` берёт одну готовую группу за проход и выполняет `run()` от имени её владельца: `VKT_Groups::collect_news( $id, $model, $auto )` → рерайт и фото по настройкам → `VKT_Publisher::create_series()` в серию дня. Отбор — `VKT_News::rank()` (склейка статей об одном событии, счёт упоминаний) и `shortlist()`; настройки и итог захода — `news.auto` в JSON группы, память о взятых событиях — `news.recent`.
+
 ---
 
 ## 4. База данных
@@ -192,6 +198,7 @@
 | `user_videos` | ролики кабинета | `(user_id, video_id)` |
 | `comment_inbox` | лента комментариев (есть колонка `media` для вложений) | `id` |
 | `comment_replies` | очередь/статусы ответов на комментарии | `id` |
+| `notifications` | оповещения кабинета: колокольчик и очередь сообщений (`push=1` — ждёт отправки) | `id` |
 
 Миграции версий выполняются **внутри `install()`** по `version_compare(vkt_db_version, …)` — см. `class-store.php` (переходы 0.10.1, 0.11.2, 0.22.0). Новые колонки описываются в соответствующем `schema()` и подхватываются `dbDelta` автоматически.
 
@@ -214,6 +221,8 @@
 - группы: `group_detail`, `group_hide`, `group_passport`, `group_passport_draft`, `group_material_save/delete`, `group_stats`;
 - новости группы: `group_news_save/check/reset/collect`, `group_news_rewrite` (полный пост по статье, один текст лимита), `group_news_photos` (снимки статьи), `group_news_photo_save` (снимок в медиатеку), `cover_make` (обложка сообщества, `preview` — без сохранения), `image_search` (картинки с Викисклада);
 - генерация: `ai_text`, `ai_image` (прежний прямой путь в xAI, интерфейс им больше не пользуется), `ai_video_start/status`, `image_start/status`, `shop_post`, `flux_start/status` (все кабинеты, через лимит), `flux_credits` (админ);
+- нейросети (админ): `ai_key_save/check/delete` — ключ поставщика с проверкой (`VKT_AI::save_key`, `check_key`, `delete_key`), `ai_model_*` — модели для текстов;
+- автосбор и оповещения: `group_news_auto_run` (перенести заход на сейчас), `notify_read`, `notify_save`, `notify_test`, `notify_tg_link/check/unlink`, `notify_site` (админ: ключи бота);
 - админ: `user_status`, `user_limits`, `ai_model_*`, `vkid_start`;
 - прочее: `product`, `link`, `enqueue`, `delete`, `resolve_link`.
 
@@ -240,6 +249,8 @@
 - WP-cron крутится **только при заходах на сайт** — на боевом хостинге нужен системный cron раз в минуту на `wp-cron.php` (см. README, раздел «Расписание на хостинге»). На vk.fastfixsite.ru задача стоит в планировщике Beget с 03.10.2026: `wget -q -O /dev/null "https://vk.fastfixsite.ru/wp-cron.php?doing_wp_cron"`, расписание `* * * * *`. Своего «будильника» в плагине нет.
 - У cron нет пользователя → очередь публикаций выполняет каждое задание через `VKT_Account::act_as(автор)`, сборщик — от имени хозяина. **Это центральная идея личных кабинетов**: любой фоновый код, читающий личные ключи, обязан обернуться в `act_as()`.
 - Темп запросов к VK — блокировка `vkt_lock_api` (1 запрос/сек). Сборщик — `vkt_lock_collector` (120 сек). Обновление токена — `vkt_lock_token_refresh_<id>`.
+- На том же событии `vkt_publish` идут `VKT_Notify::cron()` (каждую минуту — отправка сообщений; раз в 10 минут — сверка неполадок всех активных кабинетов через `act_as`; раз в 6 часов — баланс BFL) и `VKT_Autonews::cron()` (одна группа за проход, блокировка `vkt_lock_autonews` на 15 минут). Оповещения стоят раньше автосбора: его заход идёт минуты.
+- Файл, сохранённый в медиатеку из cron, WordPress записывает без автора — очередь сочла бы его чужим (`VKT_Media::owned`). Фоновый код, который кладёт файлы, обязан проставить `post_author` владельца (см. `VKT_Autonews::photo`).
 - Очередь ответов на комментарии: не больше одного ответа в одну группу за проход + пауза по группе; при флуд-контроле VK (коды 6/9/14/29) пачка сдвигается на 30 мин → час → два → четыре без списания попыток (`VKT_Replies::hold()`).
 
 ---
@@ -283,7 +294,7 @@ node tests/dashboard-commerce.cjs
 
 Что есть: `commerce.php`, `community.php`, `flux.php`, `materials.php`, `media.php`, `news.php`, `oauth.php`, `publisher.php`, `replies.php`, `replies-ai.php`, `settings-token.php`, `shops.php`, `token-preview.php`, `tokens.php`, `vkid.php`, `matrix.php`.
 
-Интеграционные (`*integration.php`, `accounts-integration.php`) — только в изолированном WordPress на `http://127.0.0.1:8097` (ядро + wp-cli в scratchpad, база `vkt_test` в локальном MySQL). `tests/integration.php` устарел с 0.19.2 и падает ещё до правок.
+Интеграционные (`*integration.php`, `accounts-integration.php`, с 0.36 — `autonews-integration.php`: автосбор и оповещения) — только в изолированном WordPress на `http://127.0.0.1:8097` (ядро + wp-cli в scratchpad, база `vkt_test` в локальном MySQL). `tests/integration.php` устарел с 0.19.2 и падает ещё до правок.
 
 Линт: `php -l` на PHP-файлах, `node --check assets/dashboard.js`.
 
@@ -304,7 +315,7 @@ node tests/dashboard-commerce.cjs
 - **Кэш браузера.** Скрипт подключается с `?ver=VKT_VERSION`: заливка без смены номера версии оставляет у пользователя старый `dashboard.js`.
 - **Лимит текстов при сборе новостей.** Сбор — один текст, составление запросов поиска не списывается, каждая статья в рерайте — ещё один текст (`group_news_rewrite`). Сбор 10 новостей — 11 текстов при лимите участника 30 в сутки.
 
-## 11. Что не проверено вживую (на 0.34.4)
+## 11. Что не проверено вживую (на 0.36.0)
 
 Проверено тестами и на тестовой установке, но не в браузере и не на бою:
 
@@ -315,4 +326,8 @@ node tests/dashboard-commerce.cjs
 - поиск Qwen (`enable_search`);
 - перетаскивание фото и записей в браузере;
 - обложка и поиск картинок в браузере, наличие GD с FreeType на боевом хостинге;
+- раздел «Нейросети» в браузере; доступность `api.openai.com` с боевого сервера в России (с локальной машины ключ OpenAI проверен 06.10.2026: текст отвечает, Sora отключена поставщиком);
+- автосбор 0.36 с настоящей моделью и настоящими лентами: качество склейки событий по заголовкам (`VKT_News::rank`, порог — три общих четырёхбуквенных основы и половина короткого заголовка), длительность захода с рерайтом десяти статей на боевом PHP;
+- отправка сообщений: `messages.send` настоящим ключом сообщества, доступность `api.telegram.org` с Beget, привязка Telegram через `getUpdates`;
+- колокольчик и блок «Автосбор» в браузере;
 - подтверждение Callback в VK по новому адресу (на тестовой установке маршрут отдаёт строку подтверждения и принимает событие с верным секретом).

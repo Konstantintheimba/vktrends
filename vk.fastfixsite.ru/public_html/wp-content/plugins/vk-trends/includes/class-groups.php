@@ -147,7 +147,7 @@ final class VKT_Groups {
         $group['passport'] = (string) $group['passport'];
         $group['materials'] = VKT_Materials::normalize( $group['materials'] ?? '' );
         $group['library'] = array_values( array_map( static fn( $item ) => array( 'file' => $item['file'], 'title' => $item['title'], 'description' => $item['description'], 'chars' => mb_strlen( $item['text'] ) ), VKT_Materials::library() ) );
-        $group['news'] = self::news_public( VKT_News::settings( $group['news'] ?? '' ) );
+        $group['news'] = self::news_public( VKT_News::settings( $group['news'] ?? '' ), $group['news_auto_at'] ?? null );
         $group['posts'] = (array) $wpdb->get_results( $wpdb->prepare(
             'SELECT id,post_id,owner_id,published_at,LEFT(text,300) AS text,thumbnail,views,likes,comments,reposts,g1,g7,err,is_pinned,is_ad FROM ' . VKT_Store::table( 'posts' ) . ' WHERE owner_id=%d ORDER BY published_at DESC,id DESC LIMIT 20',
             -absint( $group['group_id'] )
@@ -206,15 +206,29 @@ final class VKT_Groups {
     }
 
     /** Настройки новостей для интерфейса: вместо списка использованных — их число. */
-    private static function news_public( $settings ) {
+    private static function news_public( $settings, $next = null ) {
         $settings['used'] = count( $settings['used'] );
-        return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES, 'search' => VKT_AI::search_providers() ) );
+        unset( $settings['recent'] );
+        // Когда следующий автосбор: время хранит колонка группы, по ней его находит cron.
+        $settings['auto']['next_at'] = $settings['auto']['enabled'] ? $next : null;
+        return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES, 'search' => VKT_AI::search_providers(), 'auto_hours' => VKT_News::AUTO_HOURS, 'auto_max' => VKT_News::AUTO_MAX ) );
     }
 
     private static function store_news( $group, $settings ) {
         global $wpdb;
         $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'news' => wp_json_encode( $settings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) ), array( 'id' => (int) $group['id'] ) );
-        return self::news_public( $settings );
+        return self::news_public( $settings, $group['news_auto_at'] ?? null );
+    }
+
+    /** Итог захода автосбора — в настройки группы. Перечитываем их: сбор только что дописал использованные новости. */
+    public static function news_auto_state( $id, $patch ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $settings = VKT_News::settings( $group['news'] ?? '' );
+        $settings['auto'] = VKT_News::auto( array_merge( $settings['auto'], (array) $patch ) );
+        return self::store_news( $group, $settings );
     }
 
     public static function save_news( $id, $data ) {
@@ -223,7 +237,11 @@ final class VKT_Groups {
             return $group;
         }
         $settings = VKT_News::clean( $data, VKT_News::settings( $group['news'] ?? '' ) );
-        return is_wp_error( $settings ) ? $settings : array( 'ok' => true, 'news' => self::store_news( $group, $settings ) );
+        if ( is_wp_error( $settings ) ) {
+            return $settings;
+        }
+        $group['news_auto_at'] = VKT_Autonews::plan( $group, $settings['auto'] );
+        return array( 'ok' => true, 'news' => self::store_news( $group, $settings ) );
     }
 
     /** Забыть использованные новости: следующий сбор снова предложит их. */
@@ -234,16 +252,20 @@ final class VKT_Groups {
         }
         $settings = VKT_News::settings( $group['news'] ?? '' );
         $settings['used'] = array();
+        $settings['recent'] = array();
         return array( 'ok' => true, 'news' => self::store_news( $group, $settings ) );
     }
 
     /** Настройки и свежие новости группы — общее начало проверки и сбора. */
-    private static function fresh_news( $id, $model = '' ) {
+    private static function fresh_news( $id, $model = '', $pool = 0 ) {
         $group = self::group( $id );
         if ( is_wp_error( $group ) ) {
             return $group;
         }
         $settings = VKT_News::settings( $group['news'] ?? '' );
+        if ( $pool ) {
+            $settings['pool'] = (int) $pool;
+        }
         if ( 'search' === $settings['method'] ) {
             if ( '' === $settings['topic'] ) {
                 return self::error( 'Опишите, какие новости искать, и сохраните настройки.' );
@@ -307,12 +329,14 @@ final class VKT_Groups {
         return array( 'link' => $link, 'text' => $text . "\n\nИсточник: " . $link, 'source_length' => mb_strlen( $article ) );
     }
 
-    public static function collect_news( $id, $model = '' ) {
-        $fresh = self::fresh_news( $id, $model );
+    /** $auto — настройки автосбора: тогда отбор идёт по ним, а не по «сколько новостей за сбор». */
+    public static function collect_news( $id, $model = '', $auto = null ) {
+        $fresh = self::fresh_news( $id, $model, $auto ? VKT_News::POOL_ITEMS : 0 );
         if ( is_wp_error( $fresh ) ) {
             return $fresh;
         }
         list( $group, $settings, $collected ) = $fresh;
+        unset( $settings['pool'] );
         if ( ! $collected['items'] ) {
             $failed = count( array_filter( $collected['sources'], static fn( $source ) => ! $source['ok'] ) );
             return self::error( 'search' === $settings['method']
@@ -321,21 +345,31 @@ final class VKT_Groups {
                 ? 'Ни один источник не прочитался. Нажмите «Проверить источники» — там видно, что с каждым.'
                 : 'Свежих новостей за выбранный срок нет: всё уже использовано или ничего не вышло. Увеличьте срок или добавьте источники.' ), 404, array( 'sources' => $collected['sources'] ) );
         }
-        $answer = VKT_AI::generate_news( $collected['items'], $settings['topic'], $settings['count'], $settings['mode'], $model, self::context( $group ) );
+        $found = count( $collected['items'] );
+        list( $items, $count, $hint ) = $auto ? VKT_News::shortlist( $collected['items'], $auto, $settings['recent'] ) : array( $collected['items'], $settings['count'], '' );
+        if ( ! $items ) {
+            return self::error( 'Новых событий нет: обо всём найденном сообщество уже писало.', 404, array( 'sources' => $collected['sources'] ) );
+        }
+        $answer = VKT_AI::generate_news( $items, $settings['topic'], $count, $settings['mode'], $model, self::context( $group ), $hint );
         if ( is_wp_error( $answer ) ) {
             return $answer;
         }
+        $collected['items'] = $items;
         $posts = VKT_News::compose( $collected['items'], $answer, $settings['mode'] );
         if ( ! $posts ) {
             return self::error( 'Модель не нашла среди ' . count( $collected['items'] ) . ' свежих новостей подходящих под вашу выборку. Смягчите описание выборки или добавьте источники.', 404, array( 'sources' => $collected['sources'] ) );
         }
         foreach ( $posts as $post ) {
-            foreach ( $post['links'] as $link ) {
+            foreach ( array_merge( $post['links'], $post['also'] ) as $link ) {
                 $settings['used'][] = VKT_News::key( $link );
             }
+            if ( $auto ) {
+                $settings['recent'] = array_merge( $settings['recent'], array_map( static fn( $title ) => mb_substr( (string) $title, 0, 200 ), $post['titles'] ?? array( $post['title'] ) ) );
+            }
         }
+        $settings['recent'] = array_slice( $settings['recent'], -VKT_News::RECENT_MAX );
         $settings['used'] = array_slice( array_values( array_unique( $settings['used'] ) ), -VKT_News::USED_MAX );
-        return array( 'posts' => $posts, 'mode' => $settings['mode'], 'offered' => count( $collected['items'] ), 'sources' => $collected['sources'], 'news' => self::store_news( $group, $settings ) );
+        return array( 'posts' => $posts, 'mode' => $settings['mode'], 'offered' => count( $collected['items'] ), 'found' => $found, 'sources' => $collected['sources'], 'news' => self::store_news( $group, $settings ) );
     }
 
     /**

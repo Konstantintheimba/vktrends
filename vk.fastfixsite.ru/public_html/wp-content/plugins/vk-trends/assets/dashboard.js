@@ -6,12 +6,12 @@
     const $ = (selector, parent = root) => parent.querySelector(selector);
     const content = $('#vkt-content');
     const dialog = $('#vkt-dialog');
-    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', groups: 'Мои сообщества', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', settings: 'Настройки'};
+    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', groups: 'Мои сообщества', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', models: 'Нейросети', settings: 'Настройки'};
     // Кабинет пользователя: общий сбор, журнал и ключи сайта видит только администратор.
     // Сервер эти разделы участнику всё равно не отдаст — здесь их просто не рисуем.
     let account = config.account || {};
     const isAdmin = () => !!account.is_admin;
-    const adminViews = ['reading', 'users', 'api', 'collector', 'logs', 'settings'];
+    const adminViews = ['reading', 'users', 'api', 'collector', 'logs', 'models', 'settings'];
     const paths = {
         grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
         search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
@@ -40,6 +40,7 @@
         cart: '<path d="M3 4h2l2.2 11h10.4L20 7H6"/><circle cx="9" cy="19" r="1.6"/><circle cx="17" cy="19" r="1.6"/>',
         table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10M15 10v10"/>',
         send: '<path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M22 2 11 13"/>',
+        bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2.5h-15L6 16Z"/><path d="M10 21h4"/>',
     };
     const icon = name => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.grid}</svg>`;
     root.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); });
@@ -201,7 +202,7 @@
         [/авторизация не прошла|срок действия токена|access_token|токен(?:у)? не хватает|пользовательский токен|VK ID отклонил/i, 'posting', 'Переподключить токен — «Публикация»'],
         [/ключ(?:а|у|ом)? сообщества|запрос сообщества/i, 'posting', 'Ключ сообщества — «Публикация»'],
         [/сервисн|ключ сбора/i, 'reading', 'Ключ сбора — «Чтение постов»'],
-        [/xAI/i, 'settings', 'Ключ xAI — «Настройки»'],
+        [/xAI/i, 'models', 'Ключ xAI — «Нейросети»'],
         // Раздел виден всем, но ключ в нём меняет только администратор.
         [/BFL/i, 'flux', 'Ключ BFL — «Генерация фото»', true],
         [/Сообщество выключено|право публикации отозвано|право записи отозвано|не найдено среди ваших|Обновите их в «Автопостинге»/i, 'publishing', 'Мои сообщества — «Автопостинг»'],
@@ -261,6 +262,7 @@
         const modeNote = state.settings.has_token && isAdmin() ? modeLabel(state.settings.token_mode) : '';
         const connection = isAdmin() ? (state.settings.has_token ? 'Токен сохранён' : 'API не подключён') : (state.settings.has_token ? 'Сбор подключён' : 'Сбор не настроен администратором');
         $('#vkt-connection').innerHTML = `<span class="vkt-status-dot ${state.settings.has_token ? 'is-ready' : ''}"></span>${connection}${modeNote ? ` · ${modeNote}` : ''}<small>${state.settings.paused ? 'Автосбор на паузе' : 'Автосбор включён'}</small>`;
+        bellBadge();
         const pendingBadge = $('#vkt-users-count');
         if (pendingBadge) { pendingBadge.textContent = num(state.settings.pending_users || 0); pendingBadge.hidden = !Number(state.settings.pending_users); }
         if (renderView) {
@@ -651,7 +653,7 @@
                     <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
                     ${quotaNote(state.settings.ai)}
                     <p class="vkt-help">${seriesSlots.length ? 'Заполнятся только пустые слоты — написанное руками останется.' : 'Сначала постройте сетку: модели нужно знать количество.'}</p>
-                </form>` : `<hr class="vkt-settings-sep"><div class="vkt-info">Не подключена ни одна модель для текстов, поэтому промпта на серию нет. ${isAdmin() ? '<a href="#settings">Добавить модель — «Настройки» →</a>' : 'Её подключает администратор.'} Текст можно вписать в каждый слот руками.</div>`}
+                </form>` : `<hr class="vkt-settings-sep"><div class="vkt-info">Не подключена ни одна модель для текстов, поэтому промпта на серию нет. ${isAdmin() ? '<a href="#models">Добавить модель — «Нейросети» →</a>' : 'Её подключает администратор.'} Текст можно вписать в каждый слот руками.</div>`}
                 <hr class="vkt-settings-sep">
                 <h2>Фото к записям</h2>
                 <p class="vkt-muted">Когда тексты утверждены — картинки ко всей сетке одной кнопкой. К отдельной записи — из её окна.</p>
@@ -1207,17 +1209,55 @@
         const ai = state.settings.ai || {};
         const models = ai.models || [];
         const presets = ai.presets || {};
-        const rows = models.map(model => `<div><span><strong>${esc(model.title)}</strong><small><code>${esc(model.model)}</code> · ${esc(model.host)} · ключ ${esc(model.preview)}</small></span><span>${model.id === ai.default_model ? badge('по умолчанию', 'green') : button('По умолчанию', 'ai-model-default', `data-id="${esc(model.id)}"`)}${button('Проверить', 'ai-model-check', `data-id="${esc(model.id)}"`)}${model.builtin ? '' : button('Убрать', 'ai-model-delete', `data-id="${esc(model.id)}"`)}</span></div>`).join('');
-        const first = presets.deepseek ? 'deepseek' : Object.keys(presets)[0];
-        return `<h2>Модели для текстов</h2><p class="vkt-muted">Пишут посты, серии и ответы на комментарии. Подходит любой поставщик с OpenAI-совместимым API. При добавлении плагин делает пробный запрос — ключ, адрес и доступность из страны сервера проверяются сразу. Картинки и видео по-прежнему генерирует xAI.</p>
+        const rows = models.map(model => `<div><span><strong>${esc(model.title)}</strong><small><code>${esc(model.model)}</code> · ${esc(model.host)} · ${model.shared ? 'ключ поставщика' : `свой ключ ${esc(model.preview)}`}</small></span><span>${model.id === ai.default_model ? badge('по умолчанию', 'green') : button('По умолчанию', 'ai-model-default', `data-id="${esc(model.id)}"`)}${button('Проверить', 'ai-model-check', `data-id="${esc(model.id)}"`)}${model.builtin ? '' : button('Убрать', 'ai-model-delete', `data-id="${esc(model.id)}"`)}</span></div>`).join('');
+        // Форма открывается на поставщике с подключённым ключом: его модель добавляется без ввода ключа.
+        const ready = (ai.providers || []).find(provider => provider.connected && !provider.locked && presets[provider.id]);
+        const first = ready ? ready.id : (presets.deepseek ? 'deepseek' : Object.keys(presets)[0]);
+        const known = (ai.providers || []).find(provider => provider.id === first)?.probe?.text?.models || [];
+        return `<h2>Модели для текстов</h2><p class="vkt-muted">Пишут посты, серии и ответы на комментарии; в формах генерации выбирается любая из списка. Модель поставщика с подключённым ключом добавляется без ввода ключа. При добавлении плагин делает пробный запрос — название модели и доступность из страны сервера проверяются сразу.</p>
             ${models.length ? `<div class="vkt-own-groups">${rows}</div>` : '<div class="vkt-info vkt-info-warning">Ни одной модели: генерация текстов выключена.</div>'}
             <form data-form="ai-model" class="vkt-form">
-                <div class="vkt-form-row"><label>Поставщик<select name="preset" data-ai-preset>${Object.entries(presets).map(([id, preset]) => `<option value="${esc(id)}" ${id === first ? 'selected' : ''}>${esc(preset.title)}</option>`).join('')}</select></label><label>Модель<input name="model" class="vkt-code-input" value="${esc(presets[first]?.model || '')}" placeholder="deepseek-chat"></label></div>
-                <label>Адрес API<input name="base" class="vkt-code-input" value="${esc(presets[first]?.base || '')}" placeholder="https://…/v1"><small class="vkt-help">Запрос уходит на адрес + /chat/completions.</small></label>
-                <div class="vkt-form-row"><label>Ключ API<input name="key" class="vkt-code-input" autocomplete="off" required placeholder="sk-…"></label><label>Название в списке<input name="title" placeholder="Необязательно"></label></div>
+                <div class="vkt-form-row"><label>Поставщик<select name="preset" data-ai-preset>${Object.entries(presets).map(([id, preset]) => `<option value="${esc(id)}" ${id === first ? 'selected' : ''}>${esc(preset.title)}</option>`).join('')}</select></label><label>Модель<input name="model" class="vkt-code-input" list="vkt-ai-model-list" value="${esc(presets[first]?.model || '')}" placeholder="deepseek-chat"><datalist id="vkt-ai-model-list">${known.map(id => `<option value="${esc(id)}">`).join('')}</datalist></label></div>
+                <label>Адрес API<input name="base" class="vkt-code-input" value="${esc(ready ? ready.base : (presets[first]?.base || ''))}" placeholder="https://…/v1"><small class="vkt-help">Запрос уходит на адрес + /chat/completions.</small></label>
+                <div class="vkt-form-row"><label>Свой ключ для этой модели<input name="key" type="password" class="vkt-code-input" autocomplete="off" placeholder="пусто — ключ поставщика"></label><label>Название в списке<input name="title" placeholder="Необязательно"></label></div>
                 <label class="vkt-check"><input type="checkbox" name="default">Сделать моделью по умолчанию</label>
                 <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('plus')} Проверить и добавить</button></div>
             </form>`;
+    }
+    // ——— Нейросети: ключи поставщиков и что каждый ключ умеет ———
+    function providerProbe(probe) {
+        if (!probe) return '<p class="vkt-muted">Ключ ещё не проверялся.</p>';
+        const text = probe.text || {}, video = probe.video || {};
+        const some = (ids, limit = 6) => ids.slice(0, limit).map(id => `<code>${esc(id)}</code>`).join(', ') + (ids.length > limit ? ` и ещё ${num(ids.length - limit)}` : '');
+        return `<ul class="vkt-provider-caps">
+                <li class="${text.ok ? 'is-ok' : 'is-bad'}"><strong>Текст</strong><span>${text.ok ? `<code>${esc(text.model)}</code> ответила: «${esc(text.message)}»${(text.models || []).length ? ` · моделей в списке: ${num(text.models.length)}` : ''}` : esc(text.message)}</span></li>
+                <li class="${(probe.image || []).length ? 'is-ok' : ''}"><strong>Картинки</strong><span>${(probe.image || []).length ? some(probe.image) : 'моделей для картинок нет'}</span></li>
+                <li class="${(video.models || []).length ? 'is-ok' : ''}"><strong>Видео</strong><span>${(video.models || []).length ? some(video.models) : esc(video.note || 'моделей для видео нет')}</span></li>
+            </ul>
+            ${probe.listed ? '' : '<p class="vkt-muted">Список моделей поставщик не отдал — проверен только текст.</p>'}
+            ${(text.models || []).length ? `<details class="vkt-provider-models"><summary>Все модели для текста · ${num(text.models.length)}</summary><p class="vkt-code-input">${text.models.map(esc).join(', ')}</p></details>` : ''}
+            <small class="vkt-muted">Проверено ${date(probe.at)}</small>`;
+    }
+    const providerCard = provider => `<article class="vkt-provider ${provider.connected ? 'is-on' : ''}">
+            <header><strong>${esc(provider.title)}</strong>${provider.connected ? badge(`ключ ${esc(provider.preview)}`, 'green') : badge('не подключён')}</header>
+            ${provider.connected ? providerProbe(provider.probe) : ''}
+            ${provider.locked ? `<p class="vkt-muted">Ключ задан в wp-config.php константой VKT_XAI_API_KEY — меняется и убирается там же.</p><div class="vkt-form-actions">${button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`)}</div>` : `<form data-form="ai-key" class="vkt-form">
+                <input type="hidden" name="preset" value="${esc(provider.id)}">
+                <div class="vkt-form-row"><label>${provider.connected ? 'Заменить ключ' : 'Ключ API'}<input name="key" type="password" class="vkt-code-input" autocomplete="off" required placeholder="sk-…"></label><label>Адрес API<input name="base" class="vkt-code-input" value="${esc(provider.base)}" placeholder="https://…/v1"></label></div>
+                <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('check')} Проверить и сохранить</button>${provider.connected ? button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`) + button('Удалить ключ', 'ai-key-delete', `data-id="${esc(provider.id)}" data-title="${esc(provider.title)}"`) : ''}</div>
+            </form>`}
+        </article>`;
+    function models() {
+        const providers = state.settings.ai?.providers || [];
+        return heading('Нейросети', 'Ключи поставщиков, проверка того, что каждый ключ умеет, и модели для текстов.') +
+            `<div class="vkt-settings-grid"><section class="vkt-panel">
+                <h2>Ключи поставщиков</h2>
+                <p class="vkt-muted">Один ключ на поставщика — им работают все его модели. Перед сохранением ключ проверяется: плагин запрашивает список моделей и просит одну из них ответить одним словом. Больше ничего платного проверка не делает.</p>
+                <div class="vkt-providers">${providers.map(providerCard).join('')}</div>
+                <hr class="vkt-settings-sep">
+                ${textModels()}
+            </section>
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Что где</h2><p>Ключи хранятся зашифрованными и в браузер не возвращаются — виден только огрызок.</p><p><strong>Адрес API</strong> меняйте, только если ходите к поставщику через свой прокси: часть поставщиков не обслуживает серверы в России, и проверка скажет об этом сразу.</p><p><strong>Картинки и видео Grok</strong> работают, пока подключён ключ xAI. <strong>FLUX</strong> — отдельный ключ в «Генерации фото».</p><p>Об отказе из-за денег или ключа вам придёт оповещение.</p></aside></div>`;
     }
     function settings() {
         const s = state.settings;
@@ -1229,12 +1269,13 @@
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
                 </form>
                 <hr class="vkt-settings-sep">
-                ${textModels()}
+                ${notifySite()}
                 <hr class="vkt-settings-sep">
                 <h2>Куда что переехало</h2>
                 <ul class="vkt-steps">
                     <li>${badge('чтение', 'green')}<div><strong>Сервисный ключ, расписание обхода, сервис рендеринга</strong><span class="vkt-muted">Раздел «Чтение постов».</span></div></li>
                     <li>${badge('публикация', 'green')}<div><strong>Пользовательский токен, защищённый ключ, ключ сообщества, обмен кода, Callback API</strong><span class="vkt-muted">Раздел «Публикация».</span></div></li>
+                    <li>${badge('нейросети', 'green')}<div><strong>Ключи xAI, OpenAI, DeepSeek и других, модели для текстов</strong><span class="vkt-muted">Раздел «Нейросети».</span></div></li>
                     <li>${badge('справка', '')}<div><strong>Фото, видео, музыка, документы, опросы, товары</strong><span class="vkt-muted">Раздел «Что можно прикрепить».</span></div></li>
                 </ul>
             </section>
@@ -1518,11 +1559,35 @@
     // Настройки новостей как в форме: сохранённое, поверх — несохранённые правки.
     const groupNewsForm = group => {
         const saved = group.news || {};
-        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', cover_name: saved.cover?.name || '', cover_label: saved.cover?.label ?? 'Новость', cover_color: saved.cover?.color || '#1f6fe5', cover_ratio: saved.cover?.ratio || 'landscape', ...(groupNewsDraft || {})};
+        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', cover_name: saved.cover?.name || '', cover_label: saved.cover?.label ?? 'Новость', cover_color: saved.cover?.color || '#1f6fe5', cover_ratio: saved.cover?.ratio || 'landscape', auto_enabled: !!saved.auto?.enabled, auto_hours: saved.auto?.hours || 3, auto_pick: saved.auto?.pick || 'mentions', auto_limit: saved.auto?.limit || 3, auto_rewrite: saved.auto?.rewrite ? '1' : '', auto_photo: saved.auto?.photo || 'article', auto_model: saved.auto?.model || '', ...(groupNewsDraft || {})};
     };
     const groupNewsPayload = group => {
         const form = groupNewsForm(group);
-        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode, cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}};
+        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode, cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}, auto: {enabled: !!form.auto_enabled, hours: Number(form.auto_hours), pick: form.auto_pick, limit: Number(form.auto_limit), rewrite: !!form.auto_rewrite, photo: form.auto_photo, model: form.auto_model}};
+    };
+    // Автосбор: плагин сам собирает новости по расписанию и раскладывает их в сетку серии.
+    const groupNewsAuto = (group, form, option) => {
+        const saved = group.news || {};
+        const auto = saved.auto || {};
+        const models = state.settings.ai?.models || [];
+        const last = auto.last_at ? `Последний заход — ${date(new Date(auto.last_at * 1000).toISOString())}: ${esc(auto.last || '')}` : 'Заходов ещё не было.';
+        const status = auto.enabled ? `<div class="vkt-info ${auto.last_at && !auto.last_ok ? 'vkt-info-warning' : ''}">Следующий заход — ${auto.next_at ? date(auto.next_at) : 'после сохранения'}. ${last}</div>` : '';
+        return `<fieldset class="vkt-media"><legend>Автосбор</legend>
+            <label class="vkt-check"><input type="checkbox" data-news="auto_enabled" ${form.auto_enabled ? 'checked' : ''}>Собирать новости и ставить их в сетку серии без меня</label>
+            ${form.auto_enabled ? `<div class="vkt-form-row vkt-news-options">
+                <label>Как часто<select data-news="auto_hours">${(saved.auto_hours || [1, 2, 3, 4, 6, 12, 24]).map(value => option(value, hourLabels[value] || `Раз в ${value} ч`, form.auto_hours)).join('')}</select></label>
+                <label>Что публиковать<select data-news="auto_pick">${option('mentions', 'Самое упоминаемое', form.auto_pick)}${option('model', 'Самое интересное', form.auto_pick)}${option('all', 'Всё найденное', form.auto_pick)}</select></label>
+                <label>Записей за заход, не больше<select data-news="auto_limit">${Array.from({length: saved.auto_max || 10}, (_, at) => option(at + 1, num(at + 1), form.auto_limit)).join('')}</select></label>
+            </div>
+            <div class="vkt-form-row vkt-news-options">
+                <label>Текст записи<select data-news="auto_rewrite">${option('', 'Короткий, по анонсу', form.auto_rewrite)}${option('1', 'Полный, по тексту статьи', form.auto_rewrite)}</select></label>
+                <label>Картинка<select data-news="auto_photo">${option('article', 'Главное фото статьи', form.auto_photo)}${option('cover', 'Обложка сообщества по фото', form.auto_photo)}${option('none', 'Без картинки', form.auto_photo)}</select></label>
+                <label>Модель для текста<select data-news="auto_model">${option('', 'По умолчанию', form.auto_model)}${models.map(model => option(model.id, esc(model.title), form.auto_model)).join('')}</select></label>
+            </div>
+            <small class="vkt-help">«Самое упоминаемое» — события, о которых написало больше всего изданий; «Самое интересное» выбирает нейросеть; «Всё найденное» берёт подряд, свежее первым. Повтор одного события из разных источников публикуется один раз. Записи встают равномерно до следующего захода, первая — через 5 минут, в серию «Новости · авто · дата»: в «Серии постов» их можно поправить, передвинуть или отменить. Один заход — один текст суточного лимита, полный текст — ещё по одному на запись. Фото загружает пользовательский токен: без него записи уйдут текстом. Включена ручная проверка публикаций — записи ждут её.</small>
+            ${status}
+            ${auto.enabled ? `<div class="vkt-media-actions">${button(`${icon('refresh')} Собрать сейчас`, 'group-news-auto-run')}</div>` : ''}` : ''}
+        </fieldset>`;
     };
     // Фото к собранной новости: кандидаты со страницы статьи, отмеченные уйдут в запись.
     const newsPhotosHtml = (post, index) => {
@@ -1624,7 +1689,7 @@
             <form data-form="group-news" class="vkt-form">
                 <label class="vkt-check"><input type="checkbox" data-news="enabled" checked>Это новостная группа</label>
                 <label>Откуда брать новости<select data-news="method">${option('search', 'Поиск в интернете', form.method)}${option('rss', 'RSS-ленты сайтов', form.method)}</select></label>
-                ${bySearch ? (engines.length ? `<label>Кто ищет<select data-news="engine">${engines.map(engine => option(engine.id, esc(engine.title), engines.some(item => item.id === form.engine) ? form.engine : engines[0].id)).join('')}</select><small class="vkt-help">Поиск и текст выбираются отдельно: ищет выбранный здесь, посты пишет «Модель для текста» у кнопки сбора. «Поиск плагина» работает с любой моделью: она составляет запросы, новостную выдачу читает плагин. Сайты ниже необязательны: без них поиск идёт по всему интернету.</small></label>` : `<div class="vkt-info vkt-info-warning">Искать в интернете пока нечем: не подключена ни одна модель для текстов. ${isAdmin() ? 'Подключите модель в «Настройках».' : 'Модели подключает администратор.'} До тех пор работают только RSS-ленты.</div>`) : '<p class="vkt-help">Многие сайты RSS не отдают или прячут — тогда выберите «Поиск в интернете».</p>'}
+                ${bySearch ? (engines.length ? `<label>Кто ищет<select data-news="engine">${engines.map(engine => option(engine.id, esc(engine.title), engines.some(item => item.id === form.engine) ? form.engine : engines[0].id)).join('')}</select><small class="vkt-help">Поиск и текст выбираются отдельно: ищет выбранный здесь, посты пишет «Модель для текста» у кнопки сбора. «Поиск плагина» работает с любой моделью: она составляет запросы, новостную выдачу читает плагин. Сайты ниже необязательны: без них поиск идёт по всему интернету.</small></label>` : `<div class="vkt-info vkt-info-warning">Искать в интернете пока нечем: не подключена ни одна модель для текстов. ${isAdmin() ? 'Подключите модель в разделе «Нейросети».' : 'Модели подключает администратор.'} До тех пор работают только RSS-ленты.</div>`) : '<p class="vkt-help">Многие сайты RSS не отдают или прячут — тогда выберите «Поиск в интернете».</p>'}
                 <label>${bySearch ? 'Сайты, где искать в первую очередь — необязательно, по одному в строке, до 5' : `Источники — адрес сайта или его RSS-ленты, по одному в строке, до ${num(saved.max_sources || 15)}`}<textarea data-news="sources" rows="${bySearch ? 3 : 5}" class="vkt-code-input" placeholder="${bySearch ? 'https://www.kp.ru' : 'https://example.ru/rss&#10;https://example.com'}">${esc(form.sources)}</textarea></label>
                 <label>${bySearch ? 'Какие новости искать' : 'Какие новости брать'}<textarea data-news="topic" rows="4" maxlength="1500" placeholder="Например: только баскетбол НБА — матчи, обмены, травмы. Без слухов, ставок и политики.">${esc(form.topic)}</textarea></label>
                 <div class="vkt-form-row vkt-news-options">
@@ -1632,6 +1697,7 @@
                     <label>Свежесть<select data-news="days">${(saved.day_options || [1, 3, 7]).map(value => option(value, dayLabels[value] || `за ${value} дн.`, form.days)).join('')}</select></label>
                     <label>Что получить<select data-news="mode">${option('posts', 'Отдельный пост на каждую новость', form.mode)}${option('digest', 'Один пост-дайджест', form.mode)}</select></label>
                 </div>
+                ${groupNewsAuto(group, form, option)}
                 <fieldset class="vkt-media"><legend>Обложка сообщества</legend>
                     <small class="vkt-help">Единый макет для записей: фото, поверх — градиент вашего цвета, название сообщества, заголовок новости и метка. По нему паблик узнают в ленте. Обложка делается в окне записи серии или кнопкой «Обложки сообщества» над сеткой.</small>
                     <div class="vkt-form-row"><label>Название на обложке<input data-news="cover_name" maxlength="60" value="${esc(form.cover_name)}" placeholder="${esc(group.name || 'как у сообщества')}"></label><label>Метка<input data-news="cover_label" maxlength="30" value="${esc(form.cover_label)}" placeholder="пусто — без метки"></label></div>
@@ -1641,7 +1707,7 @@
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить настройки</button>${bySearch ? '' : button('Проверить источники', 'group-news-check')}${groupNewsDraft ? '<span class="vkt-muted">Есть несохранённые правки — сбор и проверка сохранят их сами.</span>' : ''}</div>
             </form>
             ${checkHtml}
-            ${aiReady ? `<div class="vkt-ai-row vkt-news-run">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Собрать новости`, 'group-news-collect', '', true)}<small class="vkt-help">Взятые новости запоминаются и в следующий сбор не попадут. Уже использовано: ${num(saved.used || 0)}.${Number(saved.used) ? ` ${button('Забыть использованные', 'group-news-reset')}` : ''}</small></div>${quotaNote(state.settings.ai)}` : '<div class="vkt-info">Чтобы собирать новости, подключите модель для текстов в «Настройках».</div>'}
+            ${aiReady ? `<div class="vkt-ai-row vkt-news-run">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Собрать новости`, 'group-news-collect', '', true)}<small class="vkt-help">Взятые новости запоминаются и в следующий сбор не попадут. Уже использовано: ${num(saved.used || 0)}.${Number(saved.used) ? ` ${button('Забыть использованные', 'group-news-reset')}` : ''}</small></div>${quotaNote(state.settings.ai)}` : '<div class="vkt-info">Чтобы собирать новости, подключите модель для текстов в разделе «Нейросети».</div>'}
             ${resultHtml}
         </section>`;
     }
@@ -1797,7 +1863,7 @@
     function aiDialog(kind) {
         const ai = publishingData?.status?.ai || {};
         // Текст пишет любая подключённая модель, картинки — любая из реестра, видео — только xAI.
-        if (kind === 'text' && !ai.configured) { toast('Не подключена модель для текстов.', true, isAdmin() ? {view: 'settings', label: 'Добавить модель — «Настройки»'} : null); return; }
+        if (kind === 'text' && !ai.configured) { toast('Не подключена модель для текстов.', true, isAdmin() ? {view: 'models', label: 'Добавить модель — «Нейросети»'} : null); return; }
         if (kind === 'video' && !ai.media_configured) { toast('Видео генерирует xAI, а его ключ VKT_XAI_API_KEY не задан.', true); return; }
         const providers = kind === 'image' ? imageProviders() : [];
         if (kind === 'image' && !providers.length) { toast('Не подключена ни одна модель для картинок.', true, isAdmin() ? {view: 'flux', label: 'Ключ BFL — «Генерация фото»'} : null); return; }
@@ -2217,6 +2283,70 @@
         await refreshComments();
         if (failure && commentsSelected.size) commentsBulkDialog();
     }
+    // ——— Оповещения: колокольчик и каналы, куда их присылать ———
+    let notifyTgUrl = '';
+    function bellBadge() {
+        const badge = $('#vkt-bell-count');
+        if (!badge) return;
+        const unread = Number(state?.notifications?.unread) || 0;
+        badge.textContent = unread > 99 ? '99+' : String(unread);
+        badge.hidden = !unread;
+    }
+    function notifyDialog() {
+        const cfg = state.settings.notify || {};
+        const vk = cfg.vk || {}, tg = cfg.tg || {};
+        const off = what => `<p class="vkt-muted">${what} ${isAdmin() ? 'не подключён: сохраните его ключ в «Настройках».' : 'пока не подключён администратором.'}</p>`;
+        const rows = (state.notifications?.items || []).map(item => `<li class="vkt-notify-item is-${esc(item.level)} ${Number(item.seen) ? '' : 'is-new'}"><div><strong>${esc(item.title)}</strong><p>${esc(item.body)}</p><small class="vkt-muted">${date(item.created_at)}</small></div>${item.view && names[item.view] && (isAdmin() || !adminViews.includes(item.view)) ? `<a class="vkt-button" href="#${esc(item.view)}" data-command="close">${esc(names[item.view])} →</a>` : ''}</li>`).join('');
+        const vkHtml = !vk.ready ? off('Бот ВКонтакте') : `<form data-form="notify-vk" class="vkt-form">
+                <label class="vkt-check"><input type="checkbox" name="vk" ${vk.on ? 'checked' : ''}>Присылать сообщения от сообщества «${esc(vk.name || `club${vk.group}`)}»</label>
+                ${vk.manual ? `<label>Ваш ID ВКонтакте<input name="vk_id" inputmode="numeric" pattern="[0-9]{1,12}" value="${Number(vk.vk_id) || ''}" placeholder="число из адреса vk.com/id…"></label>` : ''}
+                <small class="vkt-help">VK разрешает сообществу писать только тем, кто сам ему написал. Один раз откройте <a href="https://vk.com/write-${Number(vk.group)}" target="_blank" rel="noopener noreferrer">диалог с сообществом ↗</a> и отправьте любое сообщение.</small>
+                ${vk.error ? `<div class="vkt-info vkt-info-warning">${esc(vk.error)}</div>` : ''}
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
+            </form>`;
+        const tgHtml = !tg.ready ? off('Бот Telegram') : (tg.linked
+            ? `<p>Подключён${tg.name ? `: ${esc(tg.name)}` : ''}.</p><div class="vkt-form-actions">${button('Отключить', 'notify-tg-unlink')}</div>`
+            : `<p class="vkt-muted">Откройте бота, нажмите «Запустить» и вернитесь сюда: чат привяжется сам в течение минуты.</p><div class="vkt-form-actions">${notifyTgUrl ? `<a class="vkt-button vkt-primary" href="${safeUrl(notifyTgUrl)}" target="_blank" rel="noopener noreferrer">Открыть @${esc(tg.bot)} ↗</a>${button('Я запустил бота', 'notify-tg-check')}` : button('Подключить Telegram', 'notify-tg-link', '', true)}</div>`);
+        modal(`<h2>Оповещения</h2><p class="vkt-muted">Что случилось, пока вас не было: кончился лимит, VK отверг ключ, автосбор поставил записи. То же придёт сообщением, если подключить канал ниже.</p>
+            ${rows ? `<ul class="vkt-notify-list">${rows}</ul>` : '<p class="vkt-muted">Пока ничего не случилось.</p>'}
+            <h3>Куда присылать</h3>
+            <div class="vkt-notify-channels"><section><h4>ВКонтакте</h4>${vkHtml}</section><section><h4>Telegram</h4>${tgHtml}</section></div>
+            ${vk.ready || tg.ready ? `<div class="vkt-form-actions">${button('Прислать проверочное сообщение', 'notify-test')}</div>` : ''}`);
+    }
+    async function notifyCommand(command, el) {
+        if (!state) return;
+        el.disabled = true;
+        try {
+            if (command === 'notify-open') {
+                // Окно показывает новое выделенным, а прочитанным оно становится уже после показа.
+                notifyDialog();
+                if (Number(state.notifications?.unread)) { state.notifications.unread = (await act('notify_read')).unread; bellBadge(); }
+                return;
+            }
+            if (command === 'notify-tg-link') notifyTgUrl = (await act('notify_tg_link')).url;
+            if (command === 'notify-tg-check') { state.settings.notify = (await act('notify_tg_check')).notify; notifyTgUrl = ''; toast('Telegram подключён.'); }
+            if (command === 'notify-tg-unlink') { state.settings.notify = (await act('notify_tg_unlink')).notify; notifyTgUrl = ''; toast('Telegram отключён.'); }
+            if (command === 'notify-test') {
+                const sent = await act('notify_test');
+                state.settings.notify = sent.notify;
+                toast(sent.results.map(result => `${result.channel}: ${result.message}`).join(' · '), sent.results.some(result => !result.ok));
+            }
+            notifyDialog();
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { el.disabled = false; }
+    }
+    // Бот сайта: один на все кабинеты, его ключи сохраняет администратор.
+    const notifySite = () => {
+        const cfg = state.settings.notify || {};
+        const vk = cfg.vk || {}, tg = cfg.tg || {};
+        return `<h2>Оповещения</h2><p class="vkt-muted">От чьего имени кабинеты получают личные сообщения о лимитах, ключах и автосборе. Каждый подключает канал себе сам — в колокольчике вверху страницы.</p>
+            <form data-form="notify-site" class="vkt-form">
+                <label>Ключ сообщества-бота ВКонтакте<input name="vk_token" type="password" autocomplete="off" placeholder="${vk.ready ? `сохранён · «${esc(vk.name)}» · минус удалит` : 'ключ доступа сообщества с правом «Сообщения сообщества»'}"><small class="vkt-help">Подойдёт любое своё сообщество, хоть служебное. В нём: Управление → Сообщения → включить; Работа с API → создать ключ с правом «Сообщения сообщества».</small></label>
+                <label>Токен бота Telegram<input name="tg_token" type="password" autocomplete="off" placeholder="${tg.ready ? `сохранён · @${esc(tg.bot)} · минус удалит` : '123456:ABC… от @BotFather'}"><small class="vkt-help">Бот без webhook: сообщения ему читает сам плагин. С сервера в России api.telegram.org бывает недоступен — сохранение сразу это покажет.</small></label>
+                <label>Предупреждать, когда кредитов BFL меньше<input name="bfl_min" type="number" min="0" max="100000" value="${Number(cfg.bfl_min ?? 100)}"><small class="vkt-help">0 — не следить. Баланс сверяется раз в шесть часов; об отказе модели из-за денег или ключа сообщение приходит сразу.</small></label>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button></div>
+            </form>`;
+    };
     // ——— Неполадки: что остановило работу и где это чинить ———
     const healthIssues = () => (state?.health || []).filter(issue => !issue.view || !adminViews.includes(issue.view) || isAdmin());
     function healthBanner() {
@@ -2240,7 +2370,7 @@
         });
         if (adminViews.includes(view) && !isAdmin()) view = 'overview';
         if (view === 'users' && !usersData) { content.innerHTML = heading('Пользователи', 'Загружаем список…') + '<div class="vkt-loading">Загружаем…</div>'; return; }
-        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,settings})[view]();
+        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,models,settings})[view]();
         applyFieldDrafts();
         scheduleDrafts();
     }
@@ -2361,6 +2491,7 @@
         if (command==='add-source') { modal('<h2>Новый источник</h2><form data-form="source" class="vkt-form"><label>Тип<select name="kind"><option value="domain">Короткое имя сообщества</option><option value="owner">Числовой ID</option></select></label><label>Сообщество<input name="value" required maxlength="200" placeholder="team или -22822305"></label><p class="vkt-help">Короткое имя — часть адреса: для vk.com/team это team. Числовой ID сообщества пишется со знаком минус, ID пользователя — положительный.</p><button class="vkt-button vkt-primary">Сохранить источник</button></form>'); return; }
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
         if (command==='health-toggle') { healthOpen = !healthOpen; render(); return; }
+        if (command.startsWith('notify-')) { await notifyCommand(command, el); return; }
         if (command==='group-settings' || command==='callback-setup' || command==='callback-forget') {
             el.disabled = true;
             try {
@@ -2704,6 +2835,11 @@
                     newsWork = newsRewriteAll(id).finally(() => { newsWork = null; });
                 }
             }
+            if (command==='group-news-auto-run') {
+                if (groupNewsDraft) { await act('group_news_save', {id: groupOpen, news: groupNewsPayload(groupDetail)}); groupNewsDraft = null; }
+                await act('group_news_auto_run', {id: groupOpen});
+                toast('Заход запущен: записи появятся в «Серии постов» через несколько минут, итог — в колокольчике.');
+            }
             if (command==='group-news-reset') {
                 if (!window.confirm('Забыть использованные новости? Следующий сбор может предложить их снова.')) return;
                 await act('group_news_reset', {id: groupOpen});
@@ -2736,6 +2872,16 @@
                 if (!confirm('Отменить все ещё не отправленные записи этой серии? Опубликованные останутся.')) return;
                 const result = await act('series_cancel', {series_id: el.dataset.id});
                 toast(`Отменено записей: ${result.cancelled}.`);
+            }
+            if (command==='ai-key-check') {
+                toast('Проверяем ключ…');
+                const checked = await act('ai_key_check', {preset: el.dataset.id});
+                toast(`${checked.title}: ${checked.probe.text.ok ? `текст отвечает («${checked.probe.text.message}»)` : `текст не отвечает — ${checked.probe.text.message}`}.`, !checked.probe.text.ok);
+            }
+            if (command==='ai-key-delete') {
+                if (!confirm(`Удалить ключ «${el.dataset.title}»? Модели этого поставщика без своего ключа перестанут работать.`)) return;
+                await act('ai_key_delete', {preset: el.dataset.id});
+                toast('Ключ удалён.');
             }
             if (command==='ai-model-default') { await act('ai_model_default', {model: el.dataset.id}); toast('Модель по умолчанию сменена.'); }
             if (command==='ai-model-check') { const result = await act('ai_model_check', {model: el.dataset.id}); toast(`Модель отвечает: «${result.answer}».`); return; }
@@ -2806,6 +2952,12 @@
         try {
             switch(form.dataset.form) {
                 case 'comment-reply': await commentsReply(form, values); return;
+                case 'ai-key': {
+                    toast('Проверяем ключ: список моделей и пробный текст…');
+                    const connected = await act('ai_key_save', {preset: values.preset, key: values.key, base: values.base});
+                    toast(`${connected.title}: ключ сохранён. ${connected.probe.text.ok ? `Текст отвечает: «${connected.probe.text.message}».` : `Текст не отвечает: ${connected.probe.text.message}`}`, !connected.probe.text.ok);
+                    break;
+                }
                 case 'ai-model': {
                     toast('Проверяем модель пробным запросом…');
                     const added = await act('ai_model_save', {preset: values.preset, model: values.model, base: values.base, key: values.key, title: values.title, default: !!values.default});
@@ -2937,6 +3089,17 @@
                     await act('user_limits', {id: Number(values.id), limits: {text: values.text, media: values.media, replies_queue: values.replies_queue, sources: values.sources}});
                     dialog.close();
                     toast('Лимиты кабинета сохранены.');
+                    break;
+                }
+                case 'notify-vk': {
+                    state.settings.notify = (await act('notify_save', {vk: !!values.vk, ...(values.vk_id === undefined ? {} : {vk_id: Number(values.vk_id) || 0})})).notify;
+                    toast(values.vk ? 'Сообщения VK включены. Проверьте их кнопкой ниже.' : 'Сообщения VK выключены.');
+                    notifyDialog();
+                    return;
+                }
+                case 'notify-site': {
+                    await act('notify_site', {vk_token: values.vk_token || '', tg_token: values.tg_token || '', bfl_min: Number(values.bfl_min) || 0});
+                    toast('Настройки оповещений сохранены.');
                     break;
                 }
                 case 'group-news': {
@@ -3196,7 +3359,11 @@
         if (event.target.matches('[data-ai-preset]')) {
             const preset = (state.settings.ai?.presets || {})[event.target.value] || {};
             const form = event.target.form;
-            if (form) { form.elements.base.value = preset.base || ''; form.elements.model.value = preset.model || ''; }
+            const provider = (state.settings.ai?.providers || []).find(item => item.id === event.target.value);
+            // Адрес берём у подключённого поставщика: он мог сохранить свой, через прокси.
+            if (form) { form.elements.base.value = provider?.connected ? provider.base : (preset.base || ''); form.elements.model.value = preset.model || ''; }
+            const list = $('#vkt-ai-model-list');
+            if (list) list.innerHTML = (provider?.probe?.text?.models || []).map(id => `<option value="${esc(id)}">`).join('');
             return;
         }
         if (event.target.matches('[data-bulk]')) { commentsBulk[event.target.dataset.bulk] = event.target.type === 'checkbox' ? event.target.checked : event.target.value; return; }

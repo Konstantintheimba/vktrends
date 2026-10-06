@@ -11,6 +11,9 @@ final class VKT_Plugin {
         add_action( 'vkt_publish', array( 'VKT_Publisher', 'run_due' ) );
         // Ответы на комментарии идут тем же ежеминутным событием: отдельное пришлось бы заводить на каждом сайте заново.
         add_action( 'vkt_publish', array( 'VKT_Replies', 'cron' ) );
+        // Оповещения — раньше автосбора: его заход идёт минуты, а сообщения ждать не должны.
+        add_action( 'vkt_publish', array( 'VKT_Notify', 'cron' ) );
+        add_action( 'vkt_publish', array( 'VKT_Autonews', 'cron' ) );
         add_action( 'init', static function () {
             if ( get_option( 'vkt_db_version' ) !== VKT_VERSION ) { VKT_Store::install(); }
             if ( ! wp_next_scheduled( 'vkt_collect' ) ) { wp_schedule_event( time() + 60, 'vkt_minute', 'vkt_collect' ); }
@@ -90,7 +93,7 @@ final class VKT_Plugin {
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
     // Стенд фото открыт всем кабинетам в пределах суточного лимита; баланс кредитов BFL — дело хозяина ключа.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'notify_site' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -147,6 +150,7 @@ final class VKT_Plugin {
             'shops' => VKT_Shops::options(),
             'proxy_host' => $admin ? VKT_Links::proxy_host() : '',
             'account' => VKT_Account::profile(),
+            'notify' => VKT_Notify::public_status(),
             'limits' => array( 'sources' => VKT_Account::source_limit(), 'sources_used' => VKT_Subscriptions::count() ),
             'pending_users' => $admin ? VKT_Account::pending_count() : 0,
         ) );
@@ -518,6 +522,12 @@ final class VKT_Plugin {
                 return VKT_Publisher::sync_groups();
             case 'community_check':
                 return VKT_Community::check();
+            case 'ai_key_save':
+                return VKT_AI::save_key( is_array( $data ) ? $data : array() );
+            case 'ai_key_check':
+                return VKT_AI::check_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
+            case 'ai_key_delete':
+                return VKT_AI::delete_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
             case 'ai_model_save':
                 return VKT_AI::save_model( is_array( $data ) ? $data : array() );
             case 'ai_model_delete':
@@ -670,6 +680,22 @@ final class VKT_Plugin {
                 return VKT_News::photo_save( $data['url'] ?? '' );
             case 'group_news_reset':
                 return VKT_Groups::reset_news( $data['id'] ?? 0 );
+            case 'group_news_auto_run':
+                return VKT_Autonews::hurry( $data['id'] ?? 0 );
+            case 'notify_read':
+                return VKT_Notify::read_all();
+            case 'notify_save':
+                return VKT_Notify::save_prefs( $data );
+            case 'notify_test':
+                return VKT_Notify::test();
+            case 'notify_tg_link':
+                return VKT_Notify::tg_link();
+            case 'notify_tg_check':
+                return VKT_Notify::tg_check();
+            case 'notify_tg_unlink':
+                return VKT_Notify::tg_unlink();
+            case 'notify_site':
+                return VKT_Notify::save_site( $data );
             case 'group_news_collect':
                 return self::metered( 'text', static fn() => VKT_Groups::collect_news( $data['id'] ?? 0, self::model_id( $data ) ) );
             case 'group_stats':

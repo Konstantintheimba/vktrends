@@ -39,13 +39,14 @@ $vkt_pending = $vkt_admin ? VKT_Account::pending_count() : 0;
             <a href="#api" data-nav="api"><span data-icon="code"></span>Тест API<span class="vkt-nav-dot"></span></a>
             <a href="#collector" data-nav="collector"><span data-icon="refresh"></span>Сбор данных</a>
             <a href="#logs" data-nav="logs"><span data-icon="list"></span>Журнал</a>
+            <a href="#models" data-nav="models"><span data-icon="fire"></span>Нейросети</a>
             <a href="#settings" data-nav="settings"><span data-icon="settings"></span>Настройки</a>
         </nav>
         <?php endif; ?>
         <div class="vkt-sidebar-bottom"><div id="vkt-connection" class="vkt-connection">Проверяем подключение…</div><?php if ( $vkt_admin ) : ?><a href="<?php echo esc_url( admin_url() ); ?>" class="vkt-wp-link">↗ Админка WordPress</a><?php endif; ?><a href="<?php echo esc_url( wp_logout_url( VKT_Plugin::dashboard_url() ) ); ?>" class="vkt-wp-link">Выйти</a></div>
     </aside>
     <div class="vkt-main">
-        <header class="vkt-topbar"><button class="vkt-icon-button vkt-menu" type="button" aria-label="Открыть меню" aria-expanded="false" data-command="menu"><span data-icon="menu"></span></button><div class="vkt-breadcrumb">Workspace <span>/</span> <strong id="vkt-breadcrumb">Обзор</strong></div><div class="vkt-topbar-right"><span class="vkt-private"><span data-icon="lock"></span>Личный кабинет</span><?php if ( $vkt_profile['avatar'] ) : ?><img class="vkt-avatar" src="<?php echo esc_url( $vkt_profile['avatar'] ); ?>" alt="<?php echo esc_attr( $vkt_profile['name'] ); ?>" referrerpolicy="no-referrer"><?php else : ?><span class="vkt-avatar"><?php echo esc_html( $vkt_initial ); ?></span><?php endif; ?></div></header>
+        <header class="vkt-topbar"><button class="vkt-icon-button vkt-menu" type="button" aria-label="Открыть меню" aria-expanded="false" data-command="menu"><span data-icon="menu"></span></button><div class="vkt-breadcrumb">Workspace <span>/</span> <strong id="vkt-breadcrumb">Обзор</strong></div><div class="vkt-topbar-right"><span class="vkt-private"><span data-icon="lock"></span>Личный кабинет</span><button class="vkt-icon-button vkt-bell" type="button" aria-label="Оповещения" data-command="notify-open"><span data-icon="bell"></span><span id="vkt-bell-count" class="vkt-bell-count" hidden></span></button><?php if ( $vkt_profile['avatar'] ) : ?><img class="vkt-avatar" src="<?php echo esc_url( $vkt_profile['avatar'] ); ?>" alt="<?php echo esc_attr( $vkt_profile['name'] ); ?>" referrerpolicy="no-referrer"><?php else : ?><span class="vkt-avatar"><?php echo esc_html( $vkt_initial ); ?></span><?php endif; ?></div></header>
         <main id="vkt-content" class="vkt-content" tabindex="-1"><div class="vkt-loading">Загружаем дашборд…</div></main>
         <footer class="vkt-footer"><span>VK Trends <span class="vkt-muted">/ <?php echo esc_html( VKT_VERSION ); ?></span></span><span>Находите видео. Наблюдайте за ростом.</span></footer>
     </div>

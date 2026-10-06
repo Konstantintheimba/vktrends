@@ -35,7 +35,7 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, sortableChips, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, commentsGenerate, commentsQueue, replyDrafts: () => commentsDrafts, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {models, notifyDialog, bellBadge, postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, sortableChips, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, commentsGenerate, commentsQueue, replyDrafts: () => commentsDrafts, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 // Черновики с прошлого захода подняты ещё до загрузки данных.
@@ -240,8 +240,8 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(pickerView.includes('data-ai-model') && pickerView.includes('value="deepseek-1" selected') && pickerView.includes('DeepSeek &lt;b&gt;'), 'В серии есть выбор модели, по умолчанию — выбранная в настройках');
     state.settings.ai.presets = {deepseek: {title: 'DeepSeek', base: 'https://api.deepseek.com', model: 'deepseek-chat'}, qwen: {title: 'Qwen', base: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus'}};
     state.settings.ai.models[1].preview = 'sk-abc…1234'; state.settings.ai.models[1].host = 'api.deepseek.com';
-    const settingsView = api.settings();
-    check(settingsView.includes('data-form="ai-model"') && settingsView.includes('value="https://api.deepseek.com"') && settingsView.includes('data-command="ai-model-check"') && settingsView.includes('по умолчанию'), 'В настройках список моделей, проверка и добавление с готовыми адресами');
+    const settingsView = api.models();
+    check(settingsView.includes('data-form="ai-model"') && settingsView.includes('value="https://api.deepseek.com"') && settingsView.includes('data-command="ai-model-check"') && settingsView.includes('по умолчанию') && settingsView.includes('свой ключ sk-abc…1234'), 'В «Нейросетях» список моделей, проверка и добавление с готовыми адресами');
     check(seriesView.includes('data-command="series-queue"'), 'Есть кнопка отправки всей серии');
     check(seriesView.includes('name="weekdays"') && seriesView.includes('name="times"'), 'Дни недели и время выбираются в форме');
     state.settings.ai = {configured: false};
@@ -528,5 +528,57 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(queued.length === 1 && api.selected().size === 15 && !api.selected().has('5_129') && api.selected().has('5_130'), 'Заполненная очередь кабинета: что влезло — поставлено, остальное осталось выбранным');
     context.actionHook = null; context.commentsState = null; context.commentsFeed = null;
     api.selected().clear(); api.replyDrafts().clear();
+    // Автосбор новостей: блок в настройках новостной группы.
+    api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
+    state.settings.ai = {configured: true, models: [{id: 'deepseek-1', title: 'DeepSeek <chat>'}], default_model: 'deepseek-1'};
+    const newsGroup = {id: 3, group_id: 987, name: 'Новости', screen_name: 'news', can_post: 1, hidden: 0, metrics: {}, digest: {}, stats: {}, posts: [], passport: '', materials: [], library: [],
+        news: {enabled: true, method: 'rss', search: [], sources: ['https://a.test/rss'], topic: 'Спорт', count: 10, days: 1, mode: 'posts', used: 0, auto_hours: [1, 2, 3, 4, 6, 12, 24], auto_max: 10, auto: {enabled: false}}};
+    api.setNews(null, null, null);
+    api.openGroup(3, newsGroup);
+    html = api.groups();
+    check(html.includes('data-news="auto_enabled"') && !html.includes('data-news="auto_pick"') && !html.includes('group-news-auto-run'), 'Автосбор выключен — от него только галочка');
+    newsGroup.news.auto = {enabled: true, hours: 2, pick: 'all', limit: 4, rewrite: true, photo: 'cover', model: 'deepseek-1', next_at: '2026-10-05 12:00:00', last_at: 1790000000, last_ok: false, last: 'Лимит <текстов> исчерпан'};
+    html = api.groups();
+    check(html.includes('<option value="2" selected>Раз в 2 часа</option>') && html.includes('<option value="all" selected>Всё найденное</option>') && html.includes('<option value="4" selected>4</option>') && html.includes('<option value="1" selected>Полный, по тексту статьи</option>') && html.includes('<option value="cover" selected>') && html.includes('<option value="deepseek-1" selected>DeepSeek &lt;chat&gt;</option>'), 'Автосбор включён — частота, отбор, число записей, текст, картинка и модель из сохранённого');
+    check(html.includes('Самое упоминаемое') && html.includes('Следующий заход') && html.includes('Лимит &lt;текстов&gt; исчерпан') && html.includes('vkt-info-warning') && html.includes('data-command="group-news-auto-run"'), 'Итог последнего захода, срок следующего и кнопка «Собрать сейчас»');
+    api.setNews({auto_pick: 'mentions', auto_rewrite: ''}, null, null);
+    let savedNews = null;
+    context.actionHook = sent => { if (sent.action === 'group_news_save') savedNews = sent.news; return null; };
+    await listeners.click({target: {closest: () => ({dataset: {command: 'group-news-auto-run'}})}});
+    check(savedNews && savedNews.auto.enabled === true && savedNews.auto.pick === 'mentions' && savedNews.auto.rewrite === false && savedNews.auto.hours === 2 && savedNews.auto.limit === 4 && savedNews.auto.photo === 'cover', '«Собрать сейчас» сначала сохраняет несохранённые настройки автосбора');
+    context.actionHook = null;
+    api.setNews(null, null, null);
+    // Колокольчик: записи, каналы и настройки бота.
+    state.notifications = {unread: 2, items: [{id: 2, level: 'error', title: 'Лимит <b> исчерпан', body: 'Текст & подробности', view: 'settings', created_at: '2026-10-05 10:00:00', seen: '0'}, {id: 1, level: 'info', title: 'Автосбор', body: 'Поставлено 2', view: 'series', created_at: '2026-10-05 09:00:00', seen: '1'}]};
+    state.settings.notify = {vk: {ready: true, group: 111, name: 'Бот <VK>', on: false, vk_id: 0, manual: true, error: 'VK не даёт вам написать'}, tg: {ready: true, bot: 'vkt_bot', linked: false, name: ''}, bfl_min: 50};
+    api.bellBadge();
+    check(element.textContent === '2' && element.hidden === false, 'Счётчик колокольчика показывает непрочитанное');
+    api.notifyDialog();
+    html = element.innerHTML;
+    check(html.includes('Лимит &lt;b&gt; исчерпан') && html.includes('Текст &amp; подробности') && html.includes('is-error is-new') && html.includes('href="#settings"') && html.includes('href="#series"'), 'Окно оповещений: записи экранированы, новое выделено, есть ссылка на раздел');
+    check(html.includes('data-form="notify-vk"') && html.includes('Бот &lt;VK&gt;') && html.includes('name="vk_id"') && html.includes('https://vk.com/write-111') && html.includes('VK не даёт вам написать') && html.includes('data-command="notify-tg-link"') && html.includes('data-command="notify-test"'), 'Каналы: VK с ID вручную и причиной отказа, Telegram с кнопкой подключения');
+    api.setAccount({id: 5, name: 'Участник', is_admin: false, status: 'active'});
+    state.settings.notify = {vk: {ready: false}, tg: {ready: true, bot: 'vkt_bot', linked: true, name: 'user_tg'}};
+    api.notifyDialog();
+    html = element.innerHTML;
+    check(!html.includes('href="#settings"') && html.includes('href="#series"') && html.includes('пока не подключён администратором') && html.includes('user_tg') && html.includes('data-command="notify-tg-unlink"'), 'Участник: без ссылок в разделы администратора, привязанный Telegram можно отключить');
+    api.setAccount({id: 1, name: 'Админ', is_admin: true, status: 'active'});
+    state.settings.notify = {vk: {ready: true, group: 111, name: 'Бот'}, tg: {ready: false}, bfl_min: 50};
+    html = api.settings();
+    check(html.includes('data-form="notify-site"') && html.includes('name="vk_token" type="password"') && html.includes('name="tg_token" type="password"') && html.includes('name="bfl_min" type="number" min="0" max="100000" value="50"') && html.includes('сохранён · «Бот»'), 'Настройки: ключи бота вводятся скрыто, сохранённое видно только названием');
+    // Нейросети: карточки поставщиков, итог проверки ключа, модели без своего ключа.
+    state.settings.ai = {configured: true, default_model: 'openai-1', presets: {openai: {title: 'OpenAI', base: 'https://api.openai.com/v1', model: 'gpt-5.4-mini'}, deepseek: {title: 'DeepSeek', base: 'https://api.deepseek.com', model: 'deepseek-chat'}},
+        models: [{id: 'openai-1', title: 'OpenAI · gpt-5.4-mini', preset: 'openai', model: 'gpt-5.4-mini', host: 'api.openai.com', builtin: false, shared: true, preview: 'sk-pro…1zkA'}],
+        providers: [
+            {id: 'xai', title: 'xAI Grok', base: 'https://api.x.ai/v1', connected: true, locked: true, preview: 'xai-ab…9999', probe: null},
+            {id: 'openai', title: 'OpenAI', base: 'https://relay.test/v1', connected: true, locked: false, preview: 'sk-pro…1zkA', probe: {at: '2026-10-06 09:00:00', listed: true, text: {ok: true, model: 'gpt-5.4-mini', message: 'Готово <b>', models: ['gpt-5.4-mini', 'gpt-5.5']}, image: ['gpt-image-2'], video: {models: [], note: 'Видео недоступно: sora-2 — отключена с 2026-09-24.'}}},
+            {id: 'deepseek', title: 'DeepSeek', base: 'https://api.deepseek.com', connected: false, locked: false, preview: '', probe: null},
+        ]};
+    html = api.models();
+    check(html.includes('ключ sk-pro…1zkA') && html.includes('<code>gpt-5.4-mini</code> ответила: «Готово &lt;b&gt;»') && html.includes('<code>gpt-image-2</code>') && html.includes('sora-2 — отключена с 2026-09-24') && html.includes('Все модели для текста · 2'), 'Карточка поставщика: что ключ умеет в тексте, картинках и видео');
+    check(html.includes('data-command="ai-key-check" data-id="openai"') && html.includes('data-command="ai-key-delete" data-id="openai"') && html.includes('value="https://relay.test/v1"') && html.includes('name="key" type="password"') && !html.includes('data-command="ai-key-delete" data-id="deepseek"'), 'Подключённый ключ проверяется, заменяется и удаляется; у неподключённого — только поле ключа');
+    check(html.includes('VKT_XAI_API_KEY') && html.includes('data-command="ai-key-check" data-id="xai"') && !html.includes('data-command="ai-key-delete" data-id="xai"') && (html.match(/data-form="ai-key"/g) || []).length === 2, 'Ключ из wp-config.php только проверяется');
+    check(html.includes('ключ поставщика') && html.includes('пусто — ключ поставщика') && html.includes('<option value="gpt-5.5">') && html.includes('data-form="ai-model"'), 'Модели для текстов переехали сюда: ключ поставщика общий, названия подсказываются из проверки');
+    check(!api.settings().includes('data-form="ai-model"') && api.settings().includes('Раздел «Нейросети»'), 'В «Настройках» моделей больше нет — осталась ссылка на новый раздел');
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});
