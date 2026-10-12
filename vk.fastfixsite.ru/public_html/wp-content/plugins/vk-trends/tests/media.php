@@ -134,6 +134,10 @@ $assert( is_wp_error( VKT_Media::validate_ids( range( 11, 30 ) ) ), 'Больш�
 $status = VKT_AI::public_status();
 $assert( true === $status['configured'], 'Наличие ключа видно интерфейсу' );
 $assert( ! str_contains( json_encode( $status ), VKT_XAI_API_KEY ), 'Ключ xAI наружу не отдаётся' );
+// Ключ из wp-config.php переезжает в кабинет при первом заходе администратора.
+$xai = array_values( array_filter( $status['providers'], static fn( $provider ) => 'xai' === $provider['id'] ) )[0];
+$assert( 'SEALED:' . VKT_XAI_API_KEY === $GLOBALS['options']['vkt_ai_keys']['xai']['key'], 'Ключ xAI из wp-config.php сохранён в кабинете зашифрованным' );
+$assert( $xai['connected'] && ! $xai['locked'] && $xai['in_config'], 'Перенесённый ключ управляется из кабинета, о лишней константе сказано' );
 $assert( is_wp_error( VKT_AI::generate_text( 'ок' ) ), 'Слишком короткая задача отклоняется до запроса' );
 $text = VKT_AI::generate_text( 'Анонс распродажи', 'Черновик' );
 $assert( ! is_wp_error( $text ) && 'Готовый текст поста' === $text['text'], 'Текст берётся из ответа chat/completions' );
@@ -193,7 +197,11 @@ $GLOBALS['vkt_models_list'] = array( 'data' => array(
     array( 'id' => 'sora-2', 'shutdown_date' => '2026-09-24' ), array( 'id' => 'gpt-4', 'shutdown_date' => '2020-01-01' ), array( 'id' => 'o3', 'shutdown_date' => '2999-01-01' ),
 ) );
 $assert( is_wp_error( VKT_AI::save_key( array( 'preset' => 'nope', 'key' => 'sk-12345678' ) ) ) && is_wp_error( VKT_AI::save_key( array( 'preset' => 'openai', 'key' => 'short' ) ) ), 'Неизвестный поставщик и огрызок ключа не принимаются' );
-$assert( is_wp_error( VKT_AI::save_key( array( 'preset' => 'xai', 'key' => 'xai-new-key-123456' ) ) ), 'Ключ xAI из wp-config.php из кабинета не меняется' );
+// Перенесённый из wp-config.php ключ xAI заменяется из кабинета, как у любого поставщика.
+$adopted = $GLOBALS['options']['vkt_ai_keys']['xai'];
+$replaced = VKT_AI::save_key( array( 'preset' => 'xai', 'key' => 'xai-new-key-123456' ) );
+$assert( ! is_wp_error( $replaced ) && 'SEALED:xai-new-key-123456' === $GLOBALS['options']['vkt_ai_keys']['xai']['key'], 'Ключ xAI заменяется из кабинета, константа ему не мешает' );
+$GLOBALS['options']['vkt_ai_keys']['xai'] = $adopted;
 $GLOBALS['vkt_models_code'] = 401;
 $bad = VKT_AI::save_key( array( 'preset' => 'openai', 'key' => 'sk-proj-BAD-SECRET-0000' ) );
 $assert( is_wp_error( $bad ) && str_contains( $bad->get_error_message(), 'HTTP 401' ) && ! str_contains( $bad->get_error_message(), 'BAD-SECRET' ) && ! isset( $GLOBALS['options']['vkt_ai_keys']['openai'] ), 'Отвергнутый ключ не сохраняется и в сообщении не светится' );
@@ -210,7 +218,7 @@ $assert( is_wp_error( VKT_AI::save_model( array( 'preset' => 'gemini', 'model' =
 $card = array_values( array_filter( VKT_AI::providers(), static fn( $provider ) => 'openai' === $provider['id'] ) )[0];
 $assert( $card['connected'] && ! $card['locked'] && 'sk-pro…1111' === $card['preview'] && 'gpt-5.4-mini' === $card['probe']['text']['model'], 'Карточка поставщика: огрызок ключа и итог проверки' );
 $xai_card = array_values( array_filter( VKT_AI::providers(), static fn( $provider ) => 'xai' === $provider['id'] ) )[0];
-$assert( $xai_card['connected'] && $xai_card['locked'], 'Ключ xAI из wp-config.php виден как подключённый и закрытый для правки' );
+$assert( $xai_card['connected'] && ! $xai_card['locked'] && $xai_card['in_config'], 'Перенесённый ключ xAI виден как подключённый и открытый для правки' );
 $GLOBALS['vkt_videos_code'] = 200;
 $GLOBALS['vkt_models_list']['data'][] = array( 'id' => 'sora-3' );
 $again = VKT_AI::check_key( 'openai' );
@@ -218,8 +226,14 @@ $assert( ! is_wp_error( $again ) && array( 'sora-3' ) === $again['probe']['video
 $GLOBALS['vkt_videos_code'] = 404;
 $again = VKT_AI::check_key( 'openai' );
 $assert( array() === $again['probe']['video']['models'] && str_contains( $again['probe']['video']['note'], '404' ) && $GLOBALS['options']['vkt_ai_keys']['openai']['probe']['at'] === $again['probe']['at'], 'Адрес видео закрыт — модель в списке не считается; итог проверки запомнен' );
-$assert( is_wp_error( VKT_AI::delete_key( 'xai' ) ) && is_wp_error( VKT_AI::delete_key( 'gemini' ) ), 'Ключ из wp-config.php и несуществующий ключ не удаляются' );
+$assert( is_wp_error( VKT_AI::delete_key( 'gemini' ) ), 'Несуществующий ключ не удаляется' );
 $assert( ! is_wp_error( VKT_AI::delete_key( 'openai' ) ) && ! array_filter( VKT_AI::text_models(), static fn( $model ) => 'openai' === $model['preset'] ), 'Удалённый ключ выключает модели поставщика' );
 $assert( isset( $GLOBALS['options']['vkt_text_models']['models'][ $second['id'] ] ), 'Сами модели остаются и вернутся с новым ключом' );
+
+
+// Удалённый в кабинете ключ xAI константа из wp-config.php обратно не подключает.
+$deleted = VKT_AI::delete_key( 'xai' );
+$assert( ! is_wp_error( $deleted ) && ! VKT_AI::configured(), 'После удаления в кабинете константа ключ не возвращает' );
+$assert( ! VKT_AI::public_status()['media_configured'] && '' === $GLOBALS['options']['vkt_ai_keys']['xai']['key'], 'Повторный заход администратора ключ не переносит заново' );
 
 echo "All $checks offline media and xAI checks passed.\n";

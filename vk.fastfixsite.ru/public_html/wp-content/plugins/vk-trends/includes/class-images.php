@@ -31,6 +31,17 @@ final class VKT_Images {
                 },
                 'status' => null,
             ),
+            'openai' => array(
+                'title' => 'OpenAI',
+                'ready' => static fn() => (bool) VKT_AI::openai_image_models(),
+                'models' => static fn() => VKT_AI::openai_image_models(),
+                // Как и xAI, отдаёт картинку сразу.
+                'start' => static function ( $model, $prompt, $ratio ) {
+                    $media = VKT_AI::generate_openai_image( $model, $prompt, $ratio );
+                    return is_wp_error( $media ) ? $media : array( 'status' => 'done', 'media' => $media );
+                },
+                'status' => null,
+            ),
             'bfl' => array(
                 'title' => 'BFL',
                 'ready' => static fn() => VKT_Flux::configured(),
@@ -44,7 +55,7 @@ final class VKT_Images {
         );
     }
 
-    /** Подключённые модели для интерфейса: ID вида «bfl:flux-2-pro» и подпись. У xAI модель одна, поэтому ID — просто «xai». */
+    /** Подключённые модели для интерфейса: ID вида «bfl:flux-2-pro» и подпись. Если модель у поставщика одна, ID — просто его имя («xai»). */
     public static function providers() {
         $list = array();
         foreach ( self::registry() as $key => $provider ) {

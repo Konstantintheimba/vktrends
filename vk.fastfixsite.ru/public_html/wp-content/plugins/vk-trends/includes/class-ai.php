@@ -4,7 +4,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Серверный клиент генерации. Тексты пишет выбранная модель из списка —
  * любой поставщик с OpenAI-совместимым /chat/completions (xAI, DeepSeek,
- * Qwen, Gemini, OpenRouter, свой). Картинки и видео — только xAI.
+ * Qwen, Gemini, OpenRouter, свой). Картинки — xAI и OpenAI (gpt-image),
+ * видео — только xAI.
  */
 final class VKT_AI {
     const TEXT_MODEL = 'grok-4.6';
@@ -28,12 +29,17 @@ final class VKT_AI {
     const VIDEO_RATIOS = array( 'story' => '9:16', 'square' => '1:1', 'landscape' => '16:9' );
 
     const KEYS_OPTION = 'vkt_ai_keys';
+    // Сколько раз открываем соединение с поставщиком, прежде чем сдаться.
+    const CONNECT_ATTEMPTS = 3;
+    // Размеры, которые принимают gpt-image: ближайшие к привычным подписям VK.
+    const OPENAI_IMAGE_SIZES = array( 'portrait' => '1024x1536', 'square' => '1024x1024', 'landscape' => '1536x1024', 'story' => '1024x1536' );
 
     /**
      * Ключи поставщиков: один на поставщика, им пользуются все его модели.
      * Сменить или удалить ключ можно в одном месте, не перебирая модели.
-     * Константа VKT_XAI_API_KEY из wp-config.php главнее сохранённого ключа
-     * xAI: так было до появления раздела «Нейросети».
+     * Константа VKT_XAI_API_KEY из wp-config.php — запасной путь, пока ключ
+     * не перенесён в кабинет (adopt_config_key): сохранённая запись xAI, в том
+     * числе отметка об удалении, главнее константы.
      */
     private static function keys() {
         $saved = get_option( self::KEYS_OPTION, array() );
@@ -45,10 +51,64 @@ final class VKT_AI {
                 $out[ $preset ] = array( 'key' => $key, 'base' => (string) ( $entry['base'] ?? '' ) ?: self::PRESETS[ $preset ]['base'], 'saved_at' => (string) ( $entry['saved_at'] ?? '' ), 'locked' => false );
             }
         }
-        if ( defined( 'VKT_XAI_API_KEY' ) && '' !== trim( (string) VKT_XAI_API_KEY ) ) {
-            $out['xai'] = array( 'key' => trim( (string) VKT_XAI_API_KEY ), 'base' => self::PRESETS['xai']['base'], 'saved_at' => '', 'locked' => true );
+        if ( ! isset( $saved['xai'] ) && '' !== self::config_key() ) {
+            $out['xai'] = array( 'key' => self::config_key(), 'base' => self::PRESETS['xai']['base'], 'saved_at' => '', 'locked' => true );
         }
         return $out;
+    }
+
+    private static function config_key() {
+        return defined( 'VKT_XAI_API_KEY' ) ? trim( (string) VKT_XAI_API_KEY ) : '';
+    }
+
+    /**
+     * Переносит ключ xAI из wp-config.php в кабинет: дальше он меняется,
+     * проверяется и удаляется в «Нейросетях», как ключи остальных поставщиков,
+     * а строку из wp-config.php можно убрать. Делается один раз, когда
+     * администратор открывает кабинет; не удалось зашифровать — остаётся константа.
+     */
+    private static function adopt_config_key() {
+        $saved = get_option( self::KEYS_OPTION, array() );
+        if ( '' === self::config_key() || isset( $saved['xai'] ) ) {
+            return;
+        }
+        $sealed = VKT_Tokens::seal( self::config_key() );
+        if ( ! is_wp_error( $sealed ) && '' !== (string) $sealed ) {
+            self::store_key( 'xai', array( 'key' => $sealed, 'base' => self::PRESETS['xai']['base'], 'saved_at' => gmdate( 'Y-m-d H:i:s' ) ) );
+        }
+    }
+
+    /**
+     * Ключи, вписанные когда-то прямо в модель, поднимаются в карточку
+     * поставщика: иначе модель работает, а карточка пишет «не подключён», и
+     * непонятно, где ключ. Модель с тем же ключом и адресом дальше работает
+     * общим ключом — заменить его можно в одном месте. «Свой» поставщик не
+     * трогаем: у его моделей разные адреса.
+     */
+    private static function adopt_model_keys() {
+        $stored = get_option( self::MODELS_OPTION, array() );
+        $changed = false;
+        foreach ( (array) ( is_array( $stored ) ? ( $stored['models'] ?? array() ) : array() ) as $id => $entry ) {
+            $preset = is_array( $entry ) ? (string) ( $entry['preset'] ?? '' ) : '';
+            $own = '' !== $preset ? VKT_Tokens::unseal( (string) ( $entry['key'] ?? '' ) ) : '';
+            if ( '' === $own || 'custom' === $preset || ! isset( self::PRESETS[ $preset ] ) ) {
+                continue;
+            }
+            $base = untrailingslashit( (string) ( $entry['base'] ?? '' ) ?: self::PRESETS[ $preset ]['base'] );
+            $saved = get_option( self::KEYS_OPTION, array() );
+            // Запись поставщика уже есть (в том числе пустая — после удаления ключа): её не подменяем.
+            if ( ! isset( $saved[ $preset ] ) && ! isset( self::keys()[ $preset ] ) ) {
+                self::store_key( $preset, array( 'key' => (string) $entry['key'], 'base' => $base, 'saved_at' => (string) ( $entry['created_at'] ?? gmdate( 'Y-m-d H:i:s' ) ) ) );
+            }
+            $shared = self::keys()[ $preset ] ?? null;
+            if ( $shared && $shared['key'] === $own && untrailingslashit( $shared['base'] ) === $base ) {
+                $stored['models'][ $id ]['key'] = '';
+                $changed = true;
+            }
+        }
+        if ( $changed ) {
+            update_option( self::MODELS_OPTION, $stored, false );
+        }
     }
 
     private static function xai_key() {
@@ -211,6 +271,8 @@ final class VKT_AI {
 
     /** Поставщики для раздела «Нейросети»: подключён ли ключ и что показала последняя проверка. Сами ключи наружу не уходят. */
     public static function providers() {
+        self::adopt_config_key();
+        self::adopt_model_keys();
         $keys = self::keys();
         $saved = get_option( self::KEYS_OPTION, array() );
         $out = array();
@@ -225,6 +287,8 @@ final class VKT_AI {
                 'preview' => $entry ? mb_substr( $entry['key'], 0, 6 ) . '…' . mb_substr( $entry['key'], -4 ) : '',
                 'saved_at' => $entry ? $entry['saved_at'] : '',
                 'probe' => is_array( $saved[ $id ]['probe'] ?? null ) ? $saved[ $id ]['probe'] : null,
+                // Константа ещё лежит в wp-config.php, но уже не работает — подсказываем, что её можно убрать.
+                'in_config' => 'xai' === $id && '' !== self::config_key() && ! ( $entry && $entry['locked'] ),
             );
         }
         return $out;
@@ -327,7 +391,7 @@ final class VKT_AI {
             return self::error( 'Неизвестный поставщик.' );
         }
         if ( ! empty( self::keys()[ $preset ]['locked'] ) ) {
-            return self::error( 'Ключ xAI задан в wp-config.php константой VKT_XAI_API_KEY — меняется там же.' );
+            return self::error( 'Ключ xAI пока берётся из wp-config.php (VKT_XAI_API_KEY): перенести его в кабинет не удалось — проверьте ключи шифрования WordPress.' );
         }
         $key = trim( (string) ( $data['key'] ?? '' ) );
         $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
@@ -380,9 +444,10 @@ final class VKT_AI {
             return self::error( 'У этого поставщика нет сохранённого ключа.', 404 );
         }
         if ( $entry['locked'] ) {
-            return self::error( 'Ключ xAI задан в wp-config.php константой VKT_XAI_API_KEY — убирается там же.' );
+            return self::error( 'Ключ xAI пока берётся из wp-config.php (VKT_XAI_API_KEY) — уберите строку оттуда.' );
         }
-        self::store_key( $preset, null );
+        // Пустая запись остаётся: она не даёт константе из wp-config.php и ключам из моделей подключить поставщика заново.
+        self::store_key( $preset, array( 'key' => '', 'probe' => null ) );
         return array( 'ok' => true );
     }
 
@@ -402,7 +467,7 @@ final class VKT_AI {
         $name = $model['title'];
         $method = 'llm.' . $model['preset'];
         $started = microtime( true );
-        $response = wp_remote_post( $model['base'] . '/chat/completions', array(
+        $response = self::send( $model['base'] . '/chat/completions', array(
             'timeout' => $timeout,
             'redirection' => 0,
             'sslverify' => true,
@@ -412,8 +477,8 @@ final class VKT_AI {
         ) );
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи: ' . $name, $duration );
-            return self::error( 'Не удалось подключиться к ' . $name . ': ' . $response->get_error_message(), 502, true );
+            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $name . ' — ' . $response->get_error_message(), 0, 250 ), $duration );
+            return self::unreachable( $name, $model['base'], $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
         $raw = (string) wp_remote_retrieve_body( $response );
@@ -430,6 +495,81 @@ final class VKT_AI {
         $text = self::choice_text( $data );
         VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration );
         return '' === $text ? self::error( $name . ' не вернул текст.', 502, true ) : $text;
+    }
+
+    /**
+     * POST к поставщику с повтором, если соединение не открылось: cURL 6 и 7
+     * и таймаут на этапе соединения (cURL 28 «Failed to connect»). Запрос при
+     * этом не ушёл, повтор не будет оплачен дважды. Таймаут ожидания ответа
+     * не повторяем — запрос мог дойти, а модель отработать.
+     */
+    private static function send( $url, $args ) {
+        for ( $attempt = 1; ; ++$attempt ) {
+            $response = wp_remote_post( $url, $args );
+            if ( ! is_wp_error( $response ) || $attempt >= self::CONNECT_ATTEMPTS || ! self::refused( $response ) ) {
+                return $response;
+            }
+            sleep( $attempt );
+        }
+    }
+
+    private static function refused( $error ) {
+        return (bool) preg_match( '/cURL error (?:[67]\b|28: (?:Failed to connect|Connection timed out|Resolving timed out))/', $error->get_error_message() );
+    }
+
+    /**
+     * Ошибка связи словами. Отказ соединения легко принять за негодный ключ,
+     * поэтому говорим прямо: запрос до поставщика не дошёл, дело в сети
+     * между сервером сайта и поставщиком.
+     */
+    private static function unreachable( $name, $url, $error ) {
+        $message = 'Не удалось подключиться к ' . $name . ': ' . $error->get_error_message();
+        if ( self::refused( $error ) ) {
+            $host = (string) wp_parse_url( $url, PHP_URL_HOST );
+            // Адреса, которые получил сам сервер: по ним видно, куда именно он не достучался.
+            $ips = '' !== $host ? gethostbynamel( $host ) : false;
+            $message = rtrim( $message, '.' ) . '. Сервер сайта не смог открыть соединение с ' . $host . ( $ips ? ' (' . implode( ', ', array_slice( $ips, 0, 4 ) ) . ')' : '' ) . ', попыток: ' . self::CONNECT_ATTEMPTS . '. Запрос до поставщика не дошёл, ключ и модель ни при чём — закрыта дорога от сервера сайта. Выберите другую модель или впишите у поставщика адрес своего прокси в поле «Адрес API».';
+        }
+        return new WP_Error( 'vkt_ai', $message, array(
+            'status' => 502,
+            'retryable' => true,
+            'fix' => VKT_Account::is_admin() ? array( 'view' => 'models', 'label' => 'Выбрать другую модель — «Нейросети»' ) : null,
+        ) );
+    }
+
+    /**
+     * Доходит ли сервер сайта до поставщиков: адреса, которые он получил, и
+     * открывается ли соединение на 443 порт. Ключи не нужны и запросов к API
+     * нет — проверяется только дорога. VK в списке для сравнения: если не
+     * открылся и он, дело не в отдельных поставщиках, а в исходящей связи.
+     */
+    public static function reach() {
+        $keys = self::keys();
+        $targets = array( 'VK (для сравнения)' => 'https://api.vk.ru' );
+        foreach ( self::PRESETS as $id => $preset ) {
+            $base = (string) ( $keys[ $id ]['base'] ?? $preset['base'] );
+            if ( '' !== $base ) {
+                $targets[ $preset['title'] ] = $base;
+            }
+        }
+        $out = array();
+        foreach ( $targets as $title => $base ) {
+            $host = (string) wp_parse_url( $base, PHP_URL_HOST );
+            $ips = gethostbynamel( $host ) ?: array();
+            $row = array( 'title' => $title, 'host' => $host, 'ips' => array_slice( $ips, 0, 4 ), 'ok' => false, 'ms' => 0, 'error' => $ips ? '' : 'имя не разрешилось в адрес' );
+            if ( $ips ) {
+                $started = microtime( true );
+                $socket = @fsockopen( $ips[0], 443, $code, $text, 4 );
+                $row['ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
+                $row['ok'] = (bool) $socket;
+                $row['error'] = $socket ? '' : sanitize_text_field( $text ?: 'соединение не открылось' );
+                if ( $socket ) {
+                    fclose( $socket );
+                }
+            }
+            $out[] = $row;
+        }
+        return array( 'at' => gmdate( 'Y-m-d H:i:s' ), 'rows' => $out );
     }
 
     /** Текст ответа chat/completions: строка или массив частей. */
@@ -792,7 +932,7 @@ final class VKT_AI {
             }
         }
         $started = microtime( true );
-        $response = wp_remote_post( $url, array(
+        $response = self::send( $url, array(
             // Поиск с чтением страниц идёт заметно дольше обычного ответа.
             'timeout' => 170,
             'redirection' => 0,
@@ -804,8 +944,8 @@ final class VKT_AI {
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         $method = 'search.' . $entry['kind'];
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи: ' . $entry['title'], $duration );
-            return self::error( 'Не удалось подключиться к ' . $entry['title'] . ': ' . $response->get_error_message(), 502, true );
+            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $entry['title'] . ' — ' . $response->get_error_message(), 0, 250 ), $duration );
+            return self::unreachable( $entry['title'], $url, $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
         $raw = (string) wp_remote_retrieve_body( $response );
@@ -1060,6 +1200,71 @@ final class VKT_AI {
         }
         $url = (string) ( $result['data'][0]['url'] ?? '' );
         return VKT_Media::sideload( $url, 'image' );
+    }
+
+    /**
+     * Модели картинок OpenAI — те gpt-image, что поставщик назвал при последней
+     * проверке ключа. dall-e не берём: у него другие размеры и параметры.
+     */
+    public static function openai_image_models() {
+        if ( ! isset( self::keys()['openai'] ) ) {
+            return array();
+        }
+        $saved = get_option( self::KEYS_OPTION, array() );
+        $out = array();
+        foreach ( (array) ( $saved['openai']['probe']['image'] ?? array() ) as $id ) {
+            if ( is_string( $id ) && preg_match( '/^gpt-image[a-z0-9.-]*$/', $id ) ) {
+                $out[ $id ] = $id;
+            }
+        }
+        return $out;
+    }
+
+    /** Картинка gpt-image. OpenAI отдаёт её сразу, в base64, без задачи и опроса. */
+    public static function generate_openai_image( $model, $prompt, $ratio = 'portrait' ) {
+        $prompt = self::prompt( $prompt );
+        if ( is_wp_error( $prompt ) ) {
+            return $prompt;
+        }
+        $entry = self::keys()['openai'] ?? null;
+        if ( ! $entry || ! isset( self::openai_image_models()[ $model ] ) ) {
+            return self::error( 'Эта модель картинок OpenAI не подключена: проверьте ключ в разделе «Нейросети».' );
+        }
+        $started = microtime( true );
+        $response = self::send( untrailingslashit( $entry['base'] ) . '/images/generations', array(
+            'timeout' => 150,
+            'redirection' => 0,
+            'sslverify' => true,
+            // Картинка приходит в теле ответа, а не ссылкой.
+            'limit_response_size' => 16777216,
+            'headers' => array( 'Authorization' => 'Bearer ' . $entry['key'], 'Content-Type' => 'application/json' ),
+            'body' => wp_json_encode( array(
+                'model' => $model,
+                'prompt' => $prompt,
+                'n' => 1,
+                'size' => self::OPENAI_IMAGE_SIZES[ is_string( $ratio ) ? $ratio : '' ] ?? self::OPENAI_IMAGE_SIZES['portrait'],
+                // Без явного качества модель сама выбирает высокое — оно в разы дороже.
+                'quality' => 'medium',
+                'output_format' => 'jpeg',
+            ) ),
+        ) );
+        $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
+        if ( is_wp_error( $response ) ) {
+            VKT_Store::log( 'openai.images', 'ai', 'error', 0, mb_substr( 'Нет связи: OpenAI — ' . $response->get_error_message(), 0, 250 ), $duration );
+            return self::unreachable( 'OpenAI', $entry['base'], $response );
+        }
+        $http = (int) wp_remote_retrieve_response_code( $response );
+        $raw = (string) wp_remote_retrieve_body( $response );
+        $data = json_decode( $raw, true );
+        if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
+            $reason = mb_substr( self::reason( $data, $raw, $http, $entry['key'] ), 0, 220 );
+            VKT_Store::log( 'openai.images', 'ai', 'error', $http, mb_substr( 'OpenAI: ' . $reason, 0, 250 ), $duration );
+            return self::error( 'OpenAI отклонил запрос (HTTP ' . $http . '): ' . $reason, in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
+        }
+        VKT_Store::log( 'openai.images', 'ai', 'ok', $http, 'Картинка получена: ' . $model, $duration );
+        $bytes = base64_decode( (string) ( $data['data'][0]['b64_json'] ?? '' ), true );
+        unset( $data, $raw, $response );
+        return $bytes ? VKT_Media::store_image( $bytes ) : self::error( 'OpenAI не вернул картинку.', 502, true );
     }
 
     public static function start_video( $prompt, $ratio = 'story' ) {

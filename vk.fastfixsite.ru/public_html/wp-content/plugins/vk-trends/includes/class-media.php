@@ -188,6 +188,28 @@ final class VKT_Media {
         return self::public_item( $attachment_id );
     }
 
+    /** Сохраняет в медиатеку картинку, которую поставщик прислал содержимым, а не ссылкой. */
+    public static function store_image( $bytes ) {
+        $size = strlen( (string) $bytes );
+        if ( $size < 1 || $size > self::MAX_FILE_BYTES ) {
+            return self::error( 'Сгенерированный файл пуст или больше 100 МБ.', 422 );
+        }
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        $name = 'vkt-ai-' . gmdate( 'Ymd-His' ) . '-' . wp_generate_password( 6, false, false ) . '.jpg';
+        $tmp = wp_tempnam( $name );
+        if ( ! $tmp || false === file_put_contents( $tmp, $bytes ) ) {
+            return self::error( 'Не удалось создать временный файл.', 500 );
+        }
+        $attachment_id = media_handle_sideload( array( 'name' => $name, 'tmp_name' => $tmp, 'size' => $size, 'error' => 0 ), 0, 'Материал для публикации, созданный нейросетью' );
+        if ( is_wp_error( $attachment_id ) ) {
+            @unlink( $tmp );
+            return self::error( 'WordPress не сохранил сгенерированный файл: ' . $attachment_id->get_error_message(), 500 );
+        }
+        return self::public_item( $attachment_id );
+    }
+
     /** Пустые «» и «[]» означают, что сервер загрузки файл отверг. */
     private static function accepted( $uploaded ) {
         $photo = trim( (string) ( $uploaded['photo'] ?? '' ) );

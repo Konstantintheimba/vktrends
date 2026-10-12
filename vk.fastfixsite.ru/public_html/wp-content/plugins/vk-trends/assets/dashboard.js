@@ -544,7 +544,7 @@
     function seriesImagesPanel() {
         if (!publishingData?.status?.media_native) return `<div class="vkt-info">Фото к записям прикладывает только пользовательский токен VK ID: ключу сообщества VK запрещает загрузку файлов. <a href="#posting">Подключить токен — «Публикация» →</a></div>`;
         const providers = imageProviders();
-        if (!providers.length) return `<div class="vkt-info">Рисовать нечем: не подключена ни одна модель для картинок. ${isAdmin() ? 'Ключ BFL (FLUX) сохраняется в «Генерации фото», ключ xAI — константой VKT_XAI_API_KEY.' : 'Генерацию подключает администратор.'}</div>`;
+        if (!providers.length) return `<div class="vkt-info">Рисовать нечем: не подключена ни одна модель для картинок. ${isAdmin() ? 'Ключ BFL (FLUX) сохраняется в «Генерации фото», ключ xAI — в «Нейросетях».' : 'Генерацию подключает администратор.'}</div>`;
         const ai = state.settings.ai || {};
         const ratios = Object.keys(fluxSizes);
         if (!ratios.includes(seriesImage.ratio)) seriesImage.ratio = ratios[0];
@@ -1226,7 +1226,7 @@
     }
     // ——— Нейросети: ключи поставщиков и что каждый ключ умеет ———
     function providerProbe(probe) {
-        if (!probe) return '<p class="vkt-muted">Ключ ещё не проверялся.</p>';
+        if (!probe) return '<p class="vkt-muted">Ключ ещё не проверялся — нажмите «Проверить ключ».</p>';
         const text = probe.text || {}, video = probe.video || {};
         const some = (ids, limit = 6) => ids.slice(0, limit).map(id => `<code>${esc(id)}</code>`).join(', ') + (ids.length > limit ? ` и ещё ${num(ids.length - limit)}` : '');
         return `<ul class="vkt-provider-caps">
@@ -1241,12 +1241,21 @@
     const providerCard = provider => `<article class="vkt-provider ${provider.connected ? 'is-on' : ''}">
             <header><strong>${esc(provider.title)}</strong>${provider.connected ? badge(`ключ ${esc(provider.preview)}`, 'green') : badge('не подключён')}</header>
             ${provider.connected ? providerProbe(provider.probe) : ''}
-            ${provider.locked ? `<p class="vkt-muted">Ключ задан в wp-config.php константой VKT_XAI_API_KEY — меняется и убирается там же.</p><div class="vkt-form-actions">${button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`)}</div>` : `<form data-form="ai-key" class="vkt-form">
+            ${provider.in_config ? '<p class="vkt-muted">Ключ теперь хранится здесь. Строка <code>VKT_XAI_API_KEY</code> в wp-config.php больше не используется — её можно удалить.</p>' : ''}
+            ${provider.locked ? `<p class="vkt-muted">Ключ пока берётся из wp-config.php (VKT_XAI_API_KEY): перенести его в кабинет не удалось.</p><div class="vkt-form-actions">${button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`)}</div>` : `<form data-form="ai-key" class="vkt-form">
                 <input type="hidden" name="preset" value="${esc(provider.id)}">
                 <div class="vkt-form-row"><label>${provider.connected ? 'Заменить ключ' : 'Ключ API'}<input name="key" type="password" class="vkt-code-input" autocomplete="off" required placeholder="sk-…"></label><label>Адрес API<input name="base" class="vkt-code-input" value="${esc(provider.base)}" placeholder="https://…/v1"></label></div>
                 <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('check')} Проверить и сохранить</button>${provider.connected ? button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`) + button('Удалить ключ', 'ai-key-delete', `data-id="${esc(provider.id)}" data-title="${esc(provider.title)}"`) : ''}</div>
             </form>`}
         </article>`;
+    // Итог «Проверить связь»: живёт до перезагрузки страницы, перерисовку раздела переживает.
+    let reachResult = null;
+    function reachBox() {
+        const rows = (reachResult?.rows || []).map(row => `<li class="${row.ok ? 'is-ok' : 'is-bad'}"><strong>${esc(row.title)}</strong><span><code>${esc(row.host)}</code>${row.ips.length ? ` → ${row.ips.map(esc).join(', ')}` : ''} · ${row.ok ? `соединение открыто за ${num(row.ms)} мс` : `не открылось${row.ms ? ` за ${num(row.ms)} мс` : ''}: ${esc(row.error)}`}</span></li>`).join('');
+        return `<h2>Связь с поставщиками</h2><p class="vkt-muted">Доходит ли сервер сайта до адресов поставщиков. Ключи не нужны, запросов к API нет — проверяется только дорога. Если соединение не открывается, ключ и модель ни при чём: нужен свой прокси в поле «Адрес API» или поставщик, до которого сервер доходит.</p>
+            ${reachResult ? `<ul class="vkt-provider-caps">${rows}</ul><small class="vkt-muted">Проверено ${date(reachResult.at)}</small>` : ''}
+            <div class="vkt-form-actions">${button('Проверить связь', 'ai-reach')}</div>`;
+    }
     function models() {
         const providers = state.settings.ai?.providers || [];
         return heading('Нейросети', 'Ключи поставщиков, проверка того, что каждый ключ умеет, и модели для текстов.') +
@@ -1254,6 +1263,8 @@
                 <h2>Ключи поставщиков</h2>
                 <p class="vkt-muted">Один ключ на поставщика — им работают все его модели. Перед сохранением ключ проверяется: плагин запрашивает список моделей и просит одну из них ответить одним словом. Больше ничего платного проверка не делает.</p>
                 <div class="vkt-providers">${providers.map(providerCard).join('')}</div>
+                <hr class="vkt-settings-sep">
+                ${reachBox()}
                 <hr class="vkt-settings-sep">
                 ${textModels()}
             </section>
@@ -1864,7 +1875,7 @@
         const ai = publishingData?.status?.ai || {};
         // Текст пишет любая подключённая модель, картинки — любая из реестра, видео — только xAI.
         if (kind === 'text' && !ai.configured) { toast('Не подключена модель для текстов.', true, isAdmin() ? {view: 'models', label: 'Добавить модель — «Нейросети»'} : null); return; }
-        if (kind === 'video' && !ai.media_configured) { toast('Видео генерирует xAI, а его ключ VKT_XAI_API_KEY не задан.', true); return; }
+        if (kind === 'video' && !ai.media_configured) { toast('Видео генерирует xAI, а его ключ не подключён.', true, isAdmin() ? {view: 'models', label: 'Ключ xAI — «Нейросети»'} : null); return; }
         const providers = kind === 'image' ? imageProviders() : [];
         if (kind === 'image' && !providers.length) { toast('Не подключена ни одна модель для картинок.', true, isAdmin() ? {view: 'flux', label: 'Ключ BFL — «Генерация фото»'} : null); return; }
         // К записи идёт не больше десяти файлов — лишние варианты некуда прикрепить.
@@ -2877,6 +2888,12 @@
                 toast('Проверяем ключ…');
                 const checked = await act('ai_key_check', {preset: el.dataset.id});
                 toast(`${checked.title}: ${checked.probe.text.ok ? `текст отвечает («${checked.probe.text.message}»)` : `текст не отвечает — ${checked.probe.text.message}`}.`, !checked.probe.text.ok);
+            }
+            if (command==='ai-reach') {
+                toast('Проверяем связь — до полуминуты…');
+                reachResult = await act('ai_reach');
+                const closed = reachResult.rows.filter(row => !row.ok).length;
+                toast(closed ? `Не открылось соединений: ${closed} из ${reachResult.rows.length}.` : 'Сервер доходит до всех поставщиков.', !!closed);
             }
             if (command==='ai-key-delete') {
                 if (!confirm(`Удалить ключ «${el.dataset.title}»? Модели этого поставщика без своего ключа перестанут работать.`)) return;

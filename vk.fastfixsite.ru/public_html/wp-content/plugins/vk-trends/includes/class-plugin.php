@@ -93,7 +93,7 @@ final class VKT_Plugin {
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
     // Стенд фото открыт всем кабинетам в пределах суточного лимита; баланс кредитов BFL — дело хозяина ключа.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'notify_site' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'ai_reach', 'notify_site' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -526,6 +526,8 @@ final class VKT_Plugin {
                 return VKT_AI::save_key( is_array( $data ) ? $data : array() );
             case 'ai_key_check':
                 return VKT_AI::check_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
+            case 'ai_reach':
+                return VKT_AI::reach();
             case 'ai_key_delete':
                 return VKT_AI::delete_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
             case 'ai_model_save':
