@@ -469,6 +469,8 @@ final class VKT_Tokens {
                 'length' => mb_strlen( $token ),
                 'scope' => (string) $entry['scope'],
                 'expires_in' => $entry['expires_at'] ? max( 0, (int) $entry['expires_at'] - time() ) : null,
+                // Когда именно истёк — для текста «срок истёк …»: остаток в секундах после конца срока равен нулю.
+                'expires_at' => $entry['expires_at'] ? gmdate( 'c', (int) $entry['expires_at'] ) : null,
                 'refreshable' => '' !== $entry['refresh_token'] && '' !== $entry['device_id'] && '' !== $entry['client_id'],
                 'saved_at' => $entry['saved_at'] ? gmdate( 'Y-m-d H:i:s', (int) $entry['saved_at'] ) : null,
                 'error' => self::error( $slot ),

@@ -266,6 +266,14 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(api.posting().includes('истекает через 2 ч') && api.posting().includes('Переподключить'), 'Скорый конец срока виден заранее');
     state.settings.tokens[0] = {...state.settings.tokens[0], alive: false, expires_in: 0};
     check(api.posting().includes('истёк') && api.posting().includes('is-dead'), 'Истёкший токен выделен');
+    state.settings.tokens[0] = {...state.settings.tokens[0], expires_at: '2026-10-11T12:30:00+00:00', error: {message: 'Публикация (право wall): Access denied … for non-standalone applications', dead: false}};
+    check(api.posting().includes('Срок действия токена истёк') && !api.posting().includes('VK отверг токен') && !api.posting().includes('VK больше не принимает'), 'Истёкший по сроку токен не выдаёт отказ wall.post за причину');
+    state.settings.tokens[0] = {...state.settings.tokens[0], error: {message: 'User authorization failed', dead: true}};
+    check(api.posting().includes('VK отверг токен: User authorization failed'), 'Причина VK — только когда VK отверг сам токен');
+    check(api.posting().includes('Подключите оповещения в колокольчике'), 'Без бота подсказано, как чинить токен с телефона');
+    state.settings.notify = {tg: {linked: true}, vk: {ready: true, on: false}};
+    check(api.posting().includes('бот оповещений в Telegram пришлёт ссылку') && api.posting().includes('или пришлите боту'), 'С привязанным ботом сказано, что адрес можно прислать ему');
+    state.settings.tokens[0] = {...state.settings.tokens[0], error: null};
     state.settings.tokens[0] = {...state.settings.tokens[0], alive: true, expires_in: 20 * 3600};
     check(api.posting().includes('действует до'), 'Живой токен показывает, до какого времени действует');
     state.settings.oauth = {...state.settings.oauth, configured: false};

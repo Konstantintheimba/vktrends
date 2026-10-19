@@ -75,15 +75,21 @@ final class VKT_Health {
             ? 'Без него не загружаются фото в записи и не обновляется список групп; текст по-прежнему уходит ключом сообщества, сбор идёт сервисным ключом.'
             : 'Без него записи и ответы в эту группу не публикуются.';
         if ( ! VKT_Tokens::alive( $slot ) ) {
-            $reason = ! empty( $error['dead'] ) ? 'VK отверг ключ: ' . $error['message'] : 'Срок действия истёк ' . gmdate( 'd.m H:i', (int) $entry['expires_at'] ) . ' UTC.';
-            return self::issue( 'error', $title . ' не действует', $reason . ' ' . $what, 'posting', 'Переподключить', $error['at'] ?? null );
+            $reason = ! empty( $error['dead'] ) ? 'VK отверг ключ: ' . $error['message'] : 'Срок действия истёк ' . wp_date( 'd.m H:i', (int) $entry['expires_at'] ) . '.';
+            return self::reconnect( $slot, self::issue( 'error', $title . ' не действует', $reason . ' ' . $what, 'posting', 'Переподключить', $error['at'] ?? null ) );
         }
         $left = $entry['expires_at'] ? (int) $entry['expires_at'] - time() : 0;
         if ( $entry['expires_at'] && ! $refreshable && $left < self::EXPIRY_WARNING ) {
             $hours = max( 1, (int) ceil( $left / HOUR_IN_SECONDS ) );
-            return self::issue( 'warning', $title . ' истекает через ' . $hours . ' ч', 'VK выдаёт такой токен примерно на сутки и продлить его без вас не даёт. Переподключите заранее — это два клика на странице согласия VK. ' . $what, 'posting', 'Переподключить' );
+            return self::reconnect( $slot, self::issue( 'warning', $title . ' истекает через ' . $hours . ' ч', 'Действует до ' . wp_date( 'd.m H:i', (int) $entry['expires_at'] ) . '. VK выдаёт такой токен примерно на сутки и продлить его без вас не даёт. Переподключите заранее — с телефона это тоже можно: ссылку присылает бот оповещений. ' . $what, 'posting', 'Переподключить' ) );
         }
         return null;
+    }
+
+    /** Пользовательский токен переподключается из сообщения бота: VKT_Notify приложит ссылку согласия. */
+    private static function reconnect( $slot, $issue ) {
+        $issue['reconnect'] = 'user' === $slot;
+        return $issue;
     }
 
     /** Свои застрявшие публикации и ответы: их видно в кабинете, но не с каждой вкладки. */

@@ -1071,6 +1071,13 @@
         const dead = slot.has_token && (slot.alive === false || left === 0);
         const soon = slot.has_token && !dead && left !== null && left < 6 * 3600;
         const until = left ? new Date(Date.now() + left * 1000).toLocaleString('ru-RU', {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
+        const expired = slot.expires_at ? new Date(slot.expires_at).toLocaleString('ru-RU', {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
+        // Бот оповещений присылает ссылку согласия и принимает адрес со страницы VK — так токен чинится с телефона.
+        const notify = s.notify || {};
+        const bots = [notify.tg?.linked ? 'Telegram' : '', notify.vk?.ready && notify.vk?.on ? 'VK' : ''].filter(Boolean);
+        const botHint = bots.length
+            ? `Можно и с телефона: за 6 часов до конца срока бот оповещений в ${bots.join(' и ')} пришлёт ссылку «Обновить токен», а скопированный адрес примет прямо в чате.`
+            : 'Подключите оповещения в колокольчике наверху: бот в Telegram или VK будет присылать ссылку за 6 часов до конца срока и принимать адрес прямо в чате — без захода в кабинет.';
         const status = !slot.has_token ? badge('не подключён')
             : dead ? badge('истёк — переподключите', 'red')
             : soon ? badge(`истекает через ${tokenLife(left)}`, 'red')
@@ -1078,7 +1085,8 @@
         const summary = !slot.has_token
             ? 'Токен ещё не подключён. Без него записи уходят только текстом: фото и видео не приложатся, а список ваших сообществ не обновится.'
             : dead
-                ? `VK больше не принимает токен${slot.error?.message ? `: ${slot.error.message}` : '.'} Пройдите три шага ниже — это займёт минуту.`
+                // Причина — отказ VK, только если он отверг сам токен; иначе последняя ошибка проверки (например, wall.post для приложения не типа Standalone) выдавалась бы за причину смерти.
+                ? `${slot.error?.dead ? `VK отверг токен: ${slot.error.message}` : `Срок действия токена истёк${expired ? ` ${expired}` : ''}.`} Пройдите три шага ниже — это займёт минуту.`
                 : soon
                     ? `Токен закончится ${until}. Переподключите его заранее, чтобы запланированные записи с фото не встали.`
                     : `Всё работает${left !== null ? ` до ${until}` : ''}.${slot.refreshable ? ' Токен обновляется сам.' : ''}`;
@@ -1089,6 +1097,7 @@
             ${slot.has_token ? `<div class="vkt-token-preview"><code>${esc(slot.preview || '')}</code> <span class="vkt-muted">${slot.scope ? `права: ${esc(slot.scope)}` : ''}</span> ${button('Проверить', 'token-probe', 'data-slot="user"')}${button('Отключить', 'token-forget', 'data-slot="user"')}</div>` : ''}
             <details class="vkt-details vkt-token-why"${slot.has_token ? '' : ' open'}><summary>Почему токен надо обновлять каждый день</summary>
                 <p class="vkt-muted">VK выдаёт такой токен примерно на сутки. Раньше срок снимало право «offline», но в 2026 году VK его отменил, поэтому продлить токен сам сайт не может — только вы, повторным подключением. Это те же три шага ниже. За 6 часов до конца срока в кабинете появится предупреждение со ссылкой сюда, а записи с фото будут ждать нового токена, а не пропадать.</p>
+                <p class="vkt-muted">${esc(botHint)}</p>
             </details>
             <h3>${slot.has_token ? 'Переподключить' : 'Подключить'} — три шага</h3>
             ${!ready ? '<div class="vkt-info vkt-info-warning">Администратор ещё не настроил приложение сайта — получить токен пока нельзя. Напишите ему.</div>' : ''}
@@ -1097,7 +1106,7 @@
                     <li><strong>Разрешите доступ во ВКонтакте.</strong> Откроется новая вкладка VK — войдите тем аккаунтом, который администрирует ваши сообщества, и нажмите «Разрешить».
                         <div class="vkt-form-actions">${button(`${icon('arrow')} Открыть VK`, 'oauth-open', ready ? '' : 'disabled', true)}${safeUrl(oauth.authorize_url || '') ? `<a class="vkt-button" href="${safeUrl(oauth.authorize_url)}" target="_blank" rel="noopener noreferrer">если вкладка не открылась ↗</a>` : ''}</div></li>
                     <li><strong>Скопируйте адрес страницы.</strong> VK покажет почти пустую страницу, иногда с предупреждением «не копируйте данные из адресной строки». Здесь копировать можно: адрес уходит только на ваш сайт, и в нём одноразовый код, а не сам токен. Щёлкните по адресной строке, выделите всё и скопируйте.</li>
-                    <li><strong>Вставьте адрес сюда.</strong> Токен подключится сразу после вставки — код живёт около минуты, не медлите.
+                    <li><strong>Вставьте адрес сюда${bots.length ? ' или пришлите боту' : ''}.</strong> Токен подключится сразу после вставки — код живёт недолго, не медлите.
                         <label>Адрес из браузера<input name="code" class="vkt-code-input" placeholder="https://oauth.vk.com/blank.html?code=…" autocomplete="off" ${ready ? '' : 'disabled'}></label>
                         <div class="vkt-form-actions"><button class="vkt-button vkt-primary" ${ready ? '' : 'disabled'}>Подключить</button></div></li>
                 </ol>

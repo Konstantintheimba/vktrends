@@ -27,6 +27,11 @@ final class VKT_Notify {
     const VK_MESSAGES = 4096;
     // Коды VK, когда писать не даёт сам человек: не разрешил сообщения, закрыл личку, заблокировал сообщество.
     const VK_REFUSED = array( 900, 901, 902 );
+    // Оповещения о пользовательском токене: к ним прикладывается ссылка согласия, а бот ждёт ответный адрес.
+    const RECONNECT = 'token_user_';
+    // Пока токен истекает или мёртв, cron читает сообщения ботам — дольше ответа ждать незачем.
+    const RECONNECT_WAIT = DAY_IN_SECONDS;
+    const RECONNECT_HINT = 'Откройте ссылку «Обновить токен» и нажмите «Разрешить» (если VK не спросит — сразу откроется почти пустая страница). Скопируйте адрес этой страницы и пришлите его сюда ответным сообщением — токен подключится сам.';
 
     public static function schema() {
         return array(
@@ -326,14 +331,17 @@ final class VKT_Notify {
      * Текст — во все каналы человека. Возвращает канал => true или ошибку;
      * пустой список — каналов нет. Отказы, в которых виноват адресат,
      * запоминаются у него: их видно в окне оповещений.
+     * $button — array( подпись, адрес ): в Telegram это кнопка под сообщением,
+     * в VK — строка со ссылкой (кнопки-ссылки VK дают только боту с клавиатурой).
      */
-    private static function send( $user_id, $text ) {
+    private static function send( $user_id, $text, $button = null ) {
         $site = self::site();
         $prefs = self::prefs( $user_id );
         $out = array();
         $vk_id = self::vk_id( $user_id, $prefs );
         if ( '' !== $site['vk_token'] && $prefs['vk'] && $vk_id ) {
-            $sent = self::vk( 'messages.send', array( 'user_id' => $vk_id, 'random_id' => random_int( 1, 2147483647 ), 'message' => mb_substr( $text, 0, 4000 ), 'dont_parse_links' => 1 ), $site['vk_token'] );
+            $message = $button ? $text . "\n\n" . $button[0] . ': ' . $button[1] : $text;
+            $sent = self::vk( 'messages.send', array( 'user_id' => $vk_id, 'random_id' => random_int( 1, 2147483647 ), 'message' => mb_substr( $message, 0, 4000 ), 'dont_parse_links' => 1 ), $site['vk_token'] );
             $refused = is_wp_error( $sent ) && in_array( (int) ( $sent->get_error_data()['vk_code'] ?? 0 ), self::VK_REFUSED, true );
             $note = is_wp_error( $sent ) ? ( $refused ? 'VK не даёт вам написать: откройте диалог с сообществом и отправьте ему любое сообщение — так вы разрешите ответы.' : 'VK отклонил сообщение, ' . $sent->get_error_message() ) : '';
             if ( $note !== $prefs['vk_error'] ) {
@@ -343,7 +351,11 @@ final class VKT_Notify {
             $out['vk'] = is_wp_error( $sent ) ? self::error( $note ) : true;
         }
         if ( '' !== $site['tg_token'] && $prefs['tg'] ) {
-            $sent = self::tg( 'sendMessage', array( 'chat_id' => $prefs['tg'], 'text' => mb_substr( $text, 0, 4000 ), 'disable_web_page_preview' => true ), $site['tg_token'] );
+            $params = array( 'chat_id' => $prefs['tg'], 'text' => mb_substr( $text, 0, 4000 ), 'disable_web_page_preview' => true );
+            if ( $button ) {
+                $params['reply_markup'] = array( 'inline_keyboard' => array( array( array( 'text' => $button[0], 'url' => $button[1] ) ) ) );
+            }
+            $sent = self::tg( 'sendMessage', $params, $site['tg_token'] );
             if ( is_wp_error( $sent ) && 403 === (int) ( $sent->get_error_data()['tg_code'] ?? 0 ) ) {
                 // Человек остановил бота: чат отвязываем, чтобы не стучаться в закрытую дверь.
                 $prefs['tg'] = 0;
@@ -374,10 +386,19 @@ final class VKT_Notify {
     private static function flush( $limit = 15 ) {
         global $wpdb;
         $table = VKT_Store::table( 'notifications' );
-        $rows = (array) $wpdb->get_results( $wpdb->prepare( "SELECT id,user_id,title,body,view,attempts FROM $table WHERE push=1 ORDER BY id LIMIT %d", $limit ), ARRAY_A );
+        $rows = (array) $wpdb->get_results( $wpdb->prepare( "SELECT id,user_id,kind,title,body,view,attempts FROM $table WHERE push=1 ORDER BY id LIMIT %d", $limit ), ARRAY_A );
         foreach ( $rows as $row ) {
             $link = '' !== $row['view'] ? "\n" . VKT_Plugin::dashboard_url() . '#' . $row['view'] : '';
-            $sent = self::send( (int) $row['user_id'], 'VK Trends · ' . $row['title'] . "\n" . $row['body'] . $link );
+            $text = 'VK Trends · ' . $row['title'] . "\n" . $row['body'];
+            $button = null;
+            // Токен чинится прямо из сообщения: ссылка согласия здесь, а адрес со страницы VK принимает бот.
+            $consent = str_starts_with( (string) $row['kind'], self::RECONNECT ) ? self::consent_url( (int) $row['user_id'] ) : '';
+            if ( '' !== $consent ) {
+                $text .= "\n\n" . self::RECONNECT_HINT;
+                $button = array( 'Обновить токен', $consent );
+                update_option( 'vkt_reconnect_pending', time() + self::RECONNECT_WAIT, false );
+            }
+            $sent = self::send( (int) $row['user_id'], $text . $link, $button );
             $delivered = in_array( true, $sent, true );
             $attempts = (int) $row['attempts'] + 1;
             $wpdb->update( $table, array(
@@ -429,6 +450,12 @@ final class VKT_Notify {
                 if ( ! $chat || 'private' !== ( $message['chat']['type'] ?? '' ) ) {
                     continue;
                 }
+                $text = trim( (string) ( $message['text'] ?? '' ) );
+                if ( self::has_code( $text ) ) {
+                    $owner = self::owner_of( 'tg', $chat );
+                    self::tg( 'sendMessage', array( 'chat_id' => $chat, 'text' => $owner ? self::reconnect( $owner, $text ) : 'Этот чат не привязан к кабинету VK Trends. Привяжите его кнопкой «Подключить Telegram» в колокольчике кабинета или вставьте адрес в кабинете: «Публикация» → «Пользовательский токен VK».', 'disable_web_page_preview' => true ), $site['tg_token'] );
+                    continue;
+                }
                 $user_id = preg_match( '~^/start\s+([a-z0-9]{16})$~', trim( (string) ( $message['text'] ?? '' ) ), $code ) ? absint( get_transient( 'vkt_tg_code_' . $code[1] ) ) : 0;
                 if ( ! $user_id ) {
                     self::tg( 'sendMessage', array( 'chat_id' => $chat, 'text' => 'Этот бот присылает оповещения VK Trends. Откройте его кнопкой «Подключить Telegram» в колокольчике кабинета — так он узнает, чей это чат.' ), $site['tg_token'] );
@@ -462,6 +489,94 @@ final class VKT_Notify {
         return $status['tg']['linked'] ? array( 'ok' => true, 'notify' => $status ) : self::error( 'Бот пока не получил вашу команду. Откройте его по ссылке, нажмите «Запустить» и повторите проверку.', 404 );
     }
 
+    // ——— Переподключение токена из сообщения ———
+
+    /** Ссылка согласия VK для человека; пустая, если приложение сайта не настроено. */
+    private static function consent_url( $user_id ) {
+        return (string) VKT_Account::act_as( $user_id, static fn() => VKT_OAuth::configured() ? VKT_OAuth::authorize_url() : '' );
+    }
+
+    /** Адрес со страницы VK узнаём по коду в строке запроса: голое слово за код не считаем. */
+    private static function has_code( $text ) {
+        return (bool) preg_match( '~[?&#]code=[a-zA-Z0-9._\-]{8,}~', (string) $text );
+    }
+
+    /** Чей это чат Telegram или ID ВКонтакте — среди тех, кто включил канал и чей кабинет открыт. */
+    private static function owner_of( $channel, $id ) {
+        $id = (int) $id;
+        foreach ( get_users( array( 'meta_key' => self::META, 'fields' => 'ID', 'number' => 500 ) ) as $user_id ) {
+            $prefs = self::prefs( $user_id );
+            $match = 'tg' === $channel ? $prefs['tg'] === $id : $prefs['vk'] && self::vk_id( $user_id, $prefs ) === $id;
+            if ( $match ) {
+                return VKT_Account::can_use( $user_id ) ? (int) $user_id : 0;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Меняет код из присланного адреса на токен от имени владельца канала и
+     * возвращает ответ для бота. При отказе сразу даёт свежую ссылку: код
+     * одноразовый, второй раз тот же адрес не сработает.
+     */
+    private static function reconnect( $user_id, $text ) {
+        $report = VKT_Account::act_as( $user_id, static fn() => VKT_OAuth::exchange( $text ) );
+        if ( is_wp_error( $report ) ) {
+            $consent = self::consent_url( $user_id );
+            return 'Не получилось: ' . $report->get_error_message() . ( '' !== $consent ? "\n\nНовая ссылка: " . $consent : '' );
+        }
+        self::settle( $user_id );
+        $expires = (int) VKT_Account::act_as( $user_id, static fn() => VKT_Tokens::get( 'user' )['expires_at'] );
+        return 'Готово: пользовательский токен подключён' . ( $expires ? ' и действует до ' . wp_date( 'd.m H:i', $expires ) : '' ) . '. Фото снова прикладываются к записям. Перед концом срока снова пришлю ссылку.';
+    }
+
+    /** Токен снова жив: напоминания о нём в колокольчике больше не нужны и не должны уйти в мессенджер. */
+    private static function settle( $user_id ) {
+        global $wpdb;
+        // До 0.39 те же напоминания писались как health_ — гасим и их.
+        $legacy = array( 'health_' . self::key( 'Пользовательский токен VK не действует' ), 'health_' . self::key( 'Пользовательский токен VK истекает через 1 ч' ) );
+        $wpdb->query( $wpdb->prepare(
+            'UPDATE ' . VKT_Store::table( 'notifications' ) . ' SET push=0,read_at=COALESCE(read_at,%s) WHERE user_id=%d AND (kind LIKE %s OR kind IN (%s,%s)) AND (push=1 OR read_at IS NULL)',
+            gmdate( 'Y-m-d H:i:s' ), absint( $user_id ), $wpdb->esc_like( self::RECONNECT ) . '%', $legacy[0], $legacy[1]
+        ) );
+    }
+
+    /**
+     * Читает непрочитанные диалоги сообщества-бота и подключает токены по
+     * присланным адресам. Callback API не нужен: хватает права «Сообщения»
+     * у ключа бота. Остальные сообщения не трогаем — их читают люди.
+     */
+    public static function vk_poll() {
+        $site = self::site();
+        if ( '' === $site['vk_token'] || ! VKT_Store::lock( 'vk_poll', 30 ) ) {
+            return 0;
+        }
+        try {
+            $list = self::vk( 'messages.getConversations', array( 'filter' => 'unread', 'count' => 20 ), $site['vk_token'] );
+            if ( is_wp_error( $list ) ) {
+                return $list;
+            }
+            $done = 0;
+            foreach ( (array) ( $list['items'] ?? array() ) as $item ) {
+                $last = (array) ( $item['last_message'] ?? array() );
+                $from = (int) ( $last['from_id'] ?? 0 );
+                $text = trim( (string) ( $last['text'] ?? '' ) );
+                if ( $from <= 0 || ! self::has_code( $text ) ) {
+                    continue;
+                }
+                // Сначала отмечаем прочитанным: иначе следующий заход cron потратил бы тот же код второй раз.
+                self::vk( 'messages.markAsRead', array( 'peer_id' => $from, 'mark_conversation_as_read' => 1 ), $site['vk_token'] );
+                $owner = self::owner_of( 'vk', $from );
+                $reply = $owner ? self::reconnect( $owner, $text ) : 'Этот профиль VK не связан с кабинетом VK Trends: включите сообщения VK в колокольчике кабинета или вставьте адрес в кабинете: «Публикация» → «Пользовательский токен VK».';
+                self::vk( 'messages.send', array( 'user_id' => $from, 'random_id' => random_int( 1, 2147483647 ), 'message' => $reply, 'dont_parse_links' => 1 ), $site['vk_token'] );
+                ++$done;
+            }
+            return $done;
+        } finally {
+            VKT_Store::unlock( 'vk_poll' );
+        }
+    }
+
     public static function tg_unlink() {
         $user_id = VKT_Account::id();
         $prefs = self::prefs( $user_id );
@@ -474,8 +589,12 @@ final class VKT_Notify {
     // ——— Фоновые проверки ———
 
     public static function cron() {
-        if ( time() < (int) get_option( 'vkt_tg_pending', 0 ) ) {
+        $reconnect = time() < (int) get_option( 'vkt_reconnect_pending', 0 );
+        if ( $reconnect || time() < (int) get_option( 'vkt_tg_pending', 0 ) ) {
             self::tg_poll();
+        }
+        if ( $reconnect ) {
+            self::vk_poll();
         }
         self::sweep_health();
         self::sweep_funds();
@@ -507,15 +626,22 @@ final class VKT_Notify {
         $seen = is_array( $seen ) ? $seen : array();
         $now = time();
         $next = array();
+        $reconnect = false;
         foreach ( (array) $issues as $issue ) {
-            // Числа в заголовке — счётчики и время: неполадка та же, сколько бы записей в ней ни было.
-            $key = substr( md5( (string) preg_replace( '/\d+/', '#', (string) $issue['title'] ) ), 0, 12 );
+            $key = self::key( $issue['title'] );
+            $reconnect = $reconnect || ! empty( $issue['reconnect'] );
             $sent = (int) ( $seen[ $key ] ?? 0 );
             if ( ! $sent || ( 'error' === $issue['level'] && $now - $sent >= DAY_IN_SECONDS ) ) {
-                self::add( $user_id, 'health_' . $key, $issue['level'], $issue['title'], $issue['text'], $issue['view'], true, 0 );
+                self::renew( $user_id, $key, $issue );
                 $sent = $now;
             }
             $next[ $key ] = $sent;
+        }
+        if ( $reconnect ) {
+            // Адрес со страницы VK могут прислать боту в любой момент, пока токен не починен.
+            update_option( 'vkt_reconnect_pending', max( (int) get_option( 'vkt_reconnect_pending', 0 ), $now + HOUR_IN_SECONDS ), false );
+        } else {
+            self::settle( $user_id );
         }
         foreach ( $seen as $key => $sent ) {
             if ( ! isset( $next[ $key ] ) && $now - (int) $sent < self::HEALTH_QUIET ) {
@@ -525,6 +651,25 @@ final class VKT_Notify {
         if ( $next !== $seen ) {
             update_user_meta( $user_id, 'vkt_notify_health', $next );
         }
+    }
+
+    /**
+     * Неполадка, которая держится, напоминает о себе раз в сутки. Раньше
+     * каждое напоминание было новой записью, и в колокольчике копилась
+     * стопка одинаковых карточек. Теперь прежняя запись уступает место новой:
+     * она одна, наверху и снова непрочитанная.
+     */
+    private static function renew( $user_id, $key, $issue ) {
+        global $wpdb;
+        $kind = ( empty( $issue['reconnect'] ) ? 'health_' : self::RECONNECT ) . $key;
+        // До 0.39 напоминания о токене писались как health_: их стопку убираем вместе с прежней записью.
+        $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . VKT_Store::table( 'notifications' ) . ' WHERE user_id=%d AND kind IN (%s,%s)', absint( $user_id ), 'health_' . $key, self::RECONNECT . $key ) );
+        return self::add( $user_id, $kind, $issue['level'], $issue['title'], $issue['text'], $issue['view'], true, 0 );
+    }
+
+    /** Числа в заголовке — счётчики и время: неполадка та же, сколько бы записей в ней ни было. */
+    private static function key( $title ) {
+        return substr( md5( (string) preg_replace( '/\d+/', '#', (string) $title ) ), 0, 12 );
     }
 
     /** Баланс BFL: предупреждаем заранее, а не когда генерация уже встала. */
