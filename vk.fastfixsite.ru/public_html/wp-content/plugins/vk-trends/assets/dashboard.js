@@ -1579,17 +1579,19 @@
     // Настройки новостей как в форме: сохранённое, поверх — несохранённые правки.
     const groupNewsForm = group => {
         const saved = group.news || {};
-        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', cover_name: saved.cover?.name || '', cover_label: saved.cover?.label ?? 'Новость', cover_color: saved.cover?.color || '#1f6fe5', cover_ratio: saved.cover?.ratio || 'landscape', auto_enabled: !!saved.auto?.enabled, auto_hours: saved.auto?.hours || 3, auto_pick: saved.auto?.pick || 'mentions', auto_limit: saved.auto?.limit || 3, auto_rewrite: saved.auto?.rewrite ? '1' : '', auto_photo: saved.auto?.photo || 'article', auto_model: saved.auto?.model || '', ...(groupNewsDraft || {})};
+        return {enabled: !!saved.enabled, method: saved.method || 'search', engine: saved.engine || '', sources: (saved.sources || []).join('\n'), topic: saved.topic || '', count: saved.count || 10, days: saved.days || 1, mode: saved.mode || 'posts', cover_name: saved.cover?.name || '', cover_label: saved.cover?.label ?? 'Новость', cover_color: saved.cover?.color || '#1f6fe5', cover_ratio: saved.cover?.ratio || 'landscape', cover_logo: saved.cover?.logo || 0, cover_logo_url: saved.cover?.logo_url || '', auto_enabled: !!saved.auto?.enabled, auto_hours: saved.auto?.hours || 3, auto_pick: saved.auto?.pick || 'mentions', auto_limit: saved.auto?.limit || 3, auto_rewrite: saved.auto?.rewrite ? '1' : '', auto_photo: saved.auto?.photo || 'cover', auto_headline: saved.auto?.headline || 'ironic', auto_image: saved.auto?.image || '', auto_model: saved.auto?.model || '', ...(groupNewsDraft || {})};
     };
     const groupNewsPayload = group => {
         const form = groupNewsForm(group);
-        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode, cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}, auto: {enabled: !!form.auto_enabled, hours: Number(form.auto_hours), pick: form.auto_pick, limit: Number(form.auto_limit), rewrite: !!form.auto_rewrite, photo: form.auto_photo, model: form.auto_model}};
+        return {enabled: !!form.enabled, method: form.method, engine: form.engine, sources: form.sources, topic: form.topic, count: Number(form.count), days: Number(form.days), mode: form.mode, cover: groupCoverPayload(form), auto: {enabled: !!form.auto_enabled, hours: Number(form.auto_hours), pick: form.auto_pick, limit: Number(form.auto_limit), rewrite: !!form.auto_rewrite, photo: form.auto_photo, headline: form.auto_headline, image: form.auto_image, model: form.auto_model}};
     };
+    const groupCoverPayload = form => ({name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio, logo: Number(form.cover_logo) || 0});
     // Автосбор: плагин сам собирает новости по расписанию и раскладывает их в сетку серии.
     const groupNewsAuto = (group, form, option) => {
         const saved = group.news || {};
         const auto = saved.auto || {};
         const models = state.settings.ai?.models || [];
+        const painters = state.settings.images || [];
         const last = auto.last_at ? `Последний заход — ${date(new Date(auto.last_at * 1000).toISOString())}: ${esc(auto.last || '')}` : 'Заходов ещё не было.';
         const status = auto.enabled ? `<div class="vkt-info ${auto.last_at && !auto.last_ok ? 'vkt-info-warning' : ''}">Следующий заход — ${auto.next_at ? date(auto.next_at) : 'после сохранения'}. ${last}</div>` : '';
         return `<fieldset class="vkt-media"><legend>Автосбор</legend>
@@ -1601,10 +1603,15 @@
             </div>
             <div class="vkt-form-row vkt-news-options">
                 <label>Текст записи<select data-news="auto_rewrite">${option('', 'Короткий, по анонсу', form.auto_rewrite)}${option('1', 'Полный, по тексту статьи', form.auto_rewrite)}</select></label>
-                <label>Картинка<select data-news="auto_photo">${option('article', 'Главное фото статьи', form.auto_photo)}${option('cover', 'Обложка сообщества по фото', form.auto_photo)}${option('none', 'Без картинки', form.auto_photo)}</select></label>
+                <label>Заголовок<select data-news="auto_headline">${option('ironic', 'Ёмко и с иронией', form.auto_headline)}${option('source', 'Как в статье', form.auto_headline)}</select></label>
                 <label>Модель для текста<select data-news="auto_model">${option('', 'По умолчанию', form.auto_model)}${models.map(model => option(model.id, esc(model.title), form.auto_model)).join('')}</select></label>
             </div>
-            <small class="vkt-help">«Самое упоминаемое» — события, о которых написало больше всего изданий; «Самое интересное» выбирает нейросеть; «Всё найденное» берёт подряд, свежее первым. Повтор одного события из разных источников публикуется один раз. Записи встают равномерно до следующего захода, первая — через 5 минут, в серию «Новости · авто · дата»: в «Серии постов» их можно поправить, передвинуть или отменить. Один заход — один текст суточного лимита, полный текст — ещё по одному на запись. Фото загружает пользовательский токен: без него записи уйдут текстом. Включена ручная проверка публикаций — записи ждут её.</small>
+            <div class="vkt-form-row vkt-news-options">
+                <label>Фон картинки<select data-news="auto_photo">${option('cover', 'Фото статьи, нет — рисует нейросеть', form.auto_photo)}${option('ai', 'Всегда рисует нейросеть', form.auto_photo)}${option('plain', 'Цвет сообщества', form.auto_photo)}</select></label>
+                <label>Чем рисовать фон<select data-news="auto_image">${painters.length ? option('', 'Первой подключённой', form.auto_image) + painters.map(item => option(item.id, esc(item.title), form.auto_image)).join('') : option('', 'Нет подключённых моделей картинок', '')}</select></label>
+            </div>
+            <small class="vkt-help">«Самое упоминаемое» — события, о которых написало больше всего изданий; «Самое интересное» выбирает нейросеть; «Всё найденное» берёт подряд, свежее первым. Повтор одного события из разных источников публикуется один раз. Записи встают равномерно до следующего захода, первая — через 5 минут, в серию «Новости · авто · дата»: в «Серии постов» их можно поправить, передвинуть или отменить.</small>
+            <small class="vkt-help">У каждой записи есть картинка — обложка сообщества (блок ниже) с заголовком новости. Фото статьи, на котором сайт уже напечатал свой заголовок, фоном не берётся. Нет фото и не вышел рисунок — фоном станет цвет сообщества; запись без картинки в сетку не встаёт. Картинки загружает пользовательский токен: без него автосбор записи не ставит. Лимит: заход — один текст, полный текст — ещё по одному на запись, заголовки — один на заход, рисунок — одна картинка суточного лимита.${state.settings.publishing_review ? ' Включена ручная проверка публикаций — записи ждут её.' : ''}</small>
             ${status}
             ${auto.enabled ? `<div class="vkt-media-actions">${button(`${icon('refresh')} Собрать сейчас`, 'group-news-auto-run')}</div>` : ''}` : ''}
         </fieldset>`;
@@ -1722,6 +1729,7 @@
                     <small class="vkt-help">Единый макет для записей: фото, поверх — градиент вашего цвета, название сообщества, заголовок новости и метка. По нему паблик узнают в ленте. Обложка делается в окне записи серии или кнопкой «Обложки сообщества» над сеткой.</small>
                     <div class="vkt-form-row"><label>Название на обложке<input data-news="cover_name" maxlength="60" value="${esc(form.cover_name)}" placeholder="${esc(group.name || 'как у сообщества')}"></label><label>Метка<input data-news="cover_label" maxlength="30" value="${esc(form.cover_label)}" placeholder="пусто — без метки"></label></div>
                     <div class="vkt-form-row"><label>Цвет градиента<input type="color" data-news="cover_color" value="${esc(form.cover_color)}"></label><label>Формат<select data-news="cover_ratio">${['landscape', 'square', 'portrait'].map(value => option(value, ratioLabels[value], form.cover_ratio)).join('')}</select></label></div>
+                    <div class="vkt-cover-logo">${form.cover_logo_url ? `<img src="${safeUrl(form.cover_logo_url)}" alt="Логотип">` : `<span class="vkt-cover-logo-empty">${esc((form.cover_name || group.name || '?').slice(0, 1).toUpperCase())}</span>`}<div><strong>Логотип</strong><small class="vkt-help">${form.cover_logo ? 'Встаёт в кружок рядом с названием.' : 'Свой не загружен — берётся аватар сообщества VK, а если его нет — первая буква названия.'} Лучше квадратный, от 200×200.</small><div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*" data-cover-logo hidden>${icon('plus')} ${form.cover_logo ? 'Заменить' : 'Загрузить логотип'}</label>${form.cover_logo ? button('Убрать', 'group-cover-logo-clear') : ''}</div></div></div>
                     <div class="vkt-media-actions">${button(`${icon('eye')} Показать пример`, 'group-cover-preview')}</div>
                 </fieldset>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить настройки</button>${bySearch ? '' : button('Проверить источники', 'group-news-check')}${groupNewsDraft ? '<span class="vkt-muted">Есть несохранённые правки — сбор и проверка сохранят их сами.</span>' : ''}</div>
@@ -2691,10 +2699,15 @@
             const form = groupNewsForm(groupDetail);
             el.disabled = true;
             try {
-                const made = await act('cover_make', {group_id: groupOpen, preview: true, title: 'Так будет выглядеть заголовок новости на обложке сообщества', cover: {name: form.cover_name, label: form.cover_label, color: form.cover_color, ratio: form.cover_ratio}});
-                modal(`<h2>Пример обложки</h2><p class="vkt-muted">Фон здесь — чистый градиент; в записи под ним будет фото. Настройки ещё не сохранены — нажмите «Сохранить настройки» в карточке группы.</p><img class="vkt-cover-preview" src="${made.preview}" alt="">`);
+                const made = await act('cover_make', {group_id: groupOpen, preview: true, title: 'Так будет выглядеть заголовок новости на обложке сообщества', cover: groupCoverPayload(form)});
+                modal(`<h2>Пример обложки</h2><p class="vkt-muted">Фон здесь — чистый градиент; в записи под ним будет фото статьи или рисунок нейросети. Настройки ещё не сохранены — нажмите «Сохранить настройки» в карточке группы.</p><img class="vkt-cover-preview" src="${made.preview}" alt="">`);
             } catch (error) { toast(error.message, true, error.fix); }
             finally { el.disabled = false; }
+            return;
+        }
+        if (command==='group-cover-logo-clear') {
+            groupNewsDraft = {...(groupNewsDraft || {}), cover_logo: 0, cover_logo_url: ''};
+            render();
             return;
         }
         if (command==='group-news-photo') {
@@ -3327,6 +3340,23 @@
             groupMaterialDraft = {title: groupMaterialDraft?.title || file.name.replace(/\.[^.]+$/, ''), text: text.slice(0, 20000)};
             render();
             toast(text.length > 20000 ? 'Файл длиннее 20 000 символов — в поле попало только начало.' : 'Текст из файла подставлен — проверьте и сохраните.', text.length > 20000);
+            return;
+        }
+        // Логотип для обложки: файл уходит в медиатеку, в настройки — его ID. Сохраняется вместе с остальными настройками.
+        if (event.target.matches('[data-cover-logo]')) {
+            const input = event.target;
+            const file = input.files?.[0];
+            input.value = '';
+            if (!file) return;
+            const label = input.closest('label');
+            label?.classList.add('is-busy');
+            try {
+                const item = await upload(file);
+                groupNewsDraft = {...(groupNewsDraft || {}), cover_logo: Number(item.id), cover_logo_url: item.thumbnail || item.url || ''};
+                render();
+                toast('Логотип загружен. Нажмите «Сохранить настройки».');
+            } catch (error) { toast(error.message, true, error.fix); }
+            finally { label?.classList.remove('is-busy'); }
             return;
         }
         if (event.target.matches('[data-flux-upload]')) {

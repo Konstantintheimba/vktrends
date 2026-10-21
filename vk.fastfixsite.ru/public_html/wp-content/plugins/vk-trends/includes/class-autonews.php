@@ -17,6 +17,10 @@ final class VKT_Autonews {
     // Первая запись выходит не сразу: её успевают увидеть в сетке и поправить.
     const LEAD = 5 * MINUTE_IN_SECONDS;
     const MIN_STEP = 10 * MINUTE_IN_SECONDS;
+    // BFL отдаёт рисунок задачей, которую надо опрашивать: дольше двух минут одну картинку не ждём.
+    const DRAW_WAIT = 120;
+    // Позже этого от начала захода рисовать не начинаем: фоном станет цвет сообщества, а заход уложится в LOCK_TTL.
+    const DRAW_UNTIL = 600;
 
     private static function error( $message, $status = 400 ) {
         return new WP_Error( 'vkt_autonews', $message, array( 'status' => $status ) );
@@ -127,8 +131,9 @@ final class VKT_Autonews {
         if ( empty( $group['enabled'] ) || empty( $group['can_post'] ) ) {
             return self::error( 'Сообщество выключено в «Автопостинге» или право публикации не подтверждено.' );
         }
-        if ( ! VKT_Tokens::has( 'user' ) && ! VKT_Community::any_key() ) {
-            return self::error( 'Публиковать нечем: нужен ключ сообщества или пользовательский токен в «Публикации».' );
+        // Фото в VK грузит только пользовательский токен, а запись без картинки новостной паблик не выпускает.
+        if ( ! VKT_Tokens::has( 'user' ) ) {
+            return self::error( 'Нет пользовательского токена VK: без него картинки к записям не загрузить, а без картинки автосбор записи не ставит. Подключите токен в «Публикации».' );
         }
         $allowed = VKT_Account::ai_allow( 'text' );
         if ( is_wp_error( $allowed ) ) {
@@ -139,11 +144,9 @@ final class VKT_Autonews {
             return $collected;
         }
         VKT_Account::ai_spend( 'text' );
-        // Фото в VK грузит только пользовательский токен: без него запись уйдёт текстом.
-        $with_photo = 'none' !== $auto['photo'] && VKT_Tokens::has( 'user' );
-        $slots = array();
+        $started = time();
+        $items = array();
         $rewritten = 0;
-        $photos = 0;
         foreach ( $collected['posts'] as $post ) {
             $text = (string) $post['text'];
             $link = (string) $post['link'];
@@ -156,9 +159,41 @@ final class VKT_Autonews {
                     ++$rewritten;
                 }
             }
-            $media = $with_photo && '' !== $link ? self::photo( $id, $auto['photo'], $link, $text ) : array();
-            $photos += $media ? 1 : 0;
+            $items[] = array( 'text' => $text, 'link' => $link );
+        }
+        // Заголовки и сцены для рисунков — одним запросом на весь заход. Не вышло — заголовки остаются как в статье.
+        $heads = array();
+        if ( ( 'ironic' === $auto['headline'] || 'plain' !== $auto['photo'] ) && ! is_wp_error( VKT_Account::ai_allow( 'text' ) ) ) {
+            $heads = VKT_AI::news_headlines( array_column( $items, 'text' ), $auto['model'], VKT_Groups::context( $group ) );
+            if ( is_wp_error( $heads ) ) {
+                $heads = array();
+            } else {
+                VKT_Account::ai_spend( 'text' );
+            }
+        }
+        $slots = array();
+        $retitled = 0;
+        $drawn = 0;
+        $bare = 0;
+        $why = '';
+        foreach ( $items as $index => $item ) {
+            $text = $item['text'];
+            $head = $heads[ $index ] ?? array();
+            if ( 'ironic' === $auto['headline'] && '' !== ( $head['title'] ?? '' ) ) {
+                $text = VKT_News::retitle( $text, $head['title'] );
+                ++$retitled;
+            }
+            $media = self::picture( $id, $auto, $settings['cover']['ratio'], $item['link'], VKT_Cover::title( $text ), $head['scene'] ?? '', $started, $drawn );
+            if ( is_wp_error( $media ) ) {
+                // Запись без картинки в сетку не ставим: пустой пост в новостном паблике хуже пропущенного.
+                ++$bare;
+                $why = $media->get_error_message();
+                continue;
+            }
             $slots[] = array( 'message' => $text, 'media' => $media );
+        }
+        if ( ! $slots ) {
+            return self::error( 'Ни к одной из ' . count( $items ) . ' новостей не вышла картинка, записи не поставлены: ' . $why );
         }
         // Время слотов считаем после рерайта и фото: они идут минуты, и ранний слот успел бы оказаться в прошлом.
         $step = max( self::MIN_STEP, intdiv( $auto['hours'] * HOUR_IN_SECONDS, count( $slots ) ) );
@@ -182,29 +217,82 @@ final class VKT_Autonews {
         $message = 'Найдено новостей: ' . (int) $collected['found'] . ', в сетку поставлено: ' . (int) $created['created']
             . ( $times ? ' (' . $times[0] . ( count( $times ) > 1 ? '–' . end( $times ) : '' ) . ')' : '' ) . '.'
             . ( $rewritten ? ' Полных текстов по статье: ' . $rewritten . '.' : '' )
-            . ( $photos ? ' С фото: ' . $photos . '.' : '' )
+            . ( $retitled ? ' Заголовков переписано: ' . $retitled . '.' : '' )
+            . ( $drawn ? ' Фонов нарисовано нейросетью: ' . $drawn . '.' : '' )
+            . ( $bare ? ' Без картинки пропущено: ' . $bare . ' — ' . $why : '' )
             . ( $created['failed'] ? ' Не встало: ' . count( $created['failed'] ) . ' — ' . $created['failed'][0]['error'] : '' )
             . ( $review ? ' Записи ждут вашей проверки в «Автопостинге».' : '' );
         return array( 'message' => $message, 'created' => (int) $created['created'], 'series_id' => $created['series_id'], 'review' => $review );
     }
 
-    /** Главное фото статьи или обложка по нему. Не вышло — пустой список: запись уйдёт без картинки. */
-    private static function photo( $group_id, $kind, $link, $text ) {
-        $found = VKT_News::photos( $link );
-        $url = is_wp_error( $found ) ? '' : (string) ( $found['photos'][0] ?? '' );
-        if ( '' === $url ) {
-            return array();
+    /**
+     * Картинка записи — всегда обложка сообщества с заголовком. Фон по
+     * настройке: фото статьи (кроме карточек соцсетей с надписями), рисунок
+     * нейросети, цвет сообщества; не вышел один — берётся следующий.
+     * Ошибка значит, что картинки нет совсем и запись ставить нельзя.
+     */
+    private static function picture( $group_id, $auto, $ratio, $link, $title, $scene, $started, &$drawn ) {
+        $url = '';
+        if ( 'cover' === $auto['photo'] && '' !== $link ) {
+            $found = VKT_News::photos( $link );
+            foreach ( is_wp_error( $found ) ? array() : $found['photos'] as $photo ) {
+                if ( ! VKT_News::card( $photo ) ) {
+                    $url = $photo;
+                    break;
+                }
+            }
         }
-        $media = 'cover' === $kind ? VKT_Groups::cover( $group_id, (string) strtok( $text, "\n" ), 0, $url ) : null;
-        if ( null === $media || is_wp_error( $media ) ) {
-            // Обложку нарисовать не вышло (нет GD, фон не открылся) — берём само фото.
-            $media = VKT_News::photo_save( $url );
+        $art = 0;
+        if ( '' === $url && 'plain' !== $auto['photo'] && time() - $started < self::DRAW_UNTIL ) {
+            $art = self::draw( $auto['image'], $scene, $title, $ratio );
+            $drawn += $art ? 1 : 0;
+        }
+        $media = VKT_Groups::cover( $group_id, $title, $art, $url );
+        if ( is_wp_error( $media ) && ( $art || '' !== $url ) ) {
+            // Фон не открылся — обложка на цвете сообщества всё равно лучше записи без картинки.
+            $media = VKT_Groups::cover( $group_id, $title );
+        }
+        if ( is_wp_error( $media ) && ( $art || '' !== $url ) ) {
+            // Обложку рисовать нечем (на хостинге нет GD) — тогда хотя бы само фото.
+            $media = $art ? VKT_Media::public_item( $art ) : VKT_News::photo_save( $url );
+        } elseif ( $art ) {
+            // Рисунок уже стал фоном обложки: отдельным файлом в медиатеке он лишний.
+            wp_delete_attachment( $art, true );
         }
         if ( is_wp_error( $media ) || empty( $media['id'] ) ) {
-            return array();
+            return is_wp_error( $media ) ? $media : self::error( 'картинка не сохранилась в медиатеке.' );
         }
         // У cron нет пользователя, и WordPress записал бы файл ничьим: тогда очередь сочла бы его чужим.
         wp_update_post( array( 'ID' => (int) $media['id'], 'post_author' => VKT_Account::id() ) );
         return array( (int) $media['id'] );
+    }
+
+    /**
+     * Фон нейросетью, когда в статье нет своего фото. Модель — из настроек
+     * автосбора, иначе первая подключённая. Идёт в суточный лимит картинок.
+     * Не вышло — 0: фоном станет цвет сообщества.
+     */
+    private static function draw( $provider, $scene, $title, $ratio ) {
+        $list = array_column( VKT_Images::providers(), 'id' );
+        if ( ! $list || is_wp_error( VKT_Account::ai_allow( 'media' ) ) ) {
+            return 0;
+        }
+        $prompt = ( '' !== $scene ? $scene : 'Illustration for a news story: ' . $title )
+            . '. Realistic editorial news photograph, natural light, detailed. No text, no letters, no captions, no logos, no watermarks.';
+        $result = VKT_Images::start( in_array( $provider, $list, true ) ? $provider : $list[0], $prompt, $ratio );
+        $until = time() + self::DRAW_WAIT;
+        while ( ! is_wp_error( $result ) && 'pending' === ( $result['status'] ?? '' ) && time() < $until ) {
+            sleep( 4 );
+            $polled = VKT_Images::status( $result['id'] );
+            $result = is_wp_error( $polled ) || 'done' === ( $polled['status'] ?? '' ) ? $polled : $result;
+        }
+        if ( is_wp_error( $result ) || empty( $result['media']['id'] ) ) {
+            return 0;
+        }
+        VKT_Account::ai_spend( 'media' );
+        $media_id = (int) $result['media']['id'];
+        // Фон обложки берётся только из своей медиатеки: файл, записанный из cron, иначе остался бы ничьим.
+        wp_update_post( array( 'ID' => $media_id, 'post_author' => VKT_Account::id() ) );
+        return $media_id;
     }
 }

@@ -142,6 +142,15 @@ $assert( 1 === count( $limited['picks'] ) && str_contains( $GLOBALS['vkt_model_r
 $GLOBALS['vkt_model_text'] = 'Извините, не могу.';
 $assert( is_wp_error( VKT_AI::generate_news( $collected['items'], '', 5, 'posts' ) ), 'Ответ без JSON — ошибка, а не пустой результат' );
 
+// Заголовки для обложек: одним запросом, ёмко; длинное и мусор отброшены.
+$GLOBALS['vkt_model_text'] = 'Вот: {"items":[{"id":2,"title":"«КамАЗ против самоката: счёт не в пользу самоката.»","scene":"A damaged e-scooter next to a truck on a city road"},{"id":1,"title":"' . str_repeat( 'очень ', 20 ) . '","scene":"Moscow skyline"},{"id":7,"title":"Чужой номер"}]}';
+$heads = VKT_AI::news_headlines( array( "Первая новость\nТекст", "В Иркутске КамАЗ столкнулся с электросамокатом\nПострадали двое." ), '', 'Паспорт: на вы' );
+$sent = $GLOBALS['vkt_model_request']['messages'][0]['content'];
+$assert( 'КамАЗ против самоката: счёт не в пользу самоката' === $heads[1]['title'] && str_starts_with( $heads[1]['scene'], 'A damaged e-scooter' ) && '' === $heads[0]['title'] && 'Moscow skyline' === $heads[0]['scene'] && ! isset( $heads[6] ) && str_contains( $sent, 'с лёгкой иронией' ) && str_contains( $sent, 'пострадали или погибли' ) && str_contains( $sent, 'Паспорт: на вы' ), 'Заголовки: кавычки и точка сняты, слишком длинный отброшен, чужой номер не принят; трагедии без иронии' );
+$GLOBALS['vkt_model_text'] = 'не знаю';
+$assert( is_wp_error( VKT_AI::news_headlines( array( 'Новость' ) ) ), 'Ответ без заголовков — ошибка: автосбор оставит исходные' );
+$assert( "Новый заголовок\n\nТекст поста." === VKT_News::retitle( "Старый заголовок\n\nТекст поста.", 'Новый заголовок' ) && 'Новый' === VKT_News::retitle( 'Одна строка', 'Новый' ), 'Заголовок записи меняется, текст под ним остаётся' );
+
 // Сборка: источник приписывает плагин.
 $posts = VKT_News::compose( $collected['items'], $answer, 'posts' );
 $assert( 2 === count( $posts ) && "Обмен состоялся.\n\nИсточник: https://news.test/trade" === $posts[0]['text'] && 'Обмен игроков' === $posts[0]['title'] && array( 'https://sport.test/a1' ) === $posts[1]['links'], 'Отдельные посты: к каждому приписана настоящая ссылка' );
@@ -235,6 +244,9 @@ $assert( ! is_wp_error( $rescued ) && array( 'Обмен в НБА' ) === array_
 // Фото к новости: со страницы статьи, без чужих анонсов и служебных картинок.
 $GLOBALS['vkt_pages']['https://www.kp.ru/sport/trade/'] = '<html><head><meta property="og:image" content="https://s.kp.ru/photo/main.jpg?w=1200"><meta name="twitter:image" content="https://s.kp.ru/photo/main.jpg"></head><body><img src="https://s.kp.ru/other-news.jpg"><article><img src="/img/logo.png"><img width="120" src="https://s.kp.ru/small.jpg"><img data-src="//s.kp.ru/photo/second.jpg" width="900"><img src="http://s.kp.ru/insecure.jpg"><img src="/photo/third.webp"><img src="https://s.kp.ru/photo/second_140x100_crop.jpg"></article></body></html>';
 $assert( array( 'photos' => array( 'https://s.kp.ru/photo/main.jpg?w=1200', 'https://s.kp.ru/photo/second.jpg', 'https://www.kp.ru/photo/third.webp' ) ) === VKT_News::photos( 'https://www.kp.ru/sport/trade/' ), 'Фото статьи: главный снимок и снимки из текста, без логотипа, мелочи, миниатюр, повторов, http и чужих анонсов' );
+$GLOBALS['vkt_pages']['https://www.irk.ru/news/20261021/money/'] = '<html><head><meta property="og:image" content="https://static.irk.ru/media/img/site/news/material/social/145/9f1c.png"></head><body><article><img src="https://static.irk.ru/media/img/site/gallery/3681/7f24_jpg_730x1000_x-False_q85.jpg" width="730px"><img src="https://static.irk.ru/media/img/site/gallery/3681/7f24_jpg_140x100_crop-140x100_q85.jpg"></article></body></html>';
+$irk = VKT_News::photos( 'https://www.irk.ru/news/20261021/money/' )['photos'];
+$assert( array( 'https://static.irk.ru/media/img/site/gallery/3681/7f24_jpg_730x1000_x-False_q85.jpg', 'https://static.irk.ru/media/img/site/news/material/social/145/9f1c.png' ) === $irk && VKT_News::card( $irk[1] ) && ! VKT_News::card( $irk[0] ) && VKT_News::card( 'https://site.test/upload/og-image/1.jpg' ) && ! VKT_News::card( 'https://blog.test/blog/photo.jpg' ), 'Карточка соцсетей с напечатанным заголовком уходит в конец списка, настоящий снимок статьи — первым' );
 $assert( is_wp_error( VKT_News::photos( 'не адрес' ) ) && is_wp_error( VKT_News::photos( 'https://www.kp.ru/sport/gone/' ) ), 'Неверный адрес и неоткрывшаяся статья — ошибка, а не пустой список' );
 
 // Рерайт: текст берётся со страницы статьи, модель его пересказывает, источник приписывает плагин.
@@ -255,6 +267,8 @@ $cover = VKT_News::settings( array( 'cover' => array( 'name' => "  БОП <b>|</
 $assert( 'БОП | Новости' === $cover['name'] && '' === $cover['label'] && VKT_Cover::COLOR === $cover['color'] && 'landscape' === $cover['ratio'] && 'Новость' === VKT_News::settings( array() )['cover']['label'], 'Макет обложки: теги вырезаны, неверный цвет и формат заменены, метку можно убрать, по умолчанию «Новость»' );
 $kept = VKT_News::clean( array( 'enabled' => true, 'method' => 'search', 'topic' => 'НБА' ), array( 'cover' => array( 'name' => 'БОП', 'color' => '#c0392b' ) ) );
 $assert( 'БОП' === $kept['cover']['name'] && '#c0392b' === $kept['cover']['color'], 'Сохранение настроек новостей без блока обложки макет не стирает' );
+$assert( 0 === VKT_News::settings( array() )['cover']['logo'] && 42 === VKT_News::settings( array( 'cover' => array( 'logo' => '42' ) ) )['cover']['logo'], 'Логотип обложки — ID файла медиатеки, по умолчанию его нет' );
+$assert( '' === VKT_Cover::avatar( 'https://vk.com/images/community_200.png?ava=1' ) && '' === VKT_Cover::avatar( 'https://sun9-1.userapi.com/impg/camera_200.png' ) && 'https://sun9-1.userapi.com/s/v1/ig2/logo.jpg?size=200x200' === VKT_Cover::avatar( 'https://sun9-1.userapi.com/s/v1/ig2/logo.jpg?size=200x200' ), 'Заглушка VK вместо аватара логотипом не считается' );
 $assert( 'Заголовок новости' === VKT_Cover::title( "  Заголовок <i>новости</i>\n\nТекст поста." ) && 160 === mb_strlen( VKT_Cover::title( str_repeat( 'слово ', 60 ) ) ) && str_ends_with( VKT_Cover::title( str_repeat( 'слово ', 60 ) ), '…' ), 'Заголовок обложки — первая строка записи, длинный обрезается' );
 if ( VKT_Cover::available() ) {
     $lines = VKT_Cover::wrap( 'Эксперт назвал частые ошибки при установке зимних шин', 60, 700 );
@@ -265,6 +279,15 @@ if ( VKT_Cover::available() ) {
     $bottom = imagecolorat( $image, 1000, 1020 );
     $top = imagecolorat( $image, 1000, 20 );
     $assert( 1024 === imagesx( $image ) && 1024 === imagesy( $image ) && ( ( $bottom >> 16 ) & 255 ) > 170 && ( ( $bottom >> 8 ) & 255 ) < 90 && abs( ( ( $top >> 16 ) & 255 ) - ( ( $top >> 8 ) & 255 ) ) < 12, 'Обложка нужного размера: фото заполняет кадр, внизу градиент цвета сообщества, вверху — затемнённое фото' );
+    // Логотип — в белом кружке слева вверху: середина кружка берёт цвет логотипа, угол квадрата вокруг — нет.
+    $logo = imagecreatetruecolor( 300, 200 );
+    imagefilledrectangle( $logo, 0, 0, 300, 200, imagecolorallocate( $logo, 0, 200, 0 ) );
+    $branded = VKT_Cover::render( VKT_Cover::settings( array( 'name' => 'БОП', 'ratio' => 'square' ) ), 'Заголовок', null, $logo );
+    $pad = (int) round( 1024 * 0.065 );
+    $dot = (int) round( max( 14, (int) round( 1024 * 0.034 ) ) * 3.2 );
+    $center = imagecolorat( $branded, $pad + (int) ( $dot / 2 ), $pad + (int) ( $dot / 2 ) );
+    $corner = imagecolorat( $branded, $pad + 1, $pad + 1 );
+    $assert( ( ( $center >> 8 ) & 255 ) > 150 && ( ( $center >> 16 ) & 255 ) < 60 && ( ( $corner >> 8 ) & 255 ) < 100, 'Логотип обрезан в круг и стоит вместо буквы названия' );
     $made = VKT_Cover::make( VKT_Cover::settings( array( 'name' => 'БОП' ) ), "Заголовок\nТекст", 0, '', true );
     $assert( is_array( $made ) && str_starts_with( $made['preview'], 'data:image/jpeg;base64,/9j/' ) && is_wp_error( VKT_Cover::make( VKT_Cover::settings( array() ), '   ', 0, '', true ) ), 'Пример обложки отдаётся картинкой без сохранения; без заголовка обложка не делается' );
 } else {
@@ -282,7 +305,7 @@ $assert( array( 'https://upload.wikimedia.org/a.jpg', 'https://upload.wikimedia.
 
 // Автосбор: настройки, счёт упоминаний и отбор.
 $auto = VKT_News::settings( array( 'auto' => array( 'enabled' => 1, 'hours' => 5, 'pick' => 'x', 'limit' => 99, 'photo' => 'gif', 'model' => 'Bad Model', 'series' => 'DROP', 'last' => str_repeat( 'я', 900 ) ) ) )['auto'];
-$assert( $auto['enabled'] && 3 === $auto['hours'] && 'mentions' === $auto['pick'] && 10 === $auto['limit'] && 'article' === $auto['photo'] && '' === $auto['model'] && '' === $auto['series'] && 400 === mb_strlen( $auto['last'] ), 'Настройки автосбора вне списков приводятся к значениям по умолчанию' );
+$assert( $auto['enabled'] && 3 === $auto['hours'] && 'mentions' === $auto['pick'] && 10 === $auto['limit'] && 'cover' === $auto['photo'] && 'ironic' === $auto['headline'] && '' === $auto['image'] && '' === $auto['model'] && '' === $auto['series'] && 400 === mb_strlen( $auto['last'] ), 'Настройки автосбора вне списков приводятся к значениям по умолчанию' );
 $kept = VKT_News::clean( array( 'enabled' => true, 'method' => 'rss', 'sources' => 'sport.test/rss', 'auto' => array( 'enabled' => true, 'hours' => 2, 'pick' => 'all', 'last' => 'подделка', 'series' => 'sforged1234' ) ), array( 'auto' => array( 'last' => 'Поставлено 2', 'last_at' => 100, 'series' => 'sabcdef1234', 'series_day' => '2026-10-05' ), 'recent' => array( 'Старое событие' ) ) );
 $assert( ! is_wp_error( $kept ) && $kept['auto']['enabled'] && 2 === $kept['auto']['hours'] && 'all' === $kept['auto']['pick'] && 'Поставлено 2' === $kept['auto']['last'] && 100 === $kept['auto']['last_at'] && 'sabcdef1234' === $kept['auto']['series'] && array( 'Старое событие' ) === $kept['recent'], 'Форма меняет только выбор человека: итог захода, серия дня и память о событиях остаются' );
 $assert( ! VKT_News::clean( array( 'enabled' => false, 'auto' => array( 'enabled' => true ) ), array() )['auto']['enabled'], 'У выключенной новостной группы автосбор тоже выключен' );

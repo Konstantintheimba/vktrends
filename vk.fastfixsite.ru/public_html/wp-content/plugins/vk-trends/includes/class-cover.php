@@ -15,6 +15,7 @@ final class VKT_Cover {
     const COLOR = '#1f6fe5';
     const TITLE_MAX = 160;
     const SOURCE_BYTES = 20971520;
+    const LOGO_BYTES = 5242880;
 
     private static function error( $message, $status = 400 ) {
         return new WP_Error( 'vkt_cover', $message, array( 'status' => $status ) );
@@ -31,11 +32,22 @@ final class VKT_Cover {
             'label' => array_key_exists( 'label', $data ) ? $clean( $data['label'], 30 ) : 'Новость',
             'color' => $color,
             'ratio' => isset( VKT_Images::SIZES[ $data['ratio'] ?? '' ] ) ? $data['ratio'] : 'landscape',
+            // Файл медиатеки с логотипом. Нет своего — берётся аватар сообщества VK, нет и его — буква названия.
+            'logo' => absint( $data['logo'] ?? 0 ),
         );
     }
 
     public static function available() {
         return function_exists( 'imagettftext' ) && function_exists( 'imagecreatetruecolor' ) && is_file( VKT_DIR . self::FONT );
+    }
+
+    /**
+     * Аватар сообщества VK, если он настоящий. Заглушки VK (камера, силуэт
+     * сообщества) хуже буквы названия: по ним паблик не узнать.
+     */
+    public static function avatar( $url ) {
+        $url = esc_url_raw( is_string( $url ) ? trim( $url ) : '', array( 'https' ) );
+        return '' === $url || preg_match( '~vk\.com/images/|/(?:camera|community|deactivated)_\d+~i', $url ) ? '' : $url;
     }
 
     /** Заголовок для обложки — первая строка записи. */
@@ -75,7 +87,7 @@ final class VKT_Cover {
      * чистый градиент цвета сообщества. Отдельно от сохранения, чтобы макет
      * проверялся без WordPress.
      */
-    public static function render( $settings, $title, $photo = null ) {
+    public static function render( $settings, $title, $photo = null, $logo = null ) {
         list( $w, $h ) = VKT_Images::SIZES[ $settings['ratio'] ];
         $font = VKT_DIR . self::FONT;
         list( $r, $g, $b ) = array_map( 'hexdec', str_split( ltrim( $settings['color'], '#' ), 2 ) );
@@ -109,16 +121,21 @@ final class VKT_Cover {
         $pad = (int) round( $w * 0.065 );
         $inner = $w - 2 * $pad;
 
-        // Название сообщества: кружок с первой буквой вместо логотипа и имя заглавными.
+        // Название сообщества: логотип в белой обводке (или кружок с первой буквой) и имя заглавными.
         $name = mb_strtoupper( $settings['name'] );
         $name_size = max( 14, (int) round( min( $w, $h ) * 0.034 ) );
         $top = $pad;
-        if ( '' !== $name ) {
-            $dot = (int) round( $name_size * 2.5 );
+        if ( '' !== $name || $logo ) {
+            $dot = (int) round( $name_size * ( $logo ? 3.2 : 2.5 ) );
             imagefilledellipse( $canvas, $pad + (int) ( $dot / 2 ), $top + (int) ( $dot / 2 ), $dot, $dot, $white );
-            $initial = mb_substr( $name, 0, 1 );
-            $brand = imagecolorallocate( $canvas, $r, $g, $b );
-            imagettftext( $canvas, $name_size, 0, $pad + (int) ( ( $dot - self::width( $initial, $name_size, $font ) ) / 2 ), $top + (int) ( $dot / 2 + $name_size / 2 ), $brand, $font, $initial );
+            if ( $logo ) {
+                $ring = max( 2, (int) round( $dot * 0.04 ) );
+                imagecopy( $canvas, self::circle( $logo, $dot - 2 * $ring ), $pad + $ring, $top + $ring, 0, 0, $dot - 2 * $ring, $dot - 2 * $ring );
+            } else {
+                $initial = mb_substr( $name, 0, 1 );
+                $brand = imagecolorallocate( $canvas, $r, $g, $b );
+                imagettftext( $canvas, $name_size, 0, $pad + (int) ( ( $dot - self::width( $initial, $name_size, $font ) ) / 2 ), $top + (int) ( $dot / 2 + $name_size / 2 ), $brand, $font, $initial );
+            }
             $room = $inner - $dot - (int) ( $name_size * 0.9 );
             while ( mb_strlen( $name ) > 4 && self::width( $name, $name_size, $font ) > $room ) {
                 $name = rtrim( mb_substr( $name, 0, -2 ) ) . '…';
@@ -170,6 +187,54 @@ final class VKT_Cover {
         return $canvas;
     }
 
+    /**
+     * Логотип в круг: середина картинки квадратом, края сглажены прозрачностью.
+     * Прозрачный PNG ложится на белое — иначе GD залил бы пустоту чёрным.
+     */
+    private static function circle( $source, $size ) {
+        $size = max( 8, (int) $size );
+        $sw = imagesx( $source );
+        $sh = imagesy( $source );
+        $side = min( $sw, $sh );
+        $square = imagecreatetruecolor( $size, $size );
+        imagefilledrectangle( $square, 0, 0, $size, $size, imagecolorallocate( $square, 255, 255, 255 ) );
+        imagealphablending( $square, true );
+        imagecopyresampled( $square, $source, 0, 0, (int) ( ( $sw - $side ) / 2 ), (int) ( ( $sh - $side ) / 2 ), $size, $size, $side, $side );
+        $out = imagecreatetruecolor( $size, $size );
+        imagealphablending( $out, false );
+        imagesavealpha( $out, true );
+        $radius = $size / 2;
+        for ( $y = 0; $y < $size; ++$y ) {
+            for ( $x = 0; $x < $size; ++$x ) {
+                $cover = max( 0, min( 1, $radius - hypot( $x + 0.5 - $radius, $y + 0.5 - $radius ) + 0.5 ) );
+                $rgb = imagecolorat( $square, $x, $y );
+                imagesetpixel( $out, $x, $y, imagecolorallocatealpha( $out, ( $rgb >> 16 ) & 255, ( $rgb >> 8 ) & 255, $rgb & 255, 127 - (int) round( 127 * $cover ) ) );
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Логотип: свой файл из настроек, иначе аватар сообщества по адресу.
+     * Не открылся — null: обложка выйдет с буквой, а не сорвётся.
+     */
+    private static function logo( $media_id, $url ) {
+        $raw = '';
+        if ( absint( $media_id ) && VKT_Media::owned( $media_id ) ) {
+            $item = VKT_Media::item( $media_id );
+            if ( ! is_wp_error( $item ) && 'image' === $item['type'] && $item['size'] <= self::LOGO_BYTES ) {
+                $raw = (string) file_get_contents( $item['path'] );
+            }
+        }
+        $url = self::avatar( $url );
+        if ( '' === $raw && '' !== $url ) {
+            $response = wp_safe_remote_get( $url, array( 'timeout' => 15, 'redirection' => 3, 'limit_response_size' => self::LOGO_BYTES ) );
+            $raw = is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ? '' : (string) wp_remote_retrieve_body( $response );
+        }
+        $image = '' === $raw ? false : @imagecreatefromstring( $raw );
+        return $image ? $image : null;
+    }
+
     /** Фон обложки: файл своей медиатеки или фото по адресу (снимок статьи). */
     private static function photo( $media_id, $url ) {
         $raw = '';
@@ -203,7 +268,7 @@ final class VKT_Cover {
      * Обложка под запись. $preview — отдать картинку в ответе, не сохраняя:
      * для примера в настройках. Иначе файл кладётся в медиатеку.
      */
-    public static function make( $settings, $title, $media_id = 0, $url = '', $preview = false ) {
+    public static function make( $settings, $title, $media_id = 0, $url = '', $preview = false, $avatar = '' ) {
         if ( ! self::available() ) {
             return self::error( 'На сервере нет графической библиотеки GD с поддержкой шрифтов (FreeType) — обложку нарисовать нечем. Её включает хостинг в настройках PHP.', 501 );
         }
@@ -215,7 +280,7 @@ final class VKT_Cover {
         if ( is_wp_error( $photo ) ) {
             return $photo;
         }
-        $canvas = self::render( $settings, $title, $photo );
+        $canvas = self::render( $settings, $title, $photo, self::logo( $settings['logo'], $avatar ) );
         ob_start();
         imagejpeg( $canvas, null, 88 );
         $jpeg = (string) ob_get_clean();

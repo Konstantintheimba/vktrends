@@ -211,6 +211,9 @@ final class VKT_Groups {
         unset( $settings['recent'] );
         // Когда следующий автосбор: время хранит колонка группы, по ней его находит cron.
         $settings['auto']['next_at'] = $settings['auto']['enabled'] ? $next : null;
+        // Логотип в настройках показывается миниатюрой; ID файла интерфейсу мало.
+        $logo = $settings['cover']['logo'] ? wp_get_attachment_image_url( $settings['cover']['logo'], 'thumbnail' ) : '';
+        $settings['cover']['logo_url'] = $logo ? esc_url_raw( $logo, array( 'https', 'http' ) ) : '';
         return array_merge( $settings, array( 'counts' => VKT_News::COUNTS, 'day_options' => VKT_News::DAYS, 'max_sources' => VKT_News::MAX_SOURCES, 'search' => VKT_AI::search_providers(), 'auto_hours' => VKT_News::AUTO_HOURS, 'auto_max' => VKT_News::AUTO_MAX ) );
     }
 
@@ -294,7 +297,7 @@ final class VKT_Groups {
      * источник добавляет плагин. Взятые новости запоминаются и в следующий
      * сбор не попадают.
      */
-    /** Обложка записи по макету сообщества. Название не задано — берётся имя группы. */
+    /** Обложка записи по макету сообщества. Название не задано — берётся имя группы, логотип — её аватар VK. */
     public static function cover( $id, $title, $media_id = 0, $url = '', $draft = null, $preview = false ) {
         $group = self::group( $id );
         if ( is_wp_error( $group ) ) {
@@ -305,7 +308,7 @@ final class VKT_Groups {
         if ( '' === $settings['name'] ) {
             $settings['name'] = mb_substr( (string) $group['name'], 0, 60 );
         }
-        return VKT_Cover::make( $settings, $title, $media_id, $url, $preview );
+        return VKT_Cover::make( $settings, $title, $media_id, $url, $preview, (string) ( $group['photo'] ?? '' ) );
     }
 
     /**

@@ -61,14 +61,23 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( $fee
     if ( isset( $feeds[ $url ] ) ) {
         return array( 'response' => array( 'code' => 200 ), 'body' => $feeds[ $url ] );
     }
-    // Страница статьи объявляет главное фото; сам снимок скачивается в файл.
-    if ( preg_match( '~/vkt-[abc]/(match|transfer|weather)$~', $url ) ) {
-        return array( 'response' => array( 'code' => 200 ), 'body' => '<html><head><meta property="og:image" content="https://example.com/vkt-img/photo.jpg"></head><body><article><p>Текст статьи.</p></article></body></html>' );
+    // Страница статьи объявляет главное фото; у погоды — только карточка соцсетей с напечатанным заголовком.
+    if ( preg_match( '~/vkt-[abc]/(match|transfer|weather)$~', $url, $page ) ) {
+        $image = 'weather' === $page[1] ? 'https://example.com/vkt-img/social/card.png' : 'https://example.com/vkt-img/photo.jpg';
+        return array( 'response' => array( 'code' => 200 ), 'body' => '<html><head><meta property="og:image" content="' . $image . '"></head><body><article><p>Текст статьи.</p></article></body></html>' );
     }
-    if ( 'https://example.com/vkt-img/photo.jpg' === $url ) {
+    if ( str_starts_with( $url, 'https://example.com/vkt-img/' ) ) {
+        $GLOBALS['vkt_images_fetched'][] = $url;
         $image = imagecreatetruecolor( 800, 500 );
-        imagejpeg( $image, $args['filename'] );
-        return array( 'response' => array( 'code' => 200 ), 'body' => '' );
+        ob_start();
+        imagejpeg( $image );
+        $bytes = (string) ob_get_clean();
+        // Медиатека качает в файл, обложка — в память.
+        if ( ! empty( $args['filename'] ) ) {
+            file_put_contents( $args['filename'], $bytes );
+            $bytes = '';
+        }
+        return array( 'response' => array( 'code' => 200 ), 'body' => $bytes );
     }
     if ( str_ends_with( $url, '/chat/completions' ) ) {
         if ( ! empty( $GLOBALS['vkt_ai_broke'] ) ) {
@@ -76,6 +85,9 @@ add_filter( 'pre_http_request', static function ( $pre, $args, $url ) use ( $fee
         }
         $prompt = (string) end( json_decode( (string) $args['body'], true )['messages'] )['content'];
         $GLOBALS['vkt_prompts'][] = $prompt;
+        if ( str_contains( $prompt, 'заголовок для картинки-обложки' ) ) {
+            return $reply( array( 'choices' => array( array( 'message' => array( 'content' => '{"items":[{"id":1,"title":"Зенит раздал Спартаку на орехи","scene":"Football stadium at night"},{"id":2,"title":"Иванов ушёл в Динамо за мешок денег","scene":"Football boots"}]}' ) ) ) ) );
+        }
         if ( str_contains( $prompt, 'Ниже список свежих новостей' ) ) {
             return $reply( array( 'choices' => array( array( 'message' => array( 'content' => '{"news":[{"id":1,"text":"Первая новость\nТекст первой"},{"id":2,"text":"Вторая новость\nТекст второй"}]}' ) ) ) ) );
         }
@@ -137,14 +149,24 @@ VKT_Autonews::cron();
 $ok( 0 === (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'outbound_posts' ) ), 'Раньше срока cron группу не трогает' );
 $wpdb->update( $table, array( 'news_auto_at' => gmdate( 'Y-m-d H:i:s', time() - 5 ) ), array( 'id' => $local ) );
 VKT_Autonews::cron();
+$detail = $act( $a, 'group_detail', array( 'id' => $local ) );
+$ok( 0 === (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'outbound_posts' ) ) && ! $detail['news']['auto']['last_ok'] && str_contains( $detail['news']['auto']['last'], 'пользовательского токена' ) && 0 === $detail['news']['used'], 'Без пользовательского токена картинку не загрузить — заход записей не ставит и новости не тратит' );
+$ok( 'cover' === $detail['news']['auto']['photo'] && 'ironic' === $detail['news']['auto']['headline'], 'Прежнее «без картинки» стало обложкой, заголовок по умолчанию — с иронией' );
+$wpdb->query( 'TRUNCATE TABLE ' . VKT_Store::table( 'notifications' ) );
+VKT_Account::act_as( $a, static fn() => VKT_Tokens::save( 'user', 'USER_' . str_repeat( 'u', 30 ) ) );
+$wpdb->update( $table, array( 'news_auto_at' => gmdate( 'Y-m-d H:i:s', time() - 5 ) ), array( 'id' => $local ) );
+wp_set_current_user( 0 );
+VKT_Autonews::cron();
 $posts = (array) $wpdb->get_results( 'SELECT * FROM ' . VKT_Store::table( 'outbound_posts' ) . ' ORDER BY scheduled_at', ARRAY_A );
 $ok( 2 === count( $posts ) && (int) $posts[0]['user_id'] === $a, 'Заход создал две записи в кабинете владельца группы' );
 $ok( '' !== $posts[0]['series_id'] && $posts[0]['series_id'] === $posts[1]['series_id'] && str_starts_with( $posts[0]['series_title'], 'Новости · авто · ' ), 'Записи встали в одну серию дня' );
 $gap = strtotime( $posts[1]['scheduled_at'] ) - strtotime( $posts[0]['scheduled_at'] );
 $ok( 'scheduled' === $posts[0]['status'] && strtotime( $posts[0]['scheduled_at'] . ' UTC' ) > time() + 200 && abs( $gap - 3 * HOUR_IN_SECONDS ) < 5, 'Первая запись через пять минут, вторая — через половину интервала' );
-$ok( str_contains( $posts[0]['message'], 'Первая новость' ) && str_contains( $posts[0]['message'], 'Источник: https://example.' ) && str_contains( $posts[0]['message'], '/match' ), 'Самое упоминаемое — матч — идёт первым, источник приписан плагином' );
+$ok( str_starts_with( $posts[0]['message'], 'Зенит раздал Спартаку на орехи' . "\n" ) && ! str_contains( $posts[0]['message'], 'Первая новость' ) && str_contains( $posts[0]['message'], 'Текст первой' ) && str_contains( $posts[0]['message'], 'Источник: https://example.' ) && str_contains( $posts[0]['message'], '/match' ), 'Самое упоминаемое — матч — идёт первым под переписанным заголовком, текст и источник на месте' );
+$covers = array_map( 'absint', array_column( $posts, 'media' ) );
+$ok( 2 === count( array_filter( $covers ) ) && get_post_meta( $covers[0], '_vkt_cover', true ) && $a === (int) get_post_field( 'post_author', $covers[0] ) && str_contains( (string) get_the_title( $covers[0] ), 'Зенит раздал Спартаку' ), 'У каждой записи обложка сообщества с новым заголовком, файл записан за владельцем группы' );
 $ok( str_contains( $posts[1]['message'], '/transfer' ), 'Вторая по упоминаниям — трансфер' );
-$prompt = (string) end( $GLOBALS['vkt_prompts'] );
+$prompt = (string) end( array_filter( $GLOBALS['vkt_prompts'], static fn( $text ) => str_contains( $text, 'Ниже список свежих новостей' ) ) );
 $ok( str_contains( $prompt, '"mentions":3' ) && str_contains( $prompt, '"mentions":2' ) && 3 === substr_count( $prompt, '"mentions":' ) && str_contains( $prompt, 'по числу изданий' ), 'Модель получила три события вместо шести статей, со счётчиками упоминаний' );
 $next = $due();
 $ok( abs( strtotime( $next . ' UTC' ) - ( time() + 6 * HOUR_IN_SECONDS ) ) < 30, 'Следующий заход — через интервал' );
@@ -152,7 +174,7 @@ $detail = $act( $a, 'group_detail', array( 'id' => $local ) );
 $auto = is_wp_error( $detail ) ? array() : $detail['news']['auto'];
 $ok( ! empty( $auto['last_ok'] ) && str_contains( (string) $auto['last'], 'в сетку поставлено: 2' ) && $auto['series'] === $posts[0]['series_id'], 'Итог захода и серия дня записаны в настройки группы' );
 $ok( 5 === $detail['news']['used'], 'Использованными отмечены все статьи о взятых событиях, а не только пересказанные' );
-$ok( 1 === (int) get_user_meta( $a, 'vkt_ai_usage', true )['text'], 'Заход списал один текст лимита владельца' );
+$ok( 2 === (int) get_user_meta( $a, 'vkt_ai_usage', true )['text'], 'Заход списал два текста лимита владельца: отбор и заголовки' );
 $bell = VKT_Notify::inbox( $a );
 $ok( 1 === $bell['unread'] && str_starts_with( $bell['items'][0]['title'], 'Автосбор новостей' ) && 'info' === $bell['items'][0]['level'], 'Итог захода попал в колокольчик' );
 $ok( 0 === (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'notifications' ) . ' WHERE push=1' ), 'Удачный заход без ручной проверки сообщением не шлётся' );
@@ -164,6 +186,8 @@ wp_set_current_user( 0 );
 VKT_Autonews::cron();
 $messages = (array) $wpdb->get_col( 'SELECT message FROM ' . VKT_Store::table( 'outbound_posts' ) . ' ORDER BY id' );
 $ok( 3 === count( $messages ) && str_contains( $messages[2], '/weather' ) && 1 === count( array_filter( $messages, static fn( $text ) => str_contains( $text, '/match' ) ) ), 'Повторный заход берёт только ещё не взятое событие' );
+$weather = absint( $wpdb->get_var( 'SELECT media FROM ' . VKT_Store::table( 'outbound_posts' ) . ' ORDER BY id DESC LIMIT 1' ) );
+$ok( $weather && get_post_meta( $weather, '_vkt_cover', true ) && ! in_array( 'https://example.com/vkt-img/social/card.png', (array) ( $GLOBALS['vkt_images_fetched'] ?? array() ), true ), 'В статье только карточка соцсетей с надписью — её не берём, запись всё равно с обложкой' );
 // Третий заход: всё найденное использовано.
 $act( $a, 'group_news_auto_run', array( 'id' => $local ) );
 wp_set_current_user( 0 );
@@ -275,8 +299,7 @@ $GLOBALS['vkt_ai_broke'] = false;
 // ——— Ручная проверка публикаций ———
 update_user_meta( $a, 'vkt_ai_usage', array( 'day' => wp_date( 'Y-m-d' ), 'text' => 0, 'media' => 0 ) );
 update_user_meta( $a, 'vkt_publishing_review', 1 );
-VKT_Account::act_as( $a, static fn() => VKT_Tokens::save( 'user', 'USER_' . str_repeat( 'u', 30 ) ) );
-$act( $a, 'group_news_save', array( 'id' => $local, 'news' => $news + array( 'auto' => array( 'enabled' => true, 'hours' => 6, 'pick' => 'mentions', 'limit' => 2, 'photo' => 'article' ) ) ) );
+$act( $a, 'group_news_save', array( 'id' => $local, 'news' => $news + array( 'auto' => array( 'enabled' => true, 'hours' => 6, 'pick' => 'mentions', 'limit' => 2, 'photo' => 'article', 'headline' => 'source' ) ) ) );
 $act( $a, 'group_news_reset', array( 'id' => $local ) );
 $act( $a, 'group_news_auto_run', array( 'id' => $local ) );
 $wpdb->query( 'UPDATE ' . VKT_Store::table( 'notifications' ) . ' SET push=0' );
@@ -286,8 +309,9 @@ $drafts = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . VKT_Store::table( 'out
 $pushed = (string) $wpdb->get_var( 'SELECT body FROM ' . VKT_Store::table( 'notifications' ) . " WHERE push=1 AND kind LIKE 'autonews_ok%'" );
 $ok( 2 === $drafts && str_contains( $pushed, 'ждут вашей проверки' ), 'С ручной проверкой записи встают черновиками, а человеку уходит сообщение' );
 $media = array_filter( array_map( 'absint', (array) $wpdb->get_col( 'SELECT media FROM ' . VKT_Store::table( 'outbound_posts' ) . " WHERE status='draft'" ) ) );
-$ok( 2 === count( $media ) && $a === (int) get_post_field( 'post_author', reset( $media ) ), 'К записям приложено главное фото статьи, файл записан за владельцем группы' );
-foreach ( $media as $attachment ) { wp_delete_attachment( $attachment, true ); }
+$titles = (array) $wpdb->get_col( 'SELECT message FROM ' . VKT_Store::table( 'outbound_posts' ) . " WHERE status='draft' ORDER BY id" );
+$ok( 2 === count( $media ) && $a === (int) get_post_field( 'post_author', reset( $media ) ) && str_starts_with( (string) $titles[0], 'Первая новость' ), 'Заголовок «как в статье» не переписывается; обложка записана за владельцем группы' );
+foreach ( array_filter( array_map( 'absint', (array) $wpdb->get_col( 'SELECT media FROM ' . VKT_Store::table( 'outbound_posts' ) ) ) ) as $attachment ) { wp_delete_attachment( $attachment, true ); }
 $same = (array) $wpdb->get_col( 'SELECT DISTINCT series_id FROM ' . VKT_Store::table( 'outbound_posts' ) );
 $ok( 1 === count( $same ), 'Все заходы дня кладут записи в одну серию' );
 

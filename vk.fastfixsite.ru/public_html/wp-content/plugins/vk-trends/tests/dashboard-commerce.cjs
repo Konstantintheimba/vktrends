@@ -548,12 +548,15 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     newsGroup.news.auto = {enabled: true, hours: 2, pick: 'all', limit: 4, rewrite: true, photo: 'cover', model: 'deepseek-1', next_at: '2026-10-05 12:00:00', last_at: 1790000000, last_ok: false, last: 'Лимит <текстов> исчерпан'};
     html = api.groups();
     check(html.includes('<option value="2" selected>Раз в 2 часа</option>') && html.includes('<option value="all" selected>Всё найденное</option>') && html.includes('<option value="4" selected>4</option>') && html.includes('<option value="1" selected>Полный, по тексту статьи</option>') && html.includes('<option value="cover" selected>') && html.includes('<option value="deepseek-1" selected>DeepSeek &lt;chat&gt;</option>'), 'Автосбор включён — частота, отбор, число записей, текст, картинка и модель из сохранённого');
+    check(html.includes('<option value="ironic" selected>Ёмко и с иронией</option>') && html.includes('data-news="auto_image"') && !html.includes('value="none"') && html.includes('data-cover-logo') && html.includes('аватар сообщества VK'), 'Картинка у записи всегда: выбор фона и модели для рисунка, заголовок с иронией, логотип обложки');
     check(html.includes('Самое упоминаемое') && html.includes('Следующий заход') && html.includes('Лимит &lt;текстов&gt; исчерпан') && html.includes('vkt-info-warning') && html.includes('data-command="group-news-auto-run"'), 'Итог последнего захода, срок следующего и кнопка «Собрать сейчас»');
-    api.setNews({auto_pick: 'mentions', auto_rewrite: ''}, null, null);
+    api.setNews({auto_pick: 'mentions', auto_rewrite: '', auto_headline: 'source', cover_logo: 77, cover_logo_url: 'https://site.test/logo.png'}, null, null);
+    html = api.groups();
+    check(html.includes('src="https://site.test/logo.png"') && html.includes('data-command="group-cover-logo-clear"'), 'Загруженный логотип виден миниатюрой, его можно убрать');
     let savedNews = null;
     context.actionHook = sent => { if (sent.action === 'group_news_save') savedNews = sent.news; return null; };
     await listeners.click({target: {closest: () => ({dataset: {command: 'group-news-auto-run'}})}});
-    check(savedNews && savedNews.auto.enabled === true && savedNews.auto.pick === 'mentions' && savedNews.auto.rewrite === false && savedNews.auto.hours === 2 && savedNews.auto.limit === 4 && savedNews.auto.photo === 'cover', '«Собрать сейчас» сначала сохраняет несохранённые настройки автосбора');
+    check(savedNews && savedNews.auto.enabled === true && savedNews.auto.pick === 'mentions' && savedNews.auto.rewrite === false && savedNews.auto.hours === 2 && savedNews.auto.limit === 4 && savedNews.auto.photo === 'cover' && savedNews.auto.headline === 'source' && savedNews.cover.logo === 77, '«Собрать сейчас» сначала сохраняет несохранённые настройки автосбора');
     context.actionHook = null;
     api.setNews(null, null, null);
     // Колокольчик: записи, каналы и настройки бота.

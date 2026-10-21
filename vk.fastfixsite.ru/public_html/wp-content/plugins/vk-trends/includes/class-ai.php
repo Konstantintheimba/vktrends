@@ -1083,6 +1083,56 @@ final class VKT_AI {
         return '' === $post ? self::error( 'Модель не вернула текст.', 502, true ) : mb_substr( $post, 0, 15000 );
     }
 
+    const HEADLINE_MAX = 70;
+
+    /**
+     * Заголовки для обложек и сцены для рисунков — по всем записям захода
+     * одним запросом: это один текст суточного лимита, а не десяток.
+     * Возвращает по номеру записи title (ёмко, с иронией) и scene (что
+     * нарисовать, по-английски: модели картинок лучше понимают английский).
+     * Чего модель не дала — того нет в ответе: заголовок останется исходным.
+     */
+    public static function news_headlines( $texts, $model = '', $context = '' ) {
+        $list = array();
+        foreach ( array_values( (array) $texts ) as $index => $text ) {
+            $list[] = array( 'id' => $index + 1, 'text' => mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) $text ) ) ), 0, 700 ) );
+        }
+        if ( ! $list ) {
+            return self::error( 'Нет записей для заголовков.' );
+        }
+        $input = 'Ты редактор новостного паблика VK. Для каждой новости ниже придумай заголовок для картинки-обложки и сцену для фото.'
+            . ' title — на русском, до ' . ( self::HEADLINE_MAX - 10 ) . ' знаков: ёмко, живо, с лёгкой иронией или игрой слов, как пишут острые новостные паблики. Суть новости должна читаться сразу.'
+            . ' Только факты из текста: ничего не выдумывай и не искажай. Если в новости пострадали или погибли люди, катастрофа или горе — без иронии, просто ёмко.'
+            . ' Без кавычек вокруг заголовка, эмодзи, хештегов и точки в конце.'
+            . ' scene — одна фраза на английском: что показать на фотографии к новости (место, предметы, действие, обстановка). Без надписей и текста в кадре, без лиц реальных знаменитостей и политиков.'
+            . ' Верни строго JSON вида {"items":[{"id":1,"title":"заголовок","scene":"scene"}]} без пояснений.'
+            . "\n\nНовости:\n" . wp_json_encode( $list, JSON_UNESCAPED_UNICODE );
+        $result = self::chat( self::with_group( $input, $context ), 90, $model );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        $raw = trim( (string) $result );
+        if ( false !== ( $from = strpos( $raw, '{' ) ) && false !== ( $to = strrpos( $raw, '}' ) ) && $to > $from ) {
+            $raw = substr( $raw, $from, $to - $from + 1 );
+        }
+        $out = array();
+        foreach ( (array) ( json_decode( $raw, true )['items'] ?? array() ) as $item ) {
+            $id = is_array( $item ) ? absint( $item['id'] ?? 0 ) : 0;
+            if ( $id < 1 || $id > count( $list ) || isset( $out[ $id - 1 ] ) ) {
+                continue;
+            }
+            $clean = static fn( $value ) => trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( is_string( $value ) ? $value : '' ) ) );
+            // Кавычки и точку снимаем регуляркой: trim() побайтово отрезал бы и хвосты кириллицы.
+            $title = (string) preg_replace( '/^["\'«»#\s]+|["\'«».#\s]+$/u', '', $clean( $item['title'] ?? '' ) );
+            $out[ $id - 1 ] = array(
+                // Длинный заголовок модель выдала вопреки просьбе — на обложке он стал бы мелким, лучше исходный.
+                'title' => mb_strlen( $title ) >= 8 && mb_strlen( $title ) <= self::HEADLINE_MAX ? $title : '',
+                'scene' => mb_substr( $clean( $item['scene'] ?? '' ), 0, 300 ),
+            );
+        }
+        return $out ? $out : self::error( 'Модель ответила, но заголовков в ответе не нашлось.', 502, true );
+    }
+
     /** $hint — напутствие автосбора: по какому признаку отбирать из списка. */
     public static function generate_news( $items, $topic, $count, $mode, $model = '', $context = '', $hint = '' ) {
         $list = array();

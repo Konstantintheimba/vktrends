@@ -27,7 +27,11 @@ final class VKT_News {
     const AUTO_HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
     // mentions — о чём пишут чаще всего, model — самое интересное на взгляд модели, all — всё найденное.
     const AUTO_PICKS = array( 'mentions', 'model', 'all' );
-    const AUTO_PHOTOS = array( 'article', 'cover', 'none' );
+    // Картинка у записи автосбора есть всегда — обложка с заголовком. Выбирается только фон:
+    // cover — фото статьи, а нет его — рисунок нейросети; ai — всегда рисунок; plain — цвет сообщества.
+    const AUTO_PHOTOS = array( 'cover', 'ai', 'plain' );
+    // ironic — заголовок переписывает модель, ёмко и с иронией; source — как в статье.
+    const AUTO_HEADLINES = array( 'ironic', 'source' );
     const AUTO_MAX = 10;
     // Упоминания считаются по всему найденному, а не по шестидесяти самым свежим.
     const POOL_ITEMS = 200;
@@ -74,7 +78,11 @@ final class VKT_News {
             'limit' => max( 1, min( self::AUTO_MAX, (int) ( $raw['limit'] ?? 3 ) ) ),
             // Полный пост по тексту статьи вместо короткого по анонсу: каждая статья — ещё один текст лимита.
             'rewrite' => ! empty( $raw['rewrite'] ),
-            'photo' => in_array( $raw['photo'] ?? '', self::AUTO_PHOTOS, true ) ? $raw['photo'] : 'article',
+            // Прежние «фото без обложки» и «без картинки» становятся обложкой: пустых записей паблик не выпускает.
+            'photo' => in_array( $raw['photo'] ?? '', self::AUTO_PHOTOS, true ) ? $raw['photo'] : 'cover',
+            'headline' => in_array( $raw['headline'] ?? '', self::AUTO_HEADLINES, true ) ? $raw['headline'] : 'ironic',
+            // Чем рисовать фон: ID из VKT_Images::providers(). Пусто или уже отключённый — первый подключённый.
+            'image' => is_string( $raw['image'] ?? null ) && preg_match( '/^[a-z0-9_.:-]{2,80}$/i', $raw['image'] ) ? $raw['image'] : '',
             'model' => is_string( $raw['model'] ?? null ) && preg_match( '/^[a-z0-9_-]{2,40}$/', $raw['model'] ) ? $raw['model'] : '',
             'last_at' => max( 0, (int) ( $raw['last_at'] ?? 0 ) ),
             'last_ok' => ! empty( $raw['last_ok'] ),
@@ -120,7 +128,7 @@ final class VKT_News {
         // Форма присылает только то, что человек выбрал; чем кончился прошлый заход, помнит плагин.
         $auto = $current['auto'] ?? array();
         if ( is_array( $data['auto'] ?? null ) ) {
-            $auto = array_merge( $auto, array_intersect_key( $data['auto'], array_flip( array( 'enabled', 'hours', 'pick', 'limit', 'rewrite', 'photo', 'model' ) ) ) );
+            $auto = array_merge( $auto, array_intersect_key( $data['auto'], array_flip( array( 'enabled', 'hours', 'pick', 'limit', 'rewrite', 'photo', 'headline', 'image', 'model' ) ) ) );
         }
         if ( ! $enabled ) {
             $auto['enabled'] = false;
@@ -422,10 +430,27 @@ final class VKT_News {
         return mb_strlen( $text ) < 300 ? self::error( 'на странице не нашлось текста статьи.', 404 ) : $text;
     }
 
+    /** Первая строка записи — заголовок: меняем её, текст под ней остаётся. */
+    public static function retitle( $text, $title ) {
+        $text = ltrim( (string) $text );
+        $break = strpos( $text, "\n" );
+        return $title . ( false === $break ? '' : substr( $text, $break ) );
+    }
+
+    /**
+     * Картинка для соцсетей, которую сайт рисует сам: заголовок поверх фото
+     * или плашка с логотипом (irk.ru: …/social/….png). Фоном обложки она не
+     * годится — надпись под нашей надписью.
+     */
+    public static function card( $url ) {
+        $path = strtolower( (string) wp_parse_url( (string) $url, PHP_URL_PATH ) );
+        return (bool) preg_match( '~/(?:social|share|sharing|og|og-?image|opengraph|open-graph|snippet)(?:/|[-_.])|\.png$~', $path );
+    }
+
     /**
      * Фотографии со страницы статьи: главная картинка, которую сайт сам
-     * объявляет для соцсетей, и снимки из текста. Адреса только https —
-     * другие медиатека не скачает.
+     * объявляет для соцсетей, и снимки из текста. Карточки соцсетей
+     * (card()) — в конце списка. Адреса только https — другие медиатека не скачает.
      */
     public static function photos( $link ) {
         $link = esc_url_raw( is_string( $link ) ? trim( $link ) : '', array( 'http', 'https' ) );
@@ -467,7 +492,9 @@ final class VKT_News {
                 }
             }
         }
-        return array( 'photos' => array_slice( array_values( $found ), 0, self::MAX_PHOTOS ) );
+        $found = array_values( $found );
+        $cards = array_values( array_filter( $found, array( self::class, 'card' ) ) );
+        return array( 'photos' => array_slice( array_merge( array_values( array_diff( $found, $cards ) ), $cards ), 0, self::MAX_PHOTOS ) );
     }
 
     /**
