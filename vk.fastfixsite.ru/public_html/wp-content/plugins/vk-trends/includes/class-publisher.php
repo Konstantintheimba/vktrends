@@ -37,6 +37,7 @@ final class VKT_Publisher {
                 hidden tinyint unsigned NOT NULL DEFAULT 0,
                 passport mediumtext NULL,
                 passport_at datetime DEFAULT NULL,
+                persona mediumtext NULL,
                 materials longtext NULL,
                 news longtext NULL,
                 news_auto_at datetime DEFAULT NULL,
@@ -551,7 +552,9 @@ final class VKT_Publisher {
         $groups = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY enabled DESC,can_post DESC,name,id LIMIT 1000', $user_id ), ARRAY_A );
         // Паспорт, материалы и охваты живут в карточке группы, секреты Callback — на сервере: списку они только утяжеляют ответ.
         foreach ( $groups as &$group ) {
-            unset( $group['passport'], $group['materials'], $group['news'], $group['stats'], $group['callback_code'], $group['callback_secret'] );
+            // Серии нужно только знать, есть ли персонаж: тогда рисование предлагает его.
+            $group['has_persona'] = VKT_Groups::has_persona( $group );
+            unset( $group['passport'], $group['persona'], $group['materials'], $group['news'], $group['stats'], $group['callback_code'], $group['callback_secret'] );
         }
         unset( $group );
         $posts = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'outbound_posts' ) . ' WHERE user_id=%d ORDER BY id DESC LIMIT 100', $user_id ), ARRAY_A );

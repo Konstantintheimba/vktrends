@@ -28,11 +28,24 @@ final class VKT_AI {
     const IMAGE_RATIOS = array( 'portrait' => '3:4', 'square' => '1:1', 'landscape' => '16:9', 'story' => '9:16' );
     const VIDEO_RATIOS = array( 'story' => '9:16', 'square' => '1:1', 'landscape' => '16:9' );
 
+    // Адреса сайтов и кабинетов поставщиков: их вписывают в «Адрес API» вместо самого API.
+    // Сайт закрыт проверкой Cloudflare и отвечает HTML-страницей, а не ошибкой API.
+    const SITE_HOSTS = array(
+        'openai' => array( 'openai.com', 'www.openai.com', 'platform.openai.com', 'chatgpt.com', 'chat.openai.com' ),
+        'xai' => array( 'x.ai', 'www.x.ai', 'console.x.ai', 'grok.com' ),
+        'deepseek' => array( 'deepseek.com', 'www.deepseek.com', 'platform.deepseek.com', 'chat.deepseek.com' ),
+        'gemini' => array( 'aistudio.google.com', 'ai.google.dev', 'gemini.google.com' ),
+        'openrouter' => array( 'www.openrouter.ai' ),
+        'qwen' => array( 'www.alibabacloud.com', 'bailian.console.alibabacloud.com', 'qwen.ai', 'chat.qwen.ai' ),
+    );
+
     const KEYS_OPTION = 'vkt_ai_keys';
     // Сколько раз открываем соединение с поставщиком, прежде чем сдаться.
     const CONNECT_ATTEMPTS = 3;
     // Размеры, которые принимают gpt-image: ближайшие к привычным подписям VK.
     const OPENAI_IMAGE_SIZES = array( 'portrait' => '1024x1536', 'square' => '1024x1024', 'landscape' => '1536x1024', 'story' => '1024x1536' );
+    // Сколько опорных фото отдаём gpt-image: API берёт больше, но лицо держится уже на трёх-четырёх.
+    const OPENAI_IMAGE_REFS = 4;
 
     /**
      * Ключи поставщиков: один на поставщика, им пользуются все его модели.
@@ -194,7 +207,10 @@ final class VKT_AI {
         if ( ! isset( self::PRESETS[ $preset ] ) ) {
             return self::error( 'Неизвестный поставщик.' );
         }
-        $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
+        $base = self::api_base( $preset, untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) ) );
+        if ( is_wp_error( $base ) ) {
+            return $base;
+        }
         $model = trim( (string) ( $data['model'] ?? '' ) ) ?: self::PRESETS[ $preset ]['model'];
         $title = sanitize_text_field( (string) ( $data['title'] ?? '' ) ) ?: self::PRESETS[ $preset ]['title'] . ' · ' . $model;
         $own = trim( (string) ( $data['key'] ?? '' ) );
@@ -344,7 +360,10 @@ final class VKT_AI {
         unset( $ids );
         // Пробный текст — моделью по умолчанию; у своего поставщика её нет, берём первую из списка.
         $model = '' !== self::PRESETS[ $preset ]['model'] ? self::PRESETS[ $preset ]['model'] : (string) ( $kinds['text'][0] ?? '' );
-        $answer = '' === $model ? self::error( 'поставщик не назвал ни одной модели для текста.' ) : self::chat( 'Ответь одним словом: готово', 30, array( 'title' => self::PRESETS[ $preset ]['title'] . ' · ' . $model, 'preset' => $preset, 'base' => $base, 'model' => $model, 'key' => $key ) );
+        // Список не пришёл — говорим, что ответил адрес: обычно это сайт вместо API или опечатка в пути.
+        $why = $http ? 'HTTP ' . $http . ': ' . self::reason( $data, $raw, $http, $key ) : 'нет ответа';
+        $unlisted = $listed ? 'поставщик не назвал ни одной модели для текста.' : 'список моделей по адресу ' . $base . '/models не получен (' . $why . ')' . ( str_contains( $why, 'Адрес API' ) ? '' : '. Проверьте «Адрес API» — он должен вести на API, например https://api.openai.com/v1.' );
+        $answer = '' === $model ? self::error( $unlisted ) : self::chat( 'Ответь одним словом: готово', 30, array( 'title' => self::PRESETS[ $preset ]['title'] . ' · ' . $model, 'preset' => $preset, 'base' => $base, 'model' => $model, 'key' => $key ) );
         if ( ! $listed && is_wp_error( $answer ) ) {
             return $answer;
         }
@@ -367,6 +386,27 @@ final class VKT_AI {
             'image' => array_slice( $kinds['image'], 0, 40 ),
             'video' => array( 'models' => array_slice( $kinds['video'], 0, 20 ), 'note' => $video_note ),
         );
+    }
+
+    /**
+     * Чинит «Адрес API», если в него вписали сайт поставщика или адрес API без
+     * версии: у известного поставщика адрес API один, его и ставим. Прокси на
+     * своём домене не трогаем. Сайт известного поставщика в карточке «Свой»
+     * — ошибка с подсказкой, в какую карточку нести ключ.
+     */
+    public static function api_base( $preset, $base ) {
+        $host = strtolower( (string) wp_parse_url( $base, PHP_URL_HOST ) );
+        foreach ( self::SITE_HOSTS as $owner => $sites ) {
+            $api_host = (string) wp_parse_url( self::PRESETS[ $owner ]['base'], PHP_URL_HOST );
+            if ( ! in_array( $host, $sites, true ) && $host !== $api_host ) {
+                continue;
+            }
+            if ( $owner === $preset ) {
+                return self::PRESETS[ $owner ]['base'];
+            }
+            return self::error( $base . ' — это ' . self::PRESETS[ $owner ]['title'] . ': вставьте ключ в его карточку «' . self::PRESETS[ $owner ]['title'] . '», адрес API ' . self::PRESETS[ $owner ]['base'] . ' подставится сам.' );
+        }
+        return $base;
     }
 
     private static function store_key( $preset, $entry ) {
@@ -394,7 +434,10 @@ final class VKT_AI {
             return self::error( 'Ключ xAI пока берётся из wp-config.php (VKT_XAI_API_KEY): перенести его в кабинет не удалось — проверьте ключи шифрования WordPress.' );
         }
         $key = trim( (string) ( $data['key'] ?? '' ) );
-        $base = untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) );
+        $base = self::api_base( $preset, untrailingslashit( esc_url_raw( trim( (string) ( $data['base'] ?? '' ) ) ?: self::PRESETS[ $preset ]['base'], array( 'https' ) ) ) );
+        if ( is_wp_error( $base ) ) {
+            return $base;
+        }
         if ( ! preg_match( '/^[!-~]{8,512}$/', $key ) ) {
             return self::error( 'Вставьте ключ API целиком.' );
         }
@@ -599,7 +642,8 @@ final class VKT_AI {
             $message = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $raw ) ) );
             $message = '' === $message ? 'пустой ответ' : 'ответ не от API: «' . mb_substr( $message, 0, 120 ) . '»';
             if ( in_array( $http, array( 403, 451 ), true ) ) {
-                $message .= '. Похоже, поставщик не обслуживает страну сервера — выберите другую модель (DeepSeek или Qwen обычно доступны).';
+                // Страница вместо JSON — чаще всего неверный адрес (сайт поставщика за Cloudflare), реже — отказ стране сервера.
+                $message .= '. Ответила веб-страница, а не API: проверьте «Адрес API» в «Нейросетях» — нужен адрес API, например https://api.openai.com/v1, а не сайт. Если адрес верный — поставщик, похоже, не обслуживает страну сервера: выберите другую модель (DeepSeek или Qwen обычно доступны).';
             }
         }
         return str_replace( $key, '[hidden]', sanitize_text_field( $message ) );
@@ -1270,8 +1314,12 @@ final class VKT_AI {
         return $out;
     }
 
-    /** Картинка gpt-image. OpenAI отдаёт её сразу, в base64, без задачи и опроса. */
-    public static function generate_openai_image( $model, $prompt, $ratio = 'portrait' ) {
+    /**
+     * Картинка gpt-image. OpenAI отдаёт её сразу, в base64, без задачи и опроса.
+     * С опорными фото ($refs — ID вложений) запрос идёт в /images/edits: так
+     * модель видит лицо человека, а не угадывает его по описанию.
+     */
+    public static function generate_openai_image( $model, $prompt, $ratio = 'portrait', $refs = array() ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
@@ -1280,24 +1328,40 @@ final class VKT_AI {
         if ( ! $entry || ! isset( self::openai_image_models()[ $model ] ) ) {
             return self::error( 'Эта модель картинок OpenAI не подключена: проверьте ключ в разделе «Нейросети».' );
         }
-        $started = microtime( true );
-        $response = self::send( untrailingslashit( $entry['base'] ) . '/images/generations', array(
+        $fields = array(
+            'model' => $model,
+            'prompt' => $prompt,
+            'n' => 1,
+            'size' => self::OPENAI_IMAGE_SIZES[ is_string( $ratio ) ? $ratio : '' ] ?? self::OPENAI_IMAGE_SIZES['portrait'],
+            // Без явного качества модель сама выбирает высокое — оно в разы дороже.
+            'quality' => 'medium',
+            'output_format' => 'jpeg',
+        );
+        $files = self::image_files( $refs );
+        if ( is_wp_error( $files ) ) {
+            return $files;
+        }
+        $args = array(
             'timeout' => 150,
             'redirection' => 0,
             'sslverify' => true,
             // Картинка приходит в теле ответа, а не ссылкой.
             'limit_response_size' => 16777216,
-            'headers' => array( 'Authorization' => 'Bearer ' . $entry['key'], 'Content-Type' => 'application/json' ),
-            'body' => wp_json_encode( array(
-                'model' => $model,
-                'prompt' => $prompt,
-                'n' => 1,
-                'size' => self::OPENAI_IMAGE_SIZES[ is_string( $ratio ) ? $ratio : '' ] ?? self::OPENAI_IMAGE_SIZES['portrait'],
-                // Без явного качества модель сама выбирает высокое — оно в разы дороже.
-                'quality' => 'medium',
-                'output_format' => 'jpeg',
-            ) ),
-        ) );
+        );
+        $started = microtime( true );
+        if ( $files ) {
+            // Высокая точность по входным фото — иначе лицо «плывёт» к усреднённому.
+            $response = self::send_edit( $entry, $args, $fields + array( 'input_fidelity' => 'high' ), $files );
+            // Модель, которая не знает input_fidelity, отвечает 400 — повторяем без него.
+            if ( ! is_wp_error( $response ) && 400 === (int) wp_remote_retrieve_response_code( $response ) && str_contains( (string) wp_remote_retrieve_body( $response ), 'input_fidelity' ) ) {
+                $response = self::send_edit( $entry, $args, $fields, $files );
+            }
+        } else {
+            $response = self::send( untrailingslashit( $entry['base'] ) . '/images/generations', $args + array(
+                'headers' => array( 'Authorization' => 'Bearer ' . $entry['key'], 'Content-Type' => 'application/json' ),
+                'body' => wp_json_encode( $fields ),
+            ) );
+        }
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
             VKT_Store::log( 'openai.images', 'ai', 'error', 0, mb_substr( 'Нет связи: OpenAI — ' . $response->get_error_message(), 0, 250 ), $duration );
@@ -1311,10 +1375,41 @@ final class VKT_AI {
             VKT_Store::log( 'openai.images', 'ai', 'error', $http, mb_substr( 'OpenAI: ' . $reason, 0, 250 ), $duration );
             return self::error( 'OpenAI отклонил запрос (HTTP ' . $http . '): ' . $reason, in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
         }
-        VKT_Store::log( 'openai.images', 'ai', 'ok', $http, 'Картинка получена: ' . $model, $duration );
+        VKT_Store::log( 'openai.images', 'ai', 'ok', $http, 'Картинка получена: ' . $model . ( $files ? ', опорных фото: ' . count( $files ) : '' ), $duration );
         $bytes = base64_decode( (string) ( $data['data'][0]['b64_json'] ?? '' ), true );
         unset( $data, $raw, $response );
         return $bytes ? VKT_Media::store_image( $bytes ) : self::error( 'OpenAI не вернул картинку.', 502, true );
+    }
+
+    /** Опорные фото для gpt-image: байты файлов медиатеки. Файл пропал — ошибка, а не тихая картинка без лица. */
+    private static function image_files( $refs ) {
+        $files = array();
+        foreach ( array_slice( array_values( array_filter( array_map( 'absint', (array) $refs ) ) ), 0, self::OPENAI_IMAGE_REFS ) as $id ) {
+            $item = VKT_Media::item( $id );
+            $bytes = is_wp_error( $item ) || 'image' !== $item['type'] ? false : file_get_contents( $item['path'] );
+            if ( false === $bytes ) {
+                return self::error( 'Опорное фото персонажа не найдено в медиатеке — обновите фото в паспорте группы.', 404 );
+            }
+            $files[] = array( 'name' => $item['name'], 'mime' => $item['mime'], 'bytes' => $bytes );
+        }
+        return $files;
+    }
+
+    /** /images/edits принимает только multipart: поля строками, фото — повторяющимся image[]. */
+    private static function send_edit( $entry, $args, $fields, $files ) {
+        $boundary = 'vkt' . bin2hex( random_bytes( 12 ) );
+        $body = '';
+        foreach ( $fields as $name => $value ) {
+            $body .= "--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n";
+        }
+        foreach ( $files as $file ) {
+            $body .= "--$boundary\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"" . str_replace( '"', '', $file['name'] ) . "\"\r\nContent-Type: {$file['mime']}\r\n\r\n{$file['bytes']}\r\n";
+        }
+        $body .= "--$boundary--\r\n";
+        return self::send( untrailingslashit( $entry['base'] ) . '/images/edits', $args + array(
+            'headers' => array( 'Authorization' => 'Bearer ' . $entry['key'], 'Content-Type' => 'multipart/form-data; boundary=' . $boundary ),
+            'body' => $body,
+        ) );
     }
 
     public static function start_video( $prompt, $ratio = 'story' ) {

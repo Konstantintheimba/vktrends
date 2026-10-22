@@ -611,8 +611,12 @@ final class VKT_Plugin {
                 if ( is_wp_error( $brief ) ) { return $brief; }
                 return self::metered( 'text', static fn() => VKT_AI::generate_shop_post( $brief, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
             }
-            case 'image_start':
-                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait' ) );
+            case 'image_start': {
+                // Рисунок к записи группы: персонаж и визуал из её паспорта, если не выключены галочкой.
+                $persona = ! empty( $data['persona'] ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'] ) : null;
+                if ( is_wp_error( $persona ) ) { return $persona; }
+                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona ) );
+            }
             case 'image_status':
                 return VKT_Images::status( $data['id'] ?? '' );
             case 'ai_video_start': {
@@ -659,6 +663,8 @@ final class VKT_Plugin {
                 return VKT_Groups::hide( $data['id'] ?? 0, ! empty( $data['hidden'] ) );
             case 'group_passport':
                 return VKT_Groups::save_passport( $data['id'] ?? 0, $data['passport'] ?? '' );
+            case 'group_persona':
+                return VKT_Groups::save_persona( $data['id'] ?? 0, is_array( $data ) ? $data : array() );
             case 'group_passport_draft':
                 return self::metered( 'text', static fn() => VKT_Groups::draft_passport( $data['id'] ?? 0, self::model_id( $data ) ) );
             case 'group_material_save':

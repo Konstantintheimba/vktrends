@@ -103,7 +103,7 @@
     // seriesTarget — ID серии, которую дополняем; пусто — новая серия.
     let seriesGroup = 0, seriesTarget = '';
     // Мои сообщества: список, открытая группа и несохранённый паспорт.
-    let groupsData = null, groupOpen = 0, groupDetail = null, groupPassportDraft = null, groupShowHidden = false;
+    let groupsData = null, groupOpen = 0, groupDetail = null, groupPassportDraft = null, groupPersonaDraft = null, groupShowHidden = false;
     // База ведения группы: какой материал открыт на правку ('new' — новый) и его несохранённый текст.
     let groupMaterialEdit = null, groupMaterialDraft = null;
     // Новости группы: несохранённые настройки, итог проверки источников и собранные записи.
@@ -112,7 +112,7 @@
     // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
     let seriesEdit = null;
     // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
-    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false}, seriesImageRun = null;
+    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false, persona: true}, seriesImageRun = null;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
@@ -131,12 +131,13 @@
     // Несохранённые правки группы привязаны к ней: открыли другую или ушли из раздела — они ждут возвращения.
     function groupDraftsSave() {
         if (!groupOpen) return;
-        const draft = {passport: groupPassportDraft, news: groupNewsDraft, materialEdit: groupMaterialEdit, material: groupMaterialDraft};
+        const draft = {passport: groupPassportDraft, persona: groupPersonaDraft, news: groupNewsDraft, materialEdit: groupMaterialEdit, material: groupMaterialDraft};
         if (Object.values(draft).some(value => value !== null)) groupDraftStore[groupOpen] = draft; else delete groupDraftStore[groupOpen];
     }
     function groupDraftsLoad(id) {
         const draft = groupDraftStore[id] || {};
         groupPassportDraft = typeof draft.passport === 'string' ? draft.passport : null;
+        groupPersonaDraft = draft.persona && typeof draft.persona === 'object' ? draft.persona : null;
         groupNewsDraft = draft.news && typeof draft.news === 'object' ? draft.news : null;
         groupMaterialEdit = draft.materialEdit || null;
         groupMaterialDraft = draft.material && typeof draft.material === 'object' ? draft.material : null;
@@ -508,8 +509,26 @@
             'Без текста, надписей и логотипов на изображении.',
         ].filter(Boolean).join('\n\n').slice(0, 5000);
     }
-    async function drawImage(prompt, report = null) {
-        const started = await act('image_start', {provider: seriesImage.provider, prompt, ratio: seriesImage.ratio});
+    // Кнопка «Нарисовать» в окне записи вместе с выбором модели: выбор общий с пачкой серии.
+    function drawRow(label, command, attr = '') {
+        if (!imagesReady()) return '';
+        const providers = imageProviders();
+        const pick = providers.length > 1 ? `<label class="vkt-model-pick">Чем рисуем<select data-series-image="provider">${providers.map(([id, title]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>` : '';
+        return `<div class="vkt-ai-row">${pick}${button(`${icon('fire')} ${label}`, command, attr)}</div>${personaToggle()}`;
+    }
+    // Группа серии в списке «Автопостинга»: знает, заведён ли у неё персонаж для фото.
+    const seriesGroupRow = () => (publishingData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
+    // imageProviders() заодно поправит выбор, если сохранённой модели уже нет в списке.
+    const providerRefs = () => { imageProviders(); return Number((state?.settings?.images || []).find(item => item.id === seriesImage.provider)?.refs) || 0; };
+    // Галочка «Персонаж из паспорта» и честная подсказка, если выбранная модель фото-образцы не берёт.
+    function personaToggle(group = seriesGroupRow()) {
+        if (!group?.has_persona) return '';
+        const note = providerRefs() ? 'Фото персонажа уйдут образцом — модель нарисует того же человека.' : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите FLUX.2 или OpenAI gpt-image.';
+        return `<label class="vkt-check"><input type="checkbox" data-series-image="persona" ${seriesImage.persona ? 'checked' : ''}>Персонаж из паспорта группы</label><small class="vkt-help">${note}</small>`;
+    }
+    // Рисунок к записи группы получает её персонажа и «Визуал» из паспорта — их подставляет сервер.
+    async function drawImage(prompt, report = null, group = seriesGroup) {
+        const started = await act('image_start', {provider: seriesImage.provider, prompt, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona});
         // Одни поставщики отдают картинку сразу, другие — задачу, которую надо дождаться.
         return started.status === 'done' ? started.media : (await fluxAwait(started.id, report, 'image_status')).media;
     }
@@ -555,6 +574,7 @@
                 <label>Чем рисуем<select data-series-image="provider">${providers.map(([id, label]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
                 <label>Формат<select data-series-image="ratio">${ratios.map(value => `<option value="${esc(value)}" ${value === seriesImage.ratio ? 'selected' : ''}>${esc(ratioLabels[value] || value)}</option>`).join('')}</select></label>
             </div>
+            ${personaToggle()}
             <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label><label class="vkt-check"><input type="checkbox" data-series-image="extra" ${seriesImage.extra ? 'checked' : ''}>Добавлять и в слоты, где фото уже есть</label></div>
             <div class="vkt-form-actions">${run ? button('Остановить', 'series-images-stop') : `<button class="vkt-button">${icon('fire')} Нарисовать фото · <span data-series-images-count>${seriesImageTargets().length}</span></button>`}</div>
             <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов; с галочкой «Добавлять и в слоты, где фото уже есть» рисунок по теме записи встанет после уже прикреплённых фото. Убрать или переставить его можно в окне записи.'}</p>
@@ -926,7 +946,8 @@
                 ${sourceBox(slot)}
                 ${designBox(slot)}
                 ${sortableChips(slot.media)}
-                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${imagesReady() ? button(`${icon('fire')} ${slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи'}`, 'series-slot-image', `data-index="${Number(index)}"`) : ''}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
+                ${drawRow(slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-slot-image', `data-index="${Number(index)}"`)}
+                <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить слот</button></div>
             </form>`);
@@ -960,7 +981,8 @@
                 ${sourceBox(draft)}
                 ${designBox(draft)}
                 ${sortableChips(draft.media)}
-                <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}${imagesReady() ? button(`${icon('fire')} ${draft.media.length ? 'Нарисовать ещё' : 'Нарисовать фото'}`, 'series-post-image') : ''}</div>
+                ${drawRow(draft.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-post-image')}
+                <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button>${button('Убрать из серии', 'series-post-delete', `data-id="${Number(post.id)}"`)}</div>
             </form>`);
@@ -1234,9 +1256,14 @@
             </form>`;
     }
     // ——— Нейросети: ключи поставщиков и что каждый ключ умеет ———
-    function providerProbe(probe) {
+    // Список моделей, из которого только что добавляли: после перерисовки остаётся раскрытым.
+    let providerPicksOpen = '';
+    function providerProbe(provider) {
+        const probe = provider.probe;
         if (!probe) return '<p class="vkt-muted">Ключ ещё не проверялся — нажмите «Проверить ключ».</p>';
         const text = probe.text || {}, video = probe.video || {};
+        // Модели, которые уже стоят в списках генерации, повторно не предлагаем.
+        const added = new Set((state.settings.ai?.models || []).filter(model => model.preset === provider.id).map(model => model.model));
         const some = (ids, limit = 6) => ids.slice(0, limit).map(id => `<code>${esc(id)}</code>`).join(', ') + (ids.length > limit ? ` и ещё ${num(ids.length - limit)}` : '');
         return `<ul class="vkt-provider-caps">
                 <li class="${text.ok ? 'is-ok' : 'is-bad'}"><strong>Текст</strong><span>${text.ok ? `<code>${esc(text.model)}</code> ответила: «${esc(text.message)}»${(text.models || []).length ? ` · моделей в списке: ${num(text.models.length)}` : ''}` : esc(text.message)}</span></li>
@@ -1244,16 +1271,17 @@
                 <li class="${(video.models || []).length ? 'is-ok' : ''}"><strong>Видео</strong><span>${(video.models || []).length ? some(video.models) : esc(video.note || 'моделей для видео нет')}</span></li>
             </ul>
             ${probe.listed ? '' : '<p class="vkt-muted">Список моделей поставщик не отдал — проверен только текст.</p>'}
-            ${(text.models || []).length ? `<details class="vkt-provider-models"><summary>Все модели для текста · ${num(text.models.length)}</summary><p class="vkt-code-input">${text.models.map(esc).join(', ')}</p></details>` : ''}
+            ${(text.models || []).length ? `<details class="vkt-provider-models" ${providerPicksOpen === provider.id ? 'open' : ''}><summary>Модели для текста · ${num(text.models.length)} — нажмите, чтобы добавить в списки генерации</summary><div class="vkt-provider-picks">${text.models.map(id => added.has(id) ? `<span class="vkt-chip-button is-active" title="Уже в списке">${esc(id)}</span>` : `<button type="button" class="vkt-chip-button" data-command="ai-model-quick" data-preset="${esc(provider.id)}" data-model="${esc(id)}">+ ${esc(id)}</button>`).join('')}</div></details>` : ''}
+            ${(probe.image || []).length ? `<p class="vkt-muted">Модели картинок подключаются сами: выбираются в «Чем рисуем» — в окне записи, в серии и в «Автопостинге».</p>` : ''}
             <small class="vkt-muted">Проверено ${date(probe.at)}</small>`;
     }
     const providerCard = provider => `<article class="vkt-provider ${provider.connected ? 'is-on' : ''}">
             <header><strong>${esc(provider.title)}</strong>${provider.connected ? badge(`ключ ${esc(provider.preview)}`, 'green') : badge('не подключён')}</header>
-            ${provider.connected ? providerProbe(provider.probe) : ''}
+            ${provider.connected ? providerProbe(provider) : ''}
             ${provider.in_config ? '<p class="vkt-muted">Ключ теперь хранится здесь. Строка <code>VKT_XAI_API_KEY</code> в wp-config.php больше не используется — её можно удалить.</p>' : ''}
             ${provider.locked ? `<p class="vkt-muted">Ключ пока берётся из wp-config.php (VKT_XAI_API_KEY): перенести его в кабинет не удалось.</p><div class="vkt-form-actions">${button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`)}</div>` : `<form data-form="ai-key" class="vkt-form">
                 <input type="hidden" name="preset" value="${esc(provider.id)}">
-                <div class="vkt-form-row"><label>${provider.connected ? 'Заменить ключ' : 'Ключ API'}<input name="key" type="password" class="vkt-code-input" autocomplete="off" required placeholder="sk-…"></label><label>Адрес API<input name="base" class="vkt-code-input" value="${esc(provider.base)}" placeholder="https://…/v1"></label></div>
+                <div class="vkt-form-row"><label>${provider.connected ? 'Заменить ключ' : 'Ключ API'}<input name="key" type="password" class="vkt-code-input" autocomplete="off" required placeholder="sk-…"></label><label>Адрес API<input name="base" class="vkt-code-input" value="${esc(provider.base)}" placeholder="https://…/v1"><small class="vkt-help">${provider.id === 'custom' ? 'Адрес API, а не сайта, — обычно оканчивается на /v1.' : 'Менять только для своего прокси. Адрес сайта поставщика плагин сам заменит адресом API.'}</small></label></div>
                 <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('check')} Проверить и сохранить</button>${provider.connected ? button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`) + button('Удалить ключ', 'ai-key-delete', `data-id="${esc(provider.id)}" data-title="${esc(provider.title)}"`) : ''}</div>
             </form>`}
         </article>`;
@@ -1739,6 +1767,32 @@
             ${resultHtml}
         </section>`;
     }
+    // ——— Персонаж для фото: опорные снимки и внешность, чтобы к записям рисовался один и тот же человек ———
+    const PERSONA_PHOTOS = 4;
+    const personaCurrent = () => groupPersonaDraft || groupDetail?.persona || {look: '', photos: []};
+    function groupPersonaPanel(group) {
+        const persona = groupPersonaDraft || group.persona || {look: '', photos: []};
+        const photos = persona.photos || [];
+        const room = photos.length < PERSONA_PHOTOS;
+        const chips = photos.map(item => `<div class="vkt-persona-photo">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : ''}<button type="button" class="vkt-chip-remove" data-command="persona-remove" data-id="${Number(item.id)}" aria-label="Убрать фото">×</button></div>`).join('');
+        return `<section class="vkt-panel vkt-group-persona"><div class="vkt-panel-heading"><div><h2>Персонаж для фото</h2><p>Кто в кадре, когда нейросеть рисует к записям этой группы. Фото уходят образцом в FLUX.2 и OpenAI gpt-image — они рисуют того же человека; xAI фото не принимает и рисует только по описанию. В каждую картинку идёт и строка «Визуал» из паспорта.</p></div></div>
+            <form data-form="group-persona" class="vkt-form">
+                <div class="vkt-persona-photos">${chips}${room ? `<label class="vkt-persona-add"><input type="file" accept="image/jpeg,image/png,image/webp" data-persona-upload multiple hidden>${icon('plus')}<span>Загрузить</span></label>` : ''}</div>
+                <small class="vkt-help">До ${PERSONA_PHOTOS} фото: лицо крупно и при хорошем свете, лучше с разных сторон и без очков. JPEG, PNG или WebP до 8 МБ.</small>
+                ${room ? `<div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'persona-media')}</div>` : ''}
+                <label>Внешность словами<textarea name="look" data-persona-look rows="3" maxlength="1500" placeholder="Например: женщина 34 лет, русые волосы до плеч, карие глаза, веснушки, стройная, рост средний">${esc(persona.look || '')}</textarea><small class="vkt-help">Возраст, волосы, глаза, приметы, телосложение. Одежду и место не пишите — их берёт сюжет записи.</small></label>
+                <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить персонажа</button>${groupPersonaDraft ? '<span class="vkt-muted">Есть несохранённые правки.</span>' : ''}</div>
+            </form></section>`;
+    }
+    function addPersonaPhoto(item) {
+        const persona = personaCurrent();
+        if (!item || !item.id) return false;
+        if (item.type !== 'image') { toast('Персонажу нужны фотографии, не видео.', true); return false; }
+        if ((persona.photos || []).some(photo => Number(photo.id) === Number(item.id))) { toast('Это фото уже есть.'); return false; }
+        if ((persona.photos || []).length >= PERSONA_PHOTOS) { toast(`Опорных фото — не больше ${PERSONA_PHOTOS}.`, true); return false; }
+        groupPersonaDraft = {look: persona.look || '', photos: [...(persona.photos || []), item]};
+        return true;
+    }
     function groupPage() {
         const group = groupDetail;
         if (!group) return heading('Мои сообщества', 'Загружаем группу…', button('← Все сообщества', 'group-close')) + '<div class="vkt-loading">Собираем сводку по группе…</div>';
@@ -1760,6 +1814,7 @@
                     <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить паспорт</button>${groupPassportDraft !== null ? '<span class="vkt-muted">Есть несохранённые правки.</span>' : ''}</div>
                 </form>
             </section>` +
+            groupPersonaPanel(group) +
             groupMaterialsPanel(group) +
             groupNewsPanel(group) +
             `<div class="vkt-section-title"><h2>Последние посты</h2><span class="vkt-muted">Замеры сборщика: просмотры и их прирост.</span></div>` +
@@ -2614,6 +2669,10 @@
         }
         if (command==='media-pick') {
             const item = mediaLibraryItems.find(media => Number(media.id) === Number(el.dataset.id));
+            if (mediaTarget === 'persona') {
+                if (addPersonaPhoto(item)) { dialog.close(); render(); }
+                return;
+            }
             if (mediaTarget === 'flux') {
                 if (addFluxMedia(item)) dialog.close();
                 return;
@@ -2679,6 +2738,13 @@
             try { groupDetail = await act('group_detail', {id: groupOpen}); } catch (error) { groupOpen = 0; toast(error.message, true, error.fix); }
             render();
             content.scrollIntoView({block: 'start'});
+            return;
+        }
+        if (command==='persona-media') { mediaTarget = 'persona'; seriesSlotTarget = null; await mediaLibrary(); return; }
+        if (command==='persona-remove') {
+            const persona = personaCurrent();
+            groupPersonaDraft = {look: persona.look || '', photos: (persona.photos || []).filter(photo => Number(photo.id) !== Number(el.dataset.id))};
+            render();
             return;
         }
         if (command==='group-close') { groupDraftsSave(); groupOpen = 0; groupDetail = null; groupDraftsLoad(0); render(); return; }
@@ -2923,6 +2989,14 @@
                 toast('Ключ удалён.');
             }
             if (command==='ai-model-default') { await act('ai_model_default', {model: el.dataset.id}); toast('Модель по умолчанию сменена.'); }
+            if (command==='ai-model-quick') {
+                el.disabled = true;
+                providerPicksOpen = el.dataset.preset;
+                toast(`Проверяем ${el.dataset.model} пробным запросом…`);
+                // Ключ и адрес — поставщика: поля пустые, сервер подставит их сам.
+                const added = await act('ai_model_save', {preset: el.dataset.preset, model: el.dataset.model});
+                toast(`«${added.title}» добавлена и ответила: «${added.answer}».`);
+            }
             if (command==='ai-model-check') { const result = await act('ai_model_check', {model: el.dataset.id}); toast(`Модель отвечает: «${result.answer}».`); return; }
             if (command==='ai-model-delete') {
                 if (!confirm('Убрать эту модель? Её ключ будет удалён.')) return;
@@ -3118,6 +3192,14 @@
                 }
                 case 'series-groups': return;
                 case 'series-bind': return;
+                case 'group-persona': {
+                    const persona = personaCurrent();
+                    const saved = await act('group_persona', {id: groupOpen, look: values.look || '', photos: (persona.photos || []).map(photo => Number(photo.id))});
+                    groupPersonaDraft = null;
+                    if (groupDetail) groupDetail.persona = saved.persona;
+                    toast('Персонаж сохранён: картинки к записям группы будут рисовать его.');
+                    break;
+                }
                 case 'group-passport': {
                     await act('group_passport', {id: groupOpen, passport: values.passport || ''});
                     groupPassportDraft = null;
@@ -3263,11 +3345,14 @@
                     aiPrompt = values.prompt;
                     // Выбор модели общий с «Фото к записям» серии: drawImage читает его оттуда же.
                     seriesImage.provider = values.provider; seriesImage.ratio = values.ratio || 'portrait';
+                    // Одна выбранная группа — рисуем её персонажа, как и текст пишем под неё.
+                    const picked = [...($('[data-form="publishing"]')?.querySelectorAll('input[name="groups"]:checked') || [])];
+                    const group = 1 === picked.length ? Number(picked[0].value) : 0;
                     const count = Math.max(1, Math.min(IMAGE_VARIANTS, Number(values.count) || 1));
                     const progress = $('#vkt-ai-progress');
                     const say = text => { if (progress) { progress.hidden = false; progress.textContent = text; } };
                     const result = await drawVariants(count, async () => {
-                        const media = await drawImage(values.prompt, count > 1 ? () => {} : say);
+                        const media = await drawImage(values.prompt, count > 1 ? () => {} : say, group);
                         addComposerMedia(media);
                         return media;
                     }, say);
@@ -3359,6 +3444,23 @@
             finally { label?.classList.remove('is-busy'); }
             return;
         }
+        // Фото персонажа: файлы уходят в медиатеку, в персонажа — их ID. Сохраняется кнопкой «Сохранить персонажа».
+        if (event.target.matches('[data-persona-upload]')) {
+            const input = event.target;
+            const files = [...(input.files || [])];
+            input.value = '';
+            const label = input.closest('label');
+            label?.classList.add('is-busy');
+            try {
+                for (const file of files) {
+                    if ((personaCurrent().photos || []).length >= PERSONA_PHOTOS) { toast(`Опорных фото — не больше ${PERSONA_PHOTOS}: лишние не загружены.`, true); break; }
+                    addPersonaPhoto(await upload(file));
+                }
+                toast('Фото добавлены. Нажмите «Сохранить персонажа».');
+            } catch (error) { toast(error.message, true, error.fix); }
+            finally { label?.classList.remove('is-busy'); render(); }
+            return;
+        }
         if (event.target.matches('[data-flux-upload]')) {
             const input = event.target;
             const file = input.files?.[0];
@@ -3406,8 +3508,13 @@
         if (event.target.matches('[data-series-image]')) {
             const key = event.target.dataset.seriesImage;
             seriesImage[key] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
-            // Смена поставщика меняет список форматов — панель перерисовываем целиком.
-            if (key === 'provider') { render(); return; }
+            // Смена поставщика меняет список форматов и подсказку о фото-образцах — панель перерисовываем целиком.
+            if (key === 'provider') {
+                render();
+                // В окне записи подсказка под выбором тоже зависит от модели.
+                if (dialog.open && seriesEdit) seriesPostDialog(0, false); else if (dialog.open && null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) seriesSlotDialog(seriesSlotTarget);
+                return;
+            }
             const count = $('[data-series-images-count]');
             if (count) count.textContent = seriesImageTargets().length;
             return;
@@ -3495,6 +3602,7 @@
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
         // Паспорт переживает перерисовку после обновления охватов и других действий.
         if(event.target.matches('[data-group-passport]')) groupPassportDraft=event.target.value;
+        if(event.target.matches('[data-persona-look]')) { const persona = personaCurrent(); groupPersonaDraft={look: event.target.value, photos: persona.photos || []}; }
         if(event.target.matches('textarea[data-news]')) groupNewsDraft={...(groupNewsDraft||{}), [event.target.dataset.news]: event.target.value};
         if(event.target.dataset.materialDraft && groupMaterialDraft) groupMaterialDraft[event.target.dataset.materialDraft]=event.target.value;
         if(event.target.dataset.seriesImage==='style') seriesImage.style=event.target.value;

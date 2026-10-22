@@ -219,6 +219,28 @@ $manual = $act( $a, 'source', array( 'kind' => 'owner', 'value' => '-111' ) );
 wp_set_current_user( $a );
 $ok( ! is_wp_error( $manual ) && 1 === VKT_Subscriptions::count( $a ) && 1 === count( VKT_Store::state()['sources'] ), 'Добавленная руками своя группа видна в «Источниках» и занимает лимит' );
 
+// 7б. Персонаж для фото: свои фото из медиатеки, внешность, «Визуал» паспорта — в бриф рисования.
+$png = base64_decode( 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' );
+$upload = wp_upload_bits( 'persona-a.png', null, $png );
+$photo = wp_insert_attachment( array( 'post_mime_type' => 'image/png', 'post_title' => 'persona-a', 'post_status' => 'inherit', 'post_author' => $a ), $upload['file'] );
+$upload = wp_upload_bits( 'persona-b.png', null, $png );
+$foreign = wp_insert_attachment( array( 'post_mime_type' => 'image/png', 'post_title' => 'persona-b', 'post_status' => 'inherit', 'post_author' => $b ), $upload['file'] );
+$ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'look' => 'x', 'photos' => array( $foreign ) ) ) ), 'Чужое фото персонажем не поставить' );
+$ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'photos' => array( $photo, $photo + 1000, $photo + 1001, $photo + 1002, $photo + 1003 ) ) ) ), 'Больше четырёх фото не принимается' );
+$saved = $act( $a, 'group_persona', array( 'id' => $g1, 'look' => 'женщина 34 лет, русые волосы', 'photos' => array( $photo ) ) );
+$ok( ! is_wp_error( $saved ) && 'женщина 34 лет, русые волосы' === $saved['persona']['look'] && (int) $saved['persona']['photos'][0]['id'] === $photo && ! isset( $saved['persona']['photos'][0]['path'] ), 'Персонаж сохраняется, фото уходят в браузер без пути на диске' );
+$ok( is_wp_error( $act( $b, 'group_persona', array( 'id' => $g1, 'look' => 'чужой' ) ) ), 'Персонажа чужой группы не поменять' );
+$act( $a, 'group_passport', array( 'id' => $g1, 'passport' => "# Паспорт\n## Формат\n- Визуал: фото на телефон, обычная квартира\n" ) );
+wp_set_current_user( $a );
+$brief = VKT_Groups::image_brief( $g1 );
+$ok( array( $photo ) === $brief['photos'] && 'фото на телефон, обычная квартира' === $brief['visual'] && 'женщина 34 лет, русые волосы' === $brief['look'], 'Бриф рисования: фото, внешность и «Визуал» паспорта' );
+$listed = array_values( array_filter( VKT_Publisher::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
+$card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
+$ok( $listed['has_persona'] && ! array_key_exists( 'persona', $listed ) && $card['has_persona'] && ! array_key_exists( 'persona', $card ), 'Списки групп знают о персонаже, но не везут его' );
+wp_delete_attachment( $photo, true );
+$ok( array() === VKT_Groups::image_brief( $g1 )['photos'] && array() === $act( $a, 'group_detail', array( 'id' => $g1 ) )['persona']['photos'], 'Удалённое из медиатеки фото выпадает из персонажа' );
+wp_delete_attachment( $foreign, true );
+
 // 8. Группа ушла из кабинета — её слежение снимается.
 $wpdb->delete( VKT_Store::table( 'publishing_groups' ), array( 'id' => $g2 ) );
 wp_set_current_user( $a );

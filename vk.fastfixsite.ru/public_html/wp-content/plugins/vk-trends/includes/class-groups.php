@@ -19,6 +19,12 @@ final class VKT_Groups {
     // Свежий пост ещё набирает просмотры: в среднем и в «лучших часах» его нет.
     const DIGEST_SETTLE = 2 * DAY_IN_SECONDS;
     const STATS_DAYS = 14;
+    // Персонаж для фото: столько опорных снимков берут FLUX.2 и gpt-image, больше лицо не уточняет.
+    const PERSONA_PHOTOS = 4;
+    const PERSONA_LOOK_MAX = 1500;
+    // Опорные фото уходят в API целиком: 8 МБ — потолок BFL на один образец.
+    const PERSONA_BYTES = 8388608;
+    const PERSONA_MIMES = array( 'image/jpeg', 'image/png', 'image/webp' );
 
     const TEMPLATE = "# Паспорт сообщества\n\n## Кто ведёт\n- Ответственный:\n- Закреплено за:\n- Контакт для срочных вопросов:\n\n## О сообществе\n- Тема и ниша:\n- Аудитория (кто читает, возраст, интересы):\n- Цель (продажи, охват, заявки):\n\n## Формат\n- Рубрики:\n- Частота и время выхода:\n- Длина постов:\n- Визуал (фото, видео, стиль картинок):\n\n## Тон общения\n- Обращение (ты / вы):\n- Настроение и манера:\n- Эмодзи и хештеги:\n\n## Призывы к действию\n- Основной призыв:\n- Куда вести (ссылки, сообщения, товары):\n\n## Нельзя\n- Запретные темы и формулировки:\n\n## Заметки\n";
 
@@ -116,7 +122,7 @@ final class VKT_Groups {
     public static function state() {
         global $wpdb;
         $groups = (array) $wpdb->get_results( $wpdb->prepare(
-            'SELECT id,group_id,screen_name,name,photo,enabled,can_post,hidden,passport,passport_at,materials,news,stats,stats_at FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY hidden,name,id LIMIT 500',
+            'SELECT id,group_id,screen_name,name,photo,enabled,can_post,hidden,passport,passport_at,persona,materials,news,stats,stats_at FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY hidden,name,id LIMIT 500',
             VKT_Account::id()
         ), ARRAY_A );
         $warning = self::sync_tracking( $groups );
@@ -126,7 +132,8 @@ final class VKT_Groups {
             $group['materials_count'] = count( array_filter( VKT_Materials::normalize( $group['materials'] ), static fn( $item ) => $item['posts'] || $item['replies'] ) );
             // Паспорт, материалы и сводку список не везёт: они большие и нужны только в карточке группы.
             $group['is_news'] = VKT_News::settings( $group['news'] )['enabled'];
-            unset( $group['passport'], $group['materials'], $group['news'] );
+            $group['has_persona'] = self::has_persona( $group );
+            unset( $group['passport'], $group['persona'], $group['materials'], $group['news'] );
             $group['stats'] = self::stats_summary( $group['stats'] );
             $group['best_times'] = self::digest( $group['group_id'] )['best_hours'];
         }
@@ -145,6 +152,7 @@ final class VKT_Groups {
         $group['digest'] = self::digest( $group['group_id'] );
         $group['stats'] = self::stats_summary( $group['stats'] );
         $group['passport'] = (string) $group['passport'];
+        $group['persona'] = self::persona_public( $group );
         $group['materials'] = VKT_Materials::normalize( $group['materials'] ?? '' );
         $group['library'] = array_values( array_map( static fn( $item ) => array( 'file' => $item['file'], 'title' => $item['title'], 'description' => $item['description'], 'chars' => mb_strlen( $item['text'] ) ), VKT_Materials::library() ) );
         $group['news'] = self::news_public( VKT_News::settings( $group['news'] ?? '' ), $group['news_auto_at'] ?? null );
@@ -179,6 +187,94 @@ final class VKT_Groups {
         }
         $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'passport' => $text, 'passport_at' => gmdate( 'Y-m-d H:i:s' ) ), array( 'id' => (int) $group['id'] ) );
         return array( 'ok' => true, 'passport_at' => gmdate( 'Y-m-d H:i:s' ) );
+    }
+
+    /**
+     * Персонаж группы для картинок: опорные фото из медиатеки и словами —
+     * внешность. Нужен блогам от лица человека: без него каждая картинка
+     * рисует нового незнакомца.
+     */
+    public static function persona( $group ) {
+        $raw = json_decode( (string) ( $group['persona'] ?? '' ), true );
+        $raw = is_array( $raw ) ? $raw : array();
+        $photos = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $raw['photos'] ?? array() ) ) ) ) );
+        return array(
+            'look' => mb_substr( trim( (string) ( $raw['look'] ?? '' ) ), 0, self::PERSONA_LOOK_MAX ),
+            'photos' => array_slice( $photos, 0, self::PERSONA_PHOTOS ),
+        );
+    }
+
+    public static function has_persona( $group ) {
+        $persona = self::persona( $group );
+        return '' !== $persona['look'] || (bool) $persona['photos'];
+    }
+
+    /** Для браузера: фото с превью. Удалённые из медиатеки молча выпадают — их место освобождается. */
+    private static function persona_public( $group ) {
+        $persona = self::persona( $group );
+        $photos = array();
+        foreach ( $persona['photos'] as $id ) {
+            $item = VKT_Media::public_item( $id );
+            if ( ! is_wp_error( $item ) ) {
+                $photos[] = $item;
+            }
+        }
+        $persona['photos'] = $photos;
+        return $persona;
+    }
+
+    public static function save_persona( $id, $data ) {
+        global $wpdb;
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $look = trim( sanitize_textarea_field( (string) ( $data['look'] ?? '' ) ) );
+        if ( mb_strlen( $look ) > self::PERSONA_LOOK_MAX ) {
+            return self::error( 'Описание внешности — не длиннее ' . self::PERSONA_LOOK_MAX . ' символов.' );
+        }
+        $photos = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $data['photos'] ?? array() ) ) ) ) );
+        if ( count( $photos ) > self::PERSONA_PHOTOS ) {
+            return self::error( 'Опорных фото — не больше ' . self::PERSONA_PHOTOS . '.' );
+        }
+        foreach ( $photos as $photo ) {
+            $item = VKT_Media::item( $photo );
+            if ( is_wp_error( $item ) || ! VKT_Media::owned( $photo ) ) {
+                return self::error( 'Фото не найдено в вашей медиатеке.', 404 );
+            }
+            if ( ! in_array( $item['mime'], self::PERSONA_MIMES, true ) ) {
+                return self::error( '«' . $item['name'] . '»: нужен JPEG, PNG или WebP — другие форматы нейросети образцом не берут.' );
+            }
+            if ( $item['size'] > self::PERSONA_BYTES ) {
+                return self::error( '«' . $item['name'] . '» больше 8 МБ — уменьшите его.' );
+            }
+        }
+        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'persona' => wp_json_encode( array( 'look' => $look, 'photos' => $photos ), JSON_UNESCAPED_UNICODE ) ), array( 'id' => (int) $group['id'] ) );
+        return array( 'ok' => true, 'persona' => self::persona_public( self::group( $id ) ) );
+    }
+
+    /**
+     * Что знает о картинках группы рисование: персонаж и строка «Визуал» из
+     * паспорта. Паспорт целиком в промпт картинки не идёт — тон и призывы
+     * модели рисования только мешают.
+     */
+    public static function image_brief( $id ) {
+        $group = self::group( $id );
+        if ( is_wp_error( $group ) ) {
+            return $group;
+        }
+        $persona = self::persona( $group );
+        $persona['photos'] = array_values( array_filter( $persona['photos'], static function ( $photo ) {
+            $item = VKT_Media::item( $photo );
+            return ! is_wp_error( $item ) && 'image' === $item['type'];
+        } ) );
+        $persona['visual'] = self::passport_visual( (string) ( $group['passport'] ?? '' ) );
+        return '' === $persona['look'] && ! $persona['photos'] && '' === $persona['visual'] ? null : $persona;
+    }
+
+    /** Строка «- Визуал: …» из паспорта. Пустой пункт шаблона не считается. */
+    public static function passport_visual( $passport ) {
+        return preg_match( '/^[ \t]*[-*][ \t]*\**Визуал[^:\n]*:\**[ \t]*(\S[^\n]*)$/miu', $passport, $match ) ? mb_substr( trim( $match[1] ), 0, 600 ) : '';
     }
 
     /** Добавить материал базы ведения или поправить существующий. Возвращает список целиком. */
