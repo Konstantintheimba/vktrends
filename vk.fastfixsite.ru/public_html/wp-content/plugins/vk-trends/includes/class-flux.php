@@ -27,6 +27,8 @@ final class VKT_Flux {
     const SLOT = 'bfl';
     // Сколько образцов принимает форма. API берёт до восьми, но стенду хватает.
     const MAX_REFERENCES = 4;
+    // Сколько образцов берёт API FLUX.2 pro/max/flex. Столько отдаёт только рисование персонажа — лицо и его мир.
+    const MAX_INPUTS = 8;
     const MAX_BYTES = 8388608;
 
     /** Модели изображений. Видео у FLUX 3 — отдельная история и здесь не нужно. */
@@ -136,7 +138,7 @@ final class VKT_Flux {
 
     /** Картинки уходят в base64: полагаться на публичный адрес файла сайта не нужно. */
     private static function encode( $attachment_id ) {
-        $item = VKT_Media::item( $attachment_id );
+        $item = VKT_Media::reference_path( $attachment_id );
         if ( is_wp_error( $item ) ) {
             return $item;
         }
@@ -169,7 +171,7 @@ final class VKT_Flux {
      * Ставит задачу генерации. Возвращает ID, по которому стенд спрашивает статус.
      * Адрес опроса BFL отдаёт свой (у него несколько регионов) — храним его.
      */
-    public static function start( $data ) {
+    public static function start( $data, $max_images = self::MAX_REFERENCES ) {
         $model = is_string( $data['model'] ?? null ) ? $data['model'] : '';
         if ( ! isset( self::models()[ $model ] ) ) {
             return self::error( 'Выберите модель из списка.' );
@@ -197,7 +199,7 @@ final class VKT_Flux {
                 $payload[ $side ] = $size;
             }
         }
-        $images = array_slice( array_values( array_filter( array_map( 'absint', (array) ( $data['images'] ?? array() ) ) ) ), 0, self::MAX_REFERENCES );
+        $images = array_slice( array_values( array_filter( array_map( 'absint', (array) ( $data['images'] ?? array() ) ) ) ), 0, min( self::MAX_INPUTS, absint( $max_images ) ) );
         foreach ( $images as $index => $attachment_id ) {
             $encoded = self::encode( $attachment_id );
             if ( is_wp_error( $encoded ) ) {

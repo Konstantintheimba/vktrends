@@ -659,4 +659,8 @@ img.vkt-avatar { padding: 0; object-fit: cover; }
 .vkt-persona-photo .vkt-chip-remove { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: 0; border-radius: 50%; background: rgba(15, 23, 42, .65); color: #fff; font-size: 16px; line-height: 24px; cursor: pointer; padding: 0; }
 .vkt-persona-add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border-style: dashed; color: #66758b; font-size: 12px; cursor: pointer; }
 .vkt-persona-add:hover { border-color: #bcd3fb; color: #2a63cd; }
+button.vkt-persona-add { font: inherit; font-size: 12px; }
+.vkt-group-persona h3 { margin: 10px 0 0; font-size: 15px; }
+.vkt-persona-item { border: 1px solid var(--vkt-line); border-radius: 12px; padding: 14px; margin: 0; display: grid; gap: 12px; }
+.vkt-persona-item .vkt-persona-photo, .vkt-persona-item .vkt-persona-add { width: 80px; height: 80px; }
 .vkt-persona-add.is-busy { opacity: .55; pointer-events: none; }

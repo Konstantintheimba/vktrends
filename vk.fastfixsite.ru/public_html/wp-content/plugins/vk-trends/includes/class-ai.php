@@ -44,8 +44,8 @@ final class VKT_AI {
     const CONNECT_ATTEMPTS = 3;
     // Размеры, которые принимают gpt-image: ближайшие к привычным подписям VK.
     const OPENAI_IMAGE_SIZES = array( 'portrait' => '1024x1536', 'square' => '1024x1024', 'landscape' => '1536x1024', 'story' => '1024x1536' );
-    // Сколько опорных фото отдаём gpt-image: API берёт больше, но лицо держится уже на трёх-четырёх.
-    const OPENAI_IMAGE_REFS = 4;
+    // Сколько опорных фото отдаём gpt-image: лицо и до четырёх фото его мира (места, вещи, питомцы). API берёт больше.
+    const OPENAI_IMAGE_REFS = 8;
 
     /**
      * Ключи поставщиков: один на поставщика, им пользуются все его модели.
@@ -318,7 +318,8 @@ final class VKT_AI {
         if ( preg_match( '/image|dall-e|imagine/i', $id ) ) {
             return 'image';
         }
-        return preg_match( '/embed|tts|whisper|transcri|audio|realtime|moderation|speech|rerank|guard/i', $id ) ? 'other' : 'text';
+        // gpt-live-* — голосовой /v1/live, на /chat/completions не отвечает.
+        return preg_match( '/embed|tts|whisper|transcri|audio|realtime|(?:^|-)live(?:-|$)|moderation|speech|rerank|guard/i', $id ) ? 'other' : 'text';
     }
 
     /**
@@ -358,8 +359,11 @@ final class VKT_AI {
             sort( $ids );
         }
         unset( $ids );
-        // Пробный текст — моделью по умолчанию; у своего поставщика её нет, берём первую из списка.
-        $model = '' !== self::PRESETS[ $preset ]['model'] ? self::PRESETS[ $preset ]['model'] : (string) ( $kinds['text'][0] ?? '' );
+        // Пробный текст — моделью по умолчанию. Её нет в списке (проект OpenAI разрешает не все модели, у своего поставщика её нет вовсе) — берём самую свежую из названных.
+        $model = self::PRESETS[ $preset ]['model'];
+        if ( '' === $model || ( $listed && $kinds['text'] && ! in_array( $model, $kinds['text'], true ) ) ) {
+            $model = self::freshest( $kinds['text'] );
+        }
         // Список не пришёл — говорим, что ответил адрес: обычно это сайт вместо API или опечатка в пути.
         $why = $http ? 'HTTP ' . $http . ': ' . self::reason( $data, $raw, $http, $key ) : 'нет ответа';
         $unlisted = $listed ? 'поставщик не назвал ни одной модели для текста.' : 'список моделей по адресу ' . $base . '/models не получен (' . $why . ')' . ( str_contains( $why, 'Адрес API' ) ? '' : '. Проверьте «Адрес API» — он должен вести на API, например https://api.openai.com/v1.' );
@@ -407,6 +411,20 @@ final class VKT_AI {
             return self::error( $base . ' — это ' . self::PRESETS[ $owner ]['title'] . ': вставьте ключ в его карточку «' . self::PRESETS[ $owner ]['title'] . '», адрес API ' . self::PRESETS[ $owner ]['base'] . ' подставится сам.' );
         }
         return $base;
+    }
+
+    /**
+     * Самая свежая модель для текста из списка: по убыванию названия
+     * («gpt-4o-2024-11-20» раньше «gpt-3.5-turbo»), без instruct — они не
+     * отвечают на /chat/completions. Основная линейка «gpt-N» идёт первой:
+     * иначе по алфавиту «o4-mini» обогнал бы «gpt-6».
+     */
+    private static function freshest( $ids ) {
+        $ids = array_values( array_filter( (array) $ids, static fn( $id ) => ! preg_match( '/instruct|search|preview|codex/i', $id ) ) ) ?: array_values( (array) $ids );
+        $main = array_values( array_filter( $ids, static fn( $id ) => (bool) preg_match( '/^gpt-\d/i', $id ) ) );
+        $ids = $main ?: $ids;
+        usort( $ids, static fn( $a, $b ) => strnatcmp( $b, $a ) );
+        return (string) ( $ids[0] ?? '' );
     }
 
     private static function store_key( $preset, $entry ) {
@@ -645,6 +663,14 @@ final class VKT_AI {
                 // Страница вместо JSON — чаще всего неверный адрес (сайт поставщика за Cloudflare), реже — отказ стране сервера.
                 $message .= '. Ответила веб-страница, а не API: проверьте «Адрес API» в «Нейросетях» — нужен адрес API, например https://api.openai.com/v1, а не сайт. Если адрес верный — поставщик, похоже, не обслуживает страну сервера: выберите другую модель (DeepSeek или Qwen обычно доступны).';
             }
+        }
+        // Проект OpenAI разрешает не все модели: правится в настройках проекта, а не ключа.
+        if ( preg_match( '/does not have access to model/i', $message ) ) {
+            $message .= ' — проекту этого ключа модель не разрешена. platform.openai.com → Settings → Project → Limits: в «Model usage» разрешите нужные модели (gpt-5.x, gpt-image-…) или все, затем «Проверить ключ» в «Нейросетях». Модели, которые проекту уже разрешены, — в списке карточки OpenAI.';
+        }
+        // Ключ OpenAI с ограниченными правами: сам ответ по-английски и не говорит, где их включить.
+        if ( preg_match( '/Missing scopes?:/i', $message ) ) {
+            $message .= ' — у ключа не включены права. platform.openai.com/api-keys → ключ → Permissions: «All» или в «Restricted» дайте List models — Read, Chat completions, Responses и Images — Write.';
         }
         return str_replace( $key, '[hidden]', sanitize_text_field( $message ) );
     }
@@ -1385,7 +1411,7 @@ final class VKT_AI {
     private static function image_files( $refs ) {
         $files = array();
         foreach ( array_slice( array_values( array_filter( array_map( 'absint', (array) $refs ) ) ), 0, self::OPENAI_IMAGE_REFS ) as $id ) {
-            $item = VKT_Media::item( $id );
+            $item = VKT_Media::reference_path( $id );
             $bytes = is_wp_error( $item ) || 'image' !== $item['type'] ? false : file_get_contents( $item['path'] );
             if ( false === $bytes ) {
                 return self::error( 'Опорное фото персонажа не найдено в медиатеке — обновите фото в паспорте группы.', 404 );

@@ -50,6 +50,7 @@ class VKT_Media {
         return self::$files[ $id ] ?? new WP_Error( 'vkt_media', 'Локальный файл не найден.', array( 'status' => 404 ) );
     }
     public static function owned( $id ) { return self::$owned; }
+    public static function reference_path( $id ) { return self::item( $id ); }
     public static function sideload( $url, $kind ) {
         self::$sideloaded[] = array( 'url' => $url, 'kind' => $kind );
         return array( 'id' => 77, 'url' => $url, 'name' => 'flux.jpg', 'type' => 'image', 'thumbnail' => $url, 'size' => 1024 );

@@ -25,7 +25,7 @@ final class VKT_Images {
                 'ready' => static fn() => VKT_AI::configured(),
                 'models' => static fn() => array( VKT_AI::IMAGE_MODEL => VKT_AI::IMAGE_MODEL ),
                 // Опорные фото xAI не принимает: персонажа он рисует только по описанию.
-                'refs' => 0,
+                'refs' => static fn( $model ) => 0,
                 // xAI отдаёт картинку сразу, без задачи и опроса.
                 'start' => static function ( $model, $prompt, $ratio, $refs ) {
                     $media = VKT_AI::generate_image( $prompt, $ratio );
@@ -37,7 +37,7 @@ final class VKT_Images {
                 'title' => 'OpenAI',
                 'ready' => static fn() => (bool) VKT_AI::openai_image_models(),
                 'models' => static fn() => VKT_AI::openai_image_models(),
-                'refs' => VKT_AI::OPENAI_IMAGE_REFS,
+                'refs' => static fn( $model ) => VKT_AI::OPENAI_IMAGE_REFS,
                 // Как и xAI, отдаёт картинку сразу.
                 'start' => static function ( $model, $prompt, $ratio, $refs ) {
                     $media = VKT_AI::generate_openai_image( $model, $prompt, $ratio, $refs );
@@ -49,10 +49,11 @@ final class VKT_Images {
                 'title' => 'BFL',
                 'ready' => static fn() => VKT_Flux::configured(),
                 'models' => static fn() => array_map( static fn( $model ) => $model['title'], VKT_Flux::models() ),
-                'refs' => VKT_Flux::MAX_REFERENCES,
+                // FLUX.2 pro/max/flex берут до восьми образцов, klein — до четырёх.
+                'refs' => static fn( $model ) => str_contains( $model, 'klein' ) ? 4 : VKT_Flux::MAX_INPUTS,
                 'start' => static function ( $model, $prompt, $ratio, $refs ) {
                     list( $width, $height ) = self::SIZES[ $ratio ];
-                    return VKT_Flux::start( array( 'model' => $model, 'prompt' => $prompt, 'width' => $width, 'height' => $height, 'safety_tolerance' => 2, 'output_format' => 'jpeg', 'images' => $refs ) );
+                    return VKT_Flux::start( array( 'model' => $model, 'prompt' => $prompt, 'width' => $width, 'height' => $height, 'safety_tolerance' => 2, 'output_format' => 'jpeg', 'images' => $refs ), count( $refs ) );
                 },
                 'status' => static fn( $id ) => VKT_Flux::status( $id ),
             ),
@@ -68,7 +69,7 @@ final class VKT_Images {
             }
             $models = $provider['models']();
             foreach ( $models as $model => $title ) {
-                $list[] = array( 'id' => 1 === count( $models ) ? $key : $key . ':' . $model, 'title' => $provider['title'] . ' · ' . $title, 'refs' => $provider['refs'] );
+                $list[] = array( 'id' => 1 === count( $models ) ? $key : $key . ':' . $model, 'title' => $provider['title'] . ' · ' . $title, 'refs' => $provider['refs']( (string) $model ) );
             }
         }
         return $list;
@@ -87,11 +88,14 @@ final class VKT_Images {
         list( $key, $model ) = array_pad( explode( ':', $id, 2 ), 2, '' );
         $provider = self::registry()[ $key ];
         $ratio = is_string( $ratio ) && isset( self::SIZES[ $ratio ] ) ? $ratio : 'portrait';
-        $refs = $persona ? array_slice( $persona['photos'], 0, $provider['refs'] ) : array();
+        $model = '' !== $model ? $model : (string) array_key_first( $provider['models']() );
+        $refs = array();
         if ( $persona ) {
-            $prompt = self::persona_prompt( is_string( $prompt ) ? trim( $prompt ) : '', $persona, (bool) $refs );
+            $plan = self::persona_plan( is_string( $prompt ) ? trim( $prompt ) : '', $persona, $provider['refs']( $model ) );
+            $prompt = $plan['prompt'];
+            $refs = $plan['refs'];
         }
-        $result = $provider['start']( '' !== $model ? $model : (string) array_key_first( $provider['models']() ), $prompt, $ratio, $refs );
+        $result = $provider['start']( $model, $prompt, $ratio, $refs );
         if ( is_wp_error( $result ) || 'done' === ( $result['status'] ?? '' ) ) {
             return $result;
         }
@@ -99,18 +103,77 @@ final class VKT_Images {
     }
 
     /**
-     * Персонаж — в начале промпта: модели держат внешность лучше, когда она
-     * задана до сюжета. Хвост сюжета при нехватке места режется, персонаж — нет.
+     * Что из мира персонажа идёт в кадр и какие фото — образцами. Предмет
+     * берётся, если в сюжете есть одно из его слов («кошк, Муся»); без слов —
+     * всегда. Лицо идёт первым, затем по фото на предмет, вторые фото — если
+     * осталось место у модели.
      */
-    public static function persona_prompt( $prompt, $persona, $with_photos ) {
+    public static function persona_plan( $prompt, $persona, $limit ) {
+        $items = array_values( array_filter( (array) ( $persona['items'] ?? array() ), static fn( $item ) => self::wanted( $item, $prompt ) ) );
+        $refs = array();
+        $owners = array();
+        foreach ( array_slice( (array) $persona['photos'], 0, $limit ) as $photo ) {
+            $refs[] = $photo;
+            $owners[] = 'person';
+        }
+        for ( $round = 0; $round < 2; ++$round ) {
+            foreach ( $items as $index => $item ) {
+                if ( count( $refs ) < $limit && isset( $item['photos'][ $round ] ) ) {
+                    $refs[] = $item['photos'][ $round ];
+                    $owners[] = $index;
+                }
+            }
+        }
+        return array( 'refs' => $refs, 'prompt' => self::persona_prompt( $prompt, $persona, $items, $owners ) );
+    }
+
+    private static function wanted( $item, $prompt ) {
+        $words = array_filter( array_map( 'trim', preg_split( '/[,;\n]+/u', (string) ( $item['words'] ?? '' ) ) ) );
+        foreach ( $words as $word ) {
+            if ( false !== mb_stripos( $prompt, $word ) ) {
+                return true;
+            }
+        }
+        return ! $words;
+    }
+
+    /**
+     * Персонаж и его мир — в начале промпта: модели держат внешность лучше,
+     * когда она задана до сюжета. Хвост сюжета при нехватке места режется,
+     * персонаж — нет. $owners — чьё каждое опорное фото: 'person' или номер предмета.
+     */
+    public static function persona_prompt( $prompt, $persona, $items = array(), $owners = array() ) {
+        // Номера фото одного владельца: «1–3», «4» или «4, 6».
+        $numbers = static function ( $owner ) use ( $owners ) {
+            $list = array_map( static fn( $index ) => $index + 1, array_keys( $owners, $owner, true ) );
+            $range = $list && count( $list ) > 1 && end( $list ) - $list[0] === count( $list ) - 1;
+            return $range ? $list[0] . '–' . end( $list ) : implode( ', ', $list );
+        };
         $lines = array();
-        if ( $with_photos ) {
-            $lines[] = 'Главный человек в кадре — тот же, что на опорных фото: то же лицо и черты лица, цвет и длина волос, телосложение, возраст. Опорные фото — только образец внешности: позу, одежду, место, свет и ракурс бери из сюжета ниже, фон и кадр с опорных фото не копируй.';
+        $person = $numbers( 'person' );
+        if ( $owners ) {
+            $map = '' !== $person ? array( 'фото ' . $person . ' — главный человек кадра' ) : array();
+            foreach ( $items as $index => $item ) {
+                if ( '' !== $numbers( $index ) ) {
+                    $map[] = 'фото ' . $numbers( $index ) . ' — ' . $item['title'];
+                }
+            }
+            $lines[] = 'Опорные фото по порядку: ' . implode( '; ', $map ) . '. Это образцы того, как выглядят человек, места, вещи и питомцы. Позу, одежду, ракурс и свет бери из сюжета ниже, кадры с опорных фото целиком не копируй.';
+        }
+        if ( '' !== $person ) {
+            $lines[] = 'Главный человек в кадре — тот же, что на опорных фото ' . $person . ': то же лицо и черты лица, цвет и длина волос, телосложение, возраст.';
         }
         if ( '' !== $persona['look'] ) {
-            $lines[] = ( $with_photos ? 'Внешность героя: ' : 'Главный человек в кадре всегда один и тот же. Его внешность: ' ) . $persona['look'];
+            $lines[] = ( '' !== $person ? 'Внешность героя: ' : 'Главный человек в кадре всегда один и тот же. Его внешность: ' ) . $persona['look'];
         }
-        if ( '' !== $persona['visual'] ) {
+        if ( $items ) {
+            $lines[] = "Постоянные места, вещи и питомцы блога — в кадре они точно такие, как на опорных фото и в описании, других вместо них не придумывай:\n" . implode( "\n", array_map( static fn( $item ) => '- ' . $item['title'] . ( '' !== $item['look'] ? ': ' . $item['look'] : '' ), $items ) );
+        }
+        if ( '' !== $persona['look'] || $persona['photos'] || ! empty( $persona['items'] ) ) {
+            // Модели любят дорисовать уюта — котика или подругу; у блога они свои, чужие ломают узнаваемость.
+            $lines[] = 'Не добавляй в кадр других людей и животных, если их нет в сюжете.';
+        }
+        if ( '' !== ( $persona['visual'] ?? '' ) ) {
             $lines[] = 'Как снимает блог: ' . $persona['visual'];
         }
         return $lines ? mb_substr( implode( "\n\n", $lines ) . "\n\nСюжет:\n" . $prompt, 0, 5000 ) : $prompt;

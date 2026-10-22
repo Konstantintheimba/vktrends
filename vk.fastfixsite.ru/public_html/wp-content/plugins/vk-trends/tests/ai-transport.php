@@ -40,9 +40,10 @@ class VKT_Media {
     public static $stored = '';
     public static function store_image( $bytes ) { self::$stored = $bytes; return array( 'id' => 77 ); }
     public static $files = array();
+    public static function reference_path( $id ) { return self::item( $id ); }
     public static function item( $id ) { return isset( self::$files[ $id ] ) ? array( 'id' => $id, 'type' => 'image', 'mime' => 'image/jpeg', 'name' => 'masha-' . $id . '.jpg', 'path' => self::$files[ $id ] ) : new WP_Error( 'gone', 'нет файла' ); }
 }
-class VKT_Flux { const MAX_REFERENCES = 4; public static function configured() { return false; } }
+class VKT_Flux { const MAX_REFERENCES = 4; const MAX_INPUTS = 8; public static function configured() { return false; } }
 
 require dirname( __DIR__ ) . '/includes/class-ai.php';
 require dirname( __DIR__ ) . '/includes/class-images.php';
@@ -151,6 +152,21 @@ $GLOBALS['vkt_calls'] = array();
 $GLOBALS['vkt_net'] = array( array( 'code' => 403, 'body' => '<html><body>Enable JavaScript and cookies to continue</body></html>' ) );
 $result = VKT_AI::generate_text( 'Пост о термосах' );
 $assert( is_wp_error( $result ) && str_contains( $result->get_error_message(), 'проверьте «Адрес API»' ), 'HTML вместо API — подсказка проверить адрес' );
+
+// Ключ без прав: к ответу OpenAI добавляется, где их включить.
+$GLOBALS['vkt_net'] = array( array( 'code' => 401, 'body' => json_encode( array( 'error' => array( 'message' => 'You have insufficient permissions for this operation. Missing scopes: model.request.' ) ) ) ) );
+$result = VKT_AI::generate_text( 'Пост о термосах' );
+$assert( is_wp_error( $result ) && str_contains( $result->get_error_message(), 'Permissions' ) && str_contains( $result->get_error_message(), 'Chat completions' ), 'Нет прав у ключа — подсказка, где их дать' );
+
+// Проект OpenAI не разрешает модель — подсказка про Limits проекта.
+$GLOBALS['vkt_net'] = array( array( 'code' => 403, 'body' => json_encode( array( 'error' => array( 'message' => 'Project `proj_X` does not have access to model `gpt-5.4-mini`' ) ) ) ) );
+$result = VKT_AI::generate_text( 'Пост о термосах' );
+$assert( is_wp_error( $result ) && str_contains( $result->get_error_message(), 'Settings → Project → Limits' ), 'Модель не разрешена проекту — подсказка, где разрешить' );
+$freshest = new ReflectionMethod( 'VKT_AI', 'freshest' );
+$assert( 'gpt-6.1-sol' === $freshest->invoke( null, array( 'o4-mini', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-4o' ) ), 'Основная линейка gpt-N впереди o-моделей, gpt-6.1 свежее gpt-6' );
+$kind = new ReflectionMethod( 'VKT_AI', 'model_kind' );
+$assert( 'other' === $kind->invoke( null, 'gpt-live-1' ) && 'image' === $kind->invoke( null, 'gpt-image-2.5-sunburst-2026-09-08' ) && 'text' === $kind->invoke( null, 'gpt-6-luna' ) && 'text' === $kind->invoke( null, 'deliverance-7b' ), 'gpt-live — не текст, gpt-image-2.5 — картинки, gpt-6 — текст' );
+$assert( 'gpt-4o-2024-11-20' === $freshest->invoke( null, array( 'gpt-3.5-turbo', 'gpt-3.5-turbo-instruct-0914', 'gpt-4o', 'gpt-4o-2024-11-20', 'gpt-4o-2024-05-13' ) ), 'Пробная модель — самая свежая из разрешённых, без instruct' );
 
 // Проверка связи: список — VK и все поставщики с адресом, без «своего» без адреса.
 $reach = VKT_AI::reach();

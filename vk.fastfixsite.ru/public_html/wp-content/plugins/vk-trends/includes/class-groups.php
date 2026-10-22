@@ -25,6 +25,10 @@ final class VKT_Groups {
     // Опорные фото уходят в API целиком: 8 МБ — потолок BFL на один образец.
     const PERSONA_BYTES = 8388608;
     const PERSONA_MIMES = array( 'image/jpeg', 'image/png', 'image/webp' );
+    // Мир персонажа: места, вещи, питомцы. По два фото на каждый — вместе с лицом это 8 образцов, предел FLUX.2 и gpt-image.
+    const PERSONA_ITEMS = 6;
+    const PERSONA_ITEM_PHOTOS = 2;
+    const PERSONA_ITEM_LOOK_MAX = 600;
 
     const TEMPLATE = "# Паспорт сообщества\n\n## Кто ведёт\n- Ответственный:\n- Закреплено за:\n- Контакт для срочных вопросов:\n\n## О сообществе\n- Тема и ниша:\n- Аудитория (кто читает, возраст, интересы):\n- Цель (продажи, охват, заявки):\n\n## Формат\n- Рубрики:\n- Частота и время выхода:\n- Длина постов:\n- Визуал (фото, видео, стиль картинок):\n\n## Тон общения\n- Обращение (ты / вы):\n- Настроение и манера:\n- Эмодзи и хештеги:\n\n## Призывы к действию\n- Основной призыв:\n- Куда вести (ссылки, сообщения, товары):\n\n## Нельзя\n- Запретные темы и формулировки:\n\n## Заметки\n";
 
@@ -192,35 +196,71 @@ final class VKT_Groups {
     /**
      * Персонаж группы для картинок: опорные фото из медиатеки и словами —
      * внешность. Нужен блогам от лица человека: без него каждая картинка
-     * рисует нового незнакомца.
+     * рисует нового незнакомца. Вокруг него — постоянный мир (items): места,
+     * вещи, питомцы. Без них лицо одно, а кошка и квартира каждый раз новые.
      */
     public static function persona( $group ) {
         $raw = json_decode( (string) ( $group['persona'] ?? '' ), true );
         $raw = is_array( $raw ) ? $raw : array();
-        $photos = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $raw['photos'] ?? array() ) ) ) ) );
+        $items = array();
+        foreach ( array_slice( array_values( array_filter( (array) ( $raw['items'] ?? array() ), 'is_array' ) ), 0, self::PERSONA_ITEMS ) as $item ) {
+            $items[] = array(
+                'title' => mb_substr( trim( (string) ( $item['title'] ?? '' ) ), 0, 60 ),
+                'look' => mb_substr( trim( (string) ( $item['look'] ?? '' ) ), 0, self::PERSONA_ITEM_LOOK_MAX ),
+                'words' => mb_substr( trim( (string) ( $item['words'] ?? '' ) ), 0, 200 ),
+                'photos' => array_slice( self::ids( $item['photos'] ?? array() ), 0, self::PERSONA_ITEM_PHOTOS ),
+            );
+        }
         return array(
             'look' => mb_substr( trim( (string) ( $raw['look'] ?? '' ) ), 0, self::PERSONA_LOOK_MAX ),
-            'photos' => array_slice( $photos, 0, self::PERSONA_PHOTOS ),
+            'photos' => array_slice( self::ids( $raw['photos'] ?? array() ), 0, self::PERSONA_PHOTOS ),
+            'items' => $items,
         );
+    }
+
+    private static function ids( $list ) {
+        return array_values( array_unique( array_filter( array_map( 'absint', (array) $list ) ) ) );
     }
 
     public static function has_persona( $group ) {
         $persona = self::persona( $group );
-        return '' !== $persona['look'] || (bool) $persona['photos'];
+        return '' !== $persona['look'] || (bool) $persona['photos'] || (bool) $persona['items'];
     }
 
     /** Для браузера: фото с превью. Удалённые из медиатеки молча выпадают — их место освобождается. */
     private static function persona_public( $group ) {
         $persona = self::persona( $group );
-        $photos = array();
-        foreach ( $persona['photos'] as $id ) {
-            $item = VKT_Media::public_item( $id );
-            if ( ! is_wp_error( $item ) ) {
-                $photos[] = $item;
+        $public = static function ( $ids ) {
+            $out = array();
+            foreach ( $ids as $id ) {
+                $item = VKT_Media::public_item( $id );
+                if ( ! is_wp_error( $item ) ) {
+                    $out[] = $item;
+                }
             }
+            return $out;
+        };
+        $persona['photos'] = $public( $persona['photos'] );
+        foreach ( $persona['items'] as &$item ) {
+            $item['photos'] = $public( $item['photos'] );
         }
-        $persona['photos'] = $photos;
+        unset( $item );
         return $persona;
+    }
+
+    /** Опорное фото: своё, картинка в формате, который берут FLUX и gpt-image, и не тяжелее их потолка. */
+    private static function persona_photo_error( $photo ) {
+        $item = VKT_Media::item( $photo );
+        if ( is_wp_error( $item ) || ! VKT_Media::owned( $photo ) ) {
+            return self::error( 'Фото не найдено в вашей медиатеке.', 404 );
+        }
+        if ( ! in_array( $item['mime'], self::PERSONA_MIMES, true ) ) {
+            return self::error( '«' . $item['name'] . '»: нужен JPEG, PNG или WebP — другие форматы нейросети образцом не берут.' );
+        }
+        if ( $item['size'] > self::PERSONA_BYTES ) {
+            return self::error( '«' . $item['name'] . '» больше 8 МБ — уменьшите его.' );
+        }
+        return null;
     }
 
     public static function save_persona( $id, $data ) {
@@ -233,43 +273,71 @@ final class VKT_Groups {
         if ( mb_strlen( $look ) > self::PERSONA_LOOK_MAX ) {
             return self::error( 'Описание внешности — не длиннее ' . self::PERSONA_LOOK_MAX . ' символов.' );
         }
-        $photos = array_values( array_unique( array_filter( array_map( 'absint', (array) ( $data['photos'] ?? array() ) ) ) ) );
+        $photos = self::ids( $data['photos'] ?? array() );
         if ( count( $photos ) > self::PERSONA_PHOTOS ) {
             return self::error( 'Опорных фото — не больше ' . self::PERSONA_PHOTOS . '.' );
         }
-        foreach ( $photos as $photo ) {
-            $item = VKT_Media::item( $photo );
-            if ( is_wp_error( $item ) || ! VKT_Media::owned( $photo ) ) {
-                return self::error( 'Фото не найдено в вашей медиатеке.', 404 );
+        $raw_items = array_values( array_filter( (array) ( $data['items'] ?? array() ), 'is_array' ) );
+        if ( count( $raw_items ) > self::PERSONA_ITEMS ) {
+            return self::error( 'Мест, вещей и питомцев — не больше ' . self::PERSONA_ITEMS . '.' );
+        }
+        $items = array();
+        foreach ( $raw_items as $raw ) {
+            $item = array(
+                'title' => trim( sanitize_text_field( (string) ( $raw['title'] ?? '' ) ) ),
+                'look' => trim( sanitize_textarea_field( (string) ( $raw['look'] ?? '' ) ) ),
+                'words' => trim( sanitize_text_field( (string) ( $raw['words'] ?? '' ) ) ),
+                'photos' => self::ids( $raw['photos'] ?? array() ),
+            );
+            if ( '' === $item['title'] && '' === $item['look'] && ! $item['photos'] ) {
+                continue;
             }
-            if ( ! in_array( $item['mime'], self::PERSONA_MIMES, true ) ) {
-                return self::error( '«' . $item['name'] . '»: нужен JPEG, PNG или WebP — другие форматы нейросети образцом не берут.' );
+            if ( '' === $item['title'] ) {
+                return self::error( 'У каждого места, вещи или питомца нужно название — например, «Кошка Муся».' );
             }
-            if ( $item['size'] > self::PERSONA_BYTES ) {
-                return self::error( '«' . $item['name'] . '» больше 8 МБ — уменьшите его.' );
+            if ( mb_strlen( $item['title'] ) > 60 || mb_strlen( $item['look'] ) > self::PERSONA_ITEM_LOOK_MAX || mb_strlen( $item['words'] ) > 200 ) {
+                return self::error( '«' . $item['title'] . '»: название до 60 символов, описание до ' . self::PERSONA_ITEM_LOOK_MAX . ', слова до 200.' );
+            }
+            if ( count( $item['photos'] ) > self::PERSONA_ITEM_PHOTOS ) {
+                return self::error( '«' . $item['title'] . '»: фото — не больше ' . self::PERSONA_ITEM_PHOTOS . '.' );
+            }
+            $photos = array_merge( $photos, $item['photos'] );
+            $items[] = $item;
+        }
+        foreach ( array_unique( $photos ) as $photo ) {
+            $error = self::persona_photo_error( $photo );
+            if ( $error ) {
+                return $error;
             }
         }
-        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'persona' => wp_json_encode( array( 'look' => $look, 'photos' => $photos ), JSON_UNESCAPED_UNICODE ) ), array( 'id' => (int) $group['id'] ) );
+        $persona = array( 'look' => $look, 'photos' => self::ids( $data['photos'] ?? array() ), 'items' => $items );
+        $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'persona' => wp_json_encode( $persona, JSON_UNESCAPED_UNICODE ) ), array( 'id' => (int) $group['id'] ) );
         return array( 'ok' => true, 'persona' => self::persona_public( self::group( $id ) ) );
     }
 
     /**
-     * Что знает о картинках группы рисование: персонаж и строка «Визуал» из
-     * паспорта. Паспорт целиком в промпт картинки не идёт — тон и призывы
-     * модели рисования только мешают.
+     * Что знает о картинках группы рисование: персонаж, его мир и строка
+     * «Визуал» из паспорта. Паспорт целиком в промпт картинки не идёт — тон и
+     * призывы модели рисования только мешают. Какие предметы мира попадут в
+     * кадр, решает VKT_Images по тексту записи.
      */
     public static function image_brief( $id ) {
         $group = self::group( $id );
         if ( is_wp_error( $group ) ) {
             return $group;
         }
-        $persona = self::persona( $group );
-        $persona['photos'] = array_values( array_filter( $persona['photos'], static function ( $photo ) {
+        $alive = static fn( $ids ) => array_values( array_filter( $ids, static function ( $photo ) {
             $item = VKT_Media::item( $photo );
             return ! is_wp_error( $item ) && 'image' === $item['type'];
         } ) );
+        $persona = self::persona( $group );
+        $persona['photos'] = $alive( $persona['photos'] );
+        foreach ( $persona['items'] as &$item ) {
+            $item['photos'] = $alive( $item['photos'] );
+        }
+        unset( $item );
         $persona['visual'] = self::passport_visual( (string) ( $group['passport'] ?? '' ) );
-        return '' === $persona['look'] && ! $persona['photos'] && '' === $persona['visual'] ? null : $persona;
+        return '' === $persona['look'] && ! $persona['photos'] && ! $persona['items'] && '' === $persona['visual'] ? null : $persona;
     }
 
     /** Строка «- Визуал: …» из паспорта. Пустой пункт шаблона не считается. */

@@ -234,11 +234,35 @@ $act( $a, 'group_passport', array( 'id' => $g1, 'passport' => "# Паспорт\
 wp_set_current_user( $a );
 $brief = VKT_Groups::image_brief( $g1 );
 $ok( array( $photo ) === $brief['photos'] && 'фото на телефон, обычная квартира' === $brief['visual'] && 'женщина 34 лет, русые волосы' === $brief['look'], 'Бриф рисования: фото, внешность и «Визуал» паспорта' );
+// Мир персонажа: предметы с фото, без названия — отказ, чужое фото у предмета — отказ.
+$ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'items' => array( array( 'look' => 'серая', 'photos' => array() ) ) ) ) ), 'Предмет без названия не сохраняется' );
+$ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'items' => array( array( 'title' => 'Кошка', 'photos' => array( $foreign ) ) ) ) ) ), 'Чужое фото у предмета не принимается' );
+$saved = $act( $a, 'group_persona', array( 'id' => $g1, 'look' => 'женщина 34 лет, русые волосы', 'photos' => array( $photo ), 'items' => array( array( 'title' => 'Кошка Муся', 'look' => 'серая британка', 'words' => 'кошк, Мус', 'photos' => array( $photo ) ), array( 'title' => '', 'look' => '', 'photos' => array() ) ) ) );
+$ok( ! is_wp_error( $saved ) && 1 === count( $saved['persona']['items'] ) && 'Кошка Муся' === $saved['persona']['items'][0]['title'] && (int) $saved['persona']['items'][0]['photos'][0]['id'] === $photo, 'Предмет мира сохраняется, пустой — отбрасывается' );
+wp_set_current_user( $a );
+$brief = VKT_Groups::image_brief( $g1 );
+$ok( 'кошк, Мус' === $brief['items'][0]['words'] && array( $photo ) === $brief['items'][0]['photos'], 'Бриф рисования везёт мир персонажа' );
+$plan = VKT_Images::persona_plan( 'Вечер с Мусей', $brief, 8 );
+$ok( array( $photo, $photo ) === $plan['refs'] && str_contains( $plan['prompt'], 'Кошка Муся: серая британка' ), 'Кошка попадает в кадр по слову из записи' );
+$ok( ! is_wp_error( VKT_Media::reference_path( $photo ) ), 'Образец для нейросети читается из медиатеки' );
+// Большой снимок уходит образцом уменьшенной копией, которую WordPress сделал при загрузке.
+require_once ABSPATH . 'wp-admin/includes/image.php';
+$canvas = imagecreatetruecolor( 2400, 3200 );
+ob_start();
+imagejpeg( $canvas, null, 90 );
+$big = wp_upload_bits( 'persona-big.jpg', null, ob_get_clean() );
+$big_id = wp_insert_attachment( array( 'post_mime_type' => 'image/jpeg', 'post_title' => 'persona-big', 'post_status' => 'inherit', 'post_author' => $a ), $big['file'] );
+wp_update_attachment_metadata( $big_id, wp_generate_attachment_metadata( $big_id, $big['file'] ) );
+$reference = VKT_Media::reference_path( $big_id );
+$size = getimagesize( $reference['path'] );
+$ok( $reference['path'] !== $big['file'] && max( $size[0], $size[1] ) <= 1536 && is_file( $reference['path'] ), 'Большое фото уходит копией до 1536 px' );
+wp_delete_attachment( $big_id, true );
+
 $listed = array_values( array_filter( VKT_Publisher::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
 $card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
 $ok( $listed['has_persona'] && ! array_key_exists( 'persona', $listed ) && $card['has_persona'] && ! array_key_exists( 'persona', $card ), 'Списки групп знают о персонаже, но не везут его' );
 wp_delete_attachment( $photo, true );
-$ok( array() === VKT_Groups::image_brief( $g1 )['photos'] && array() === $act( $a, 'group_detail', array( 'id' => $g1 ) )['persona']['photos'], 'Удалённое из медиатеки фото выпадает из персонажа' );
+$ok( array() === VKT_Groups::image_brief( $g1 )['photos'] && array() === $act( $a, 'group_detail', array( 'id' => $g1 ) )['persona']['photos'] && array() === VKT_Groups::image_brief( $g1 )['items'][0]['photos'], 'Удалённое из медиатеки фото выпадает из персонажа и его мира' );
 wp_delete_attachment( $foreign, true );
 
 // 8. Группа ушла из кабинета — её слежение снимается.

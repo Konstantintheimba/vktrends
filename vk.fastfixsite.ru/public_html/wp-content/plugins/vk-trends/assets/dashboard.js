@@ -700,6 +700,7 @@
         target.message = form.elements.message.value;
         target.attachments = form.elements.attachments.value;
         target.imagePrompt = form.elements.image_prompt?.value || '';
+        target.rewritePrompt = form.elements.rewrite_prompt?.value || '';
         target.imageQuery = form.elements.image_query?.value || '';
         target.coverKeep = !!form.elements.cover_keep?.checked;
         if (form.elements.shop_title) {
@@ -871,7 +872,11 @@
         toast(run.stop ? `Остановлено: ${run.stop}` : `Готово: полных текстов ${run.texts}, сохранено фото ${run.photos}.`, !!run.stop);
         render();
     }
-    const rewriteButton = attr => state.settings.ai?.configured ? `<div class="vkt-ai-row">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Рерайт текста`, 'series-rewrite', attr)}<small class="vkt-help">Перепишет текст записи другими словами: факты, цифры и ссылки останутся, нового не добавится.</small></div>` : '';
+    const rewriteButton = (attr, target) => state.settings.ai?.configured ? `<label>Свой промпт к рерайту<textarea name="rewrite_prompt" rows="2" maxlength="2000" placeholder="Необязательно. Например: добавь в конце, что Муся тоже обнюхала пакет; замени «полотенце» на «плед»; убери вопрос в конце">${esc(target?.rewritePrompt || '')}</textarea></label>
+                <div class="vkt-ai-row">${modelPicker(state.settings.ai)}${button(`${icon('fire')} Рерайт текста`, 'series-rewrite', attr)}<small class="vkt-help">Без своего промпта — перескажет текст другими словами: факты, цифры и ссылки останутся, нового не добавится. Со своим — возьмёт текст как есть и внесёт только то, что вы написали: добавит, заменит, уберёт.</small></div>` : '';
+    // Свой промпт — правка готового текста, а не пересказ: всё, о чём не просили, остаётся слово в слово.
+    const REWRITE_PLAIN = 'Сделай рерайт текущего черновика: перескажи его другими словами близко к тексту. Сохрани все факты, цифры, имена, даты, цитаты и ссылки, строку «Источник: …» оставь как есть. Ничего не добавляй от себя и не меняй смысл, объём — примерно тот же.';
+    const rewriteTask = own => own.trim() ? `Доработай текущий черновик по указаниям автора ниже: добавь, замени или убери ровно то, что сказано. Всё остальное оставь как есть — те же формулировки, факты, цифры, имена, ссылки и голос автора; строку «Источник: …» не трогай. Новые факты бери только из указаний. Добавленное вплетай в текст так, чтобы он читался цельно, в том же тоне.\n\nУказания автора:\n${own.trim()}` : REWRITE_PLAIN;
     // Рерайт, а не новый пост: модель получает текст записи и не вправе менять факты.
     async function seriesDialogRewrite(trigger) {
         captureSeriesDialog();
@@ -879,12 +884,14 @@
         if (!target) return;
         if (!String(target.message || '').trim()) { toast('Рерайту нужен текст записи.', true); return; }
         const note = $('#vkt-series-dialog-progress');
-        if (note) { note.hidden = false; note.textContent = 'Переписываем текст… Обычно это до минуты.'; }
+        if (note) { note.hidden = false; note.textContent = String(target.rewritePrompt || '').trim() ? 'Вносим правки… Обычно это до минуты.' : 'Переписываем текст… Обычно это до минуты.'; }
         trigger.disabled = true;
         try {
-            const result = await act('ai_text', {model: aiModel, group_id: Number(seriesGroup), current: target.message, prompt: 'Сделай рерайт текущего черновика: перескажи его другими словами близко к тексту. Сохрани все факты, цифры, имена, даты, цитаты и ссылки, строку «Источник: …» оставь как есть. Ничего не добавляй от себя и не меняй смысл, объём — примерно тот же.'});
+            const own = String(target.rewritePrompt || '');
+            const result = await act('ai_text', {model: aiModel, group_id: Number(seriesGroup), current: target.message, prompt: rewriteTask(own)});
             target.message = result.text;
-            toast(null !== seriesSlotTarget ? 'Текст переписан — проверьте его и сохраните слот.' : 'Текст переписан. Нажмите «Сохранить», чтобы очередь его получила.');
+            const done = own.trim() ? 'Правки внесены' : 'Текст переписан';
+            toast(null !== seriesSlotTarget ? `${done} — проверьте текст и сохраните слот.` : `${done}. Нажмите «Сохранить», чтобы очередь получила новый текст.`);
         } catch (error) { toast(error.message, true, error.fix); }
         finally { trigger.disabled = false; }
         reopenSeriesDialog();
@@ -939,7 +946,7 @@
                 <input type="hidden" name="index" value="${Number(index)}">
                 <label>Время публикации<input type="datetime-local" name="at" value="${esc(slot.at)}" min="${esc(localStamp(new Date()))}" required></label>
                 <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(slot.message)}</textarea></label>
-                ${rewriteButton(`data-index="${Number(index)}"`)}
+                ${rewriteButton(`data-index="${Number(index)}"`, slot)}
                 ${shopBox(slot, `data-index="${Number(index)}"`)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(slot.imagePrompt)}
@@ -974,7 +981,7 @@
             <form data-form="series-post" class="vkt-form">
                 <label>Время публикации<input type="datetime-local" name="at" value="${esc(draft.at)}" min="${esc(localStamp(new Date()))}" required></label>
                 <label>Текст записи<textarea name="message" rows="8" maxlength="16000" placeholder="Текст этого поста">${esc(draft.message)}</textarea></label>
-                ${rewriteButton('')}
+                ${rewriteButton('', draft)}
                 ${shopBox(draft)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
                 ${imageField(draft.imagePrompt)}
@@ -1256,6 +1263,9 @@
             </form>`;
     }
     // ——— Нейросети: ключи поставщиков и что каждый ключ умеет ———
+    // Свежие модели основной линейки — первыми: у OpenAI в списке под сотню названий, и по алфавиту gpt-6 тонет среди gpt-3.5 и датированных снимков.
+    const pickRank = id => /^gpt-\d/i.test(id) && !/-\d{4}-\d{2}-\d{2}$/.test(id) ? 0 : 1;
+    const pickOrder = ids => [...ids].sort((a, b) => pickRank(a) - pickRank(b) || (pickRank(a) ? a.localeCompare(b, 'en', {numeric: true}) : b.localeCompare(a, 'en', {numeric: true})));
     // Список моделей, из которого только что добавляли: после перерисовки остаётся раскрытым.
     let providerPicksOpen = '';
     function providerProbe(provider) {
@@ -1267,11 +1277,11 @@
         const some = (ids, limit = 6) => ids.slice(0, limit).map(id => `<code>${esc(id)}</code>`).join(', ') + (ids.length > limit ? ` и ещё ${num(ids.length - limit)}` : '');
         return `<ul class="vkt-provider-caps">
                 <li class="${text.ok ? 'is-ok' : 'is-bad'}"><strong>Текст</strong><span>${text.ok ? `<code>${esc(text.model)}</code> ответила: «${esc(text.message)}»${(text.models || []).length ? ` · моделей в списке: ${num(text.models.length)}` : ''}` : esc(text.message)}</span></li>
-                <li class="${(probe.image || []).length ? 'is-ok' : ''}"><strong>Картинки</strong><span>${(probe.image || []).length ? some(probe.image) : 'моделей для картинок нет'}</span></li>
+                <li class="${(probe.image || []).length ? 'is-ok' : ''}"><strong>Картинки</strong><span>${(probe.image || []).length ? some(probe.image) : provider.id === 'openai' && probe.listed ? 'моделей gpt-image этому ключу не дали — разрешите их в platform.openai.com → Settings → Project → Limits и нажмите «Проверить ключ»' : 'моделей для картинок нет'}</span></li>
                 <li class="${(video.models || []).length ? 'is-ok' : ''}"><strong>Видео</strong><span>${(video.models || []).length ? some(video.models) : esc(video.note || 'моделей для видео нет')}</span></li>
             </ul>
             ${probe.listed ? '' : '<p class="vkt-muted">Список моделей поставщик не отдал — проверен только текст.</p>'}
-            ${(text.models || []).length ? `<details class="vkt-provider-models" ${providerPicksOpen === provider.id ? 'open' : ''}><summary>Модели для текста · ${num(text.models.length)} — нажмите, чтобы добавить в списки генерации</summary><div class="vkt-provider-picks">${text.models.map(id => added.has(id) ? `<span class="vkt-chip-button is-active" title="Уже в списке">${esc(id)}</span>` : `<button type="button" class="vkt-chip-button" data-command="ai-model-quick" data-preset="${esc(provider.id)}" data-model="${esc(id)}">+ ${esc(id)}</button>`).join('')}</div></details>` : ''}
+            ${(text.models || []).length ? `<details class="vkt-provider-models" ${providerPicksOpen === provider.id ? 'open' : ''}><summary>Модели для текста · ${num(text.models.length)} — нажмите, чтобы добавить в списки генерации</summary><div class="vkt-provider-picks">${pickOrder(text.models).map(id => added.has(id) ? `<span class="vkt-chip-button is-active" title="Уже в списке">${esc(id)}</span>` : `<button type="button" class="vkt-chip-button" data-command="ai-model-quick" data-preset="${esc(provider.id)}" data-model="${esc(id)}">+ ${esc(id)}</button>`).join('')}</div></details>` : ''}
             ${(probe.image || []).length ? `<p class="vkt-muted">Модели картинок подключаются сами: выбираются в «Чем рисуем» — в окне записи, в серии и в «Автопостинге».</p>` : ''}
             <small class="vkt-muted">Проверено ${date(probe.at)}</small>`;
     }
@@ -1768,29 +1778,56 @@
         </section>`;
     }
     // ——— Персонаж для фото: опорные снимки и внешность, чтобы к записям рисовался один и тот же человек ———
-    const PERSONA_PHOTOS = 4;
-    const personaCurrent = () => groupPersonaDraft || groupDetail?.persona || {look: '', photos: []};
+    // Вокруг него — постоянный мир: места, вещи, питомцы. Без них лицо одно, а кошка и квартира каждый раз новые.
+    const PERSONA_PHOTOS = 4, PERSONA_ITEMS = 6, PERSONA_ITEM_PHOTOS = 2;
+    const personaEmpty = () => ({look: '', photos: [], items: []});
+    const personaCurrent = () => groupPersonaDraft || {...personaEmpty(), ...(groupDetail?.persona || {})};
+    // Правка идёт в копию: сохранённый персонаж остаётся нетронутым до «Сохранить персонажа».
+    function personaDraft() {
+        if (!groupPersonaDraft) groupPersonaDraft = JSON.parse(JSON.stringify(personaCurrent()));
+        groupPersonaDraft.items = groupPersonaDraft.items || [];
+        return groupPersonaDraft;
+    }
+    // Куда кладём фото: 'face' — лицо, номер — предмет мира.
+    let personaMediaTarget = 'face';
+    const personaSlot = (persona, target) => target === 'face' ? {photos: persona.photos || [], limit: PERSONA_PHOTOS} : {photos: persona.items?.[Number(target)]?.photos || [], limit: PERSONA_ITEM_PHOTOS};
+    function personaPhotos(photos, target, limit, label) {
+        const chips = photos.map(item => `<div class="vkt-persona-photo">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : ''}<button type="button" class="vkt-chip-remove" data-command="persona-remove" data-target="${esc(target)}" data-id="${Number(item.id)}" aria-label="Убрать фото">×</button></div>`).join('');
+        const room = photos.length < limit;
+        return `<div class="vkt-persona-photos">${chips}${room ? `<label class="vkt-persona-add"><input type="file" accept="image/jpeg,image/png,image/webp" data-persona-upload data-target="${esc(target)}" multiple hidden>${icon('plus')}<span>${esc(label)}</span></label><button type="button" class="vkt-persona-add" data-command="persona-media" data-target="${esc(target)}">${icon('layers')}<span>Медиатека</span></button>` : ''}</div>`;
+    }
+    function personaItem(item, index) {
+        return `<fieldset class="vkt-persona-item">
+                <div class="vkt-form-row"><label>Название<input data-persona-item="title" data-index="${index}" value="${esc(item.title || '')}" maxlength="60" placeholder="Кошка Муся"></label><label>Когда в кадре<input data-persona-item="words" data-index="${index}" value="${esc(item.words || '')}" maxlength="200" placeholder="кошк, Мус"></label></div>
+                <label>Как выглядит<textarea data-persona-item="look" data-index="${index}" rows="2" maxlength="600" placeholder="Серая британская кошка, медные глаза, пушистая">${esc(item.look || '')}</textarea></label>
+                ${personaPhotos(item.photos || [], String(index), PERSONA_ITEM_PHOTOS, 'Фото')}
+                <div class="vkt-form-actions">${button('Убрать', 'persona-item-remove', `data-index="${index}"`)}</div>
+            </fieldset>`;
+    }
     function groupPersonaPanel(group) {
-        const persona = groupPersonaDraft || group.persona || {look: '', photos: []};
-        const photos = persona.photos || [];
-        const room = photos.length < PERSONA_PHOTOS;
-        const chips = photos.map(item => `<div class="vkt-persona-photo">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : ''}<button type="button" class="vkt-chip-remove" data-command="persona-remove" data-id="${Number(item.id)}" aria-label="Убрать фото">×</button></div>`).join('');
+        const persona = groupPersonaDraft || {...personaEmpty(), ...(group.persona || {})};
+        const items = persona.items || [];
         return `<section class="vkt-panel vkt-group-persona"><div class="vkt-panel-heading"><div><h2>Персонаж для фото</h2><p>Кто в кадре, когда нейросеть рисует к записям этой группы. Фото уходят образцом в FLUX.2 и OpenAI gpt-image — они рисуют того же человека; xAI фото не принимает и рисует только по описанию. В каждую картинку идёт и строка «Визуал» из паспорта.</p></div></div>
             <form data-form="group-persona" class="vkt-form">
-                <div class="vkt-persona-photos">${chips}${room ? `<label class="vkt-persona-add"><input type="file" accept="image/jpeg,image/png,image/webp" data-persona-upload multiple hidden>${icon('plus')}<span>Загрузить</span></label>` : ''}</div>
+                ${personaPhotos(persona.photos || [], 'face', PERSONA_PHOTOS, 'Загрузить')}
                 <small class="vkt-help">До ${PERSONA_PHOTOS} фото: лицо крупно и при хорошем свете, лучше с разных сторон и без очков. JPEG, PNG или WebP до 8 МБ.</small>
-                ${room ? `<div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'persona-media')}</div>` : ''}
                 <label>Внешность словами<textarea name="look" data-persona-look rows="3" maxlength="1500" placeholder="Например: женщина 34 лет, русые волосы до плеч, карие глаза, веснушки, стройная, рост средний">${esc(persona.look || '')}</textarea><small class="vkt-help">Возраст, волосы, глаза, приметы, телосложение. Одежду и место не пишите — их берёт сюжет записи.</small></label>
+                <h3>Постоянные места, вещи и питомцы</h3>
+                <p class="vkt-help">Квартира, рабочее место, питомец, машина — всё, что повторяется в блоге и должно выглядеть одинаково. Предмет попадает в кадр, когда в тексте записи есть одно из слов «Когда в кадре» — пишите начала слов через запятую: «кошк, Мус» найдёт и «кошка», и «Мусей». Пустое поле — предмет в каждой картинке. Фото — до ${PERSONA_ITEM_PHOTOS} на предмет; удачный нарисованный кадр квартиры тоже годится, возьмите его из медиатеки. Других людей и животных модель не добавит.</p>
+                ${items.map(personaItem).join('')}
+                ${items.length < PERSONA_ITEMS ? `<div class="vkt-form-actions">${button(`${icon('plus')} Место, вещь или питомец`, 'persona-item-add')}</div>` : ''}
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">${icon('check')} Сохранить персонажа</button>${groupPersonaDraft ? '<span class="vkt-muted">Есть несохранённые правки.</span>' : ''}</div>
             </form></section>`;
     }
-    function addPersonaPhoto(item) {
-        const persona = personaCurrent();
+    function addPersonaPhoto(item, target = 'face') {
         if (!item || !item.id) return false;
-        if (item.type !== 'image') { toast('Персонажу нужны фотографии, не видео.', true); return false; }
-        if ((persona.photos || []).some(photo => Number(photo.id) === Number(item.id))) { toast('Это фото уже есть.'); return false; }
-        if ((persona.photos || []).length >= PERSONA_PHOTOS) { toast(`Опорных фото — не больше ${PERSONA_PHOTOS}.`, true); return false; }
-        groupPersonaDraft = {look: persona.look || '', photos: [...(persona.photos || []), item]};
+        if (item.type !== 'image') { toast('Нужны фотографии, не видео.', true); return false; }
+        const slot = personaSlot(personaCurrent(), target);
+        if (slot.photos.some(photo => Number(photo.id) === Number(item.id))) { toast('Это фото уже есть.'); return false; }
+        if (slot.photos.length >= slot.limit) { toast(`Здесь не больше ${slot.limit} фото.`, true); return false; }
+        const draft = personaDraft();
+        if (target === 'face') draft.photos = [...(draft.photos || []), item];
+        else if (draft.items[Number(target)]) draft.items[Number(target)].photos = [...(draft.items[Number(target)].photos || []), item];
         return true;
     }
     function groupPage() {
@@ -2670,7 +2707,7 @@
         if (command==='media-pick') {
             const item = mediaLibraryItems.find(media => Number(media.id) === Number(el.dataset.id));
             if (mediaTarget === 'persona') {
-                if (addPersonaPhoto(item)) { dialog.close(); render(); }
+                if (addPersonaPhoto(item, personaMediaTarget)) { dialog.close(); render(); }
                 return;
             }
             if (mediaTarget === 'flux') {
@@ -2740,13 +2777,17 @@
             content.scrollIntoView({block: 'start'});
             return;
         }
-        if (command==='persona-media') { mediaTarget = 'persona'; seriesSlotTarget = null; await mediaLibrary(); return; }
+        if (command==='persona-media') { mediaTarget = 'persona'; personaMediaTarget = el.dataset.target || 'face'; seriesSlotTarget = null; await mediaLibrary(); return; }
         if (command==='persona-remove') {
-            const persona = personaCurrent();
-            groupPersonaDraft = {look: persona.look || '', photos: (persona.photos || []).filter(photo => Number(photo.id) !== Number(el.dataset.id))};
+            const draft = personaDraft();
+            const keep = photos => (photos || []).filter(photo => Number(photo.id) !== Number(el.dataset.id));
+            if (el.dataset.target === 'face') draft.photos = keep(draft.photos);
+            else if (draft.items[Number(el.dataset.target)]) draft.items[Number(el.dataset.target)].photos = keep(draft.items[Number(el.dataset.target)].photos);
             render();
             return;
         }
+        if (command==='persona-item-add') { personaDraft().items.push({title: '', look: '', words: '', photos: []}); render(); return; }
+        if (command==='persona-item-remove') { personaDraft().items.splice(Number(el.dataset.index), 1); render(); return; }
         if (command==='group-close') { groupDraftsSave(); groupOpen = 0; groupDetail = null; groupDraftsLoad(0); render(); return; }
         if (command==='user-limits') {
             const user = (usersData || []).find(item => Number(item.id) === Number(el.dataset.id));
@@ -3194,7 +3235,8 @@
                 case 'series-bind': return;
                 case 'group-persona': {
                     const persona = personaCurrent();
-                    const saved = await act('group_persona', {id: groupOpen, look: values.look || '', photos: (persona.photos || []).map(photo => Number(photo.id))});
+                    const ids = photos => (photos || []).map(photo => Number(photo.id));
+                    const saved = await act('group_persona', {id: groupOpen, look: values.look || '', photos: ids(persona.photos), items: (persona.items || []).map(item => ({title: item.title || '', look: item.look || '', words: item.words || '', photos: ids(item.photos)}))});
                     groupPersonaDraft = null;
                     if (groupDetail) groupDetail.persona = saved.persona;
                     toast('Персонаж сохранён: картинки к записям группы будут рисовать его.');
@@ -3451,10 +3493,12 @@
             input.value = '';
             const label = input.closest('label');
             label?.classList.add('is-busy');
+            const target = input.dataset.target || 'face';
             try {
                 for (const file of files) {
-                    if ((personaCurrent().photos || []).length >= PERSONA_PHOTOS) { toast(`Опорных фото — не больше ${PERSONA_PHOTOS}: лишние не загружены.`, true); break; }
-                    addPersonaPhoto(await upload(file));
+                    const slot = personaSlot(personaCurrent(), target);
+                    if (slot.photos.length >= slot.limit) { toast(`Здесь не больше ${slot.limit} фото: лишние не загружены.`, true); break; }
+                    addPersonaPhoto(await upload(file), target);
                 }
                 toast('Фото добавлены. Нажмите «Сохранить персонажа».');
             } catch (error) { toast(error.message, true, error.fix); }
@@ -3602,7 +3646,8 @@
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
         // Паспорт переживает перерисовку после обновления охватов и других действий.
         if(event.target.matches('[data-group-passport]')) groupPassportDraft=event.target.value;
-        if(event.target.matches('[data-persona-look]')) { const persona = personaCurrent(); groupPersonaDraft={look: event.target.value, photos: persona.photos || []}; }
+        if(event.target.matches('[data-persona-look]')) personaDraft().look = event.target.value;
+        if(event.target.dataset.personaItem) { const item = personaDraft().items[Number(event.target.dataset.index)]; if (item) item[event.target.dataset.personaItem] = event.target.value; }
         if(event.target.matches('textarea[data-news]')) groupNewsDraft={...(groupNewsDraft||{}), [event.target.dataset.news]: event.target.value};
         if(event.target.dataset.materialDraft && groupMaterialDraft) groupMaterialDraft[event.target.dataset.materialDraft]=event.target.value;
         if(event.target.dataset.seriesImage==='style') seriesImage.style=event.target.value;

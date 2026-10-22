@@ -34,11 +34,12 @@ $GLOBALS['wpdb'] = new class {
 };
 class VKT_Flux {
     const MAX_REFERENCES = 4;
+    const MAX_INPUTS = 8;
     public static $ready = false;
     public static $started = array();
     public static function configured() { return self::$ready; }
     public static function models() { return array( 'flux-2-pro' => array( 'title' => 'FLUX.2 [pro]' ), 'flux-2-max' => array( 'title' => 'FLUX.2 [max]' ) ); }
-    public static function start( $data ) { self::$started = $data; return array( 'id' => 'task-12345678', 'status' => 'pending', 'model' => $data['model'] ); }
+    public static function start( $data, $max = 4 ) { self::$started = $data; return array( 'id' => 'task-12345678', 'status' => 'pending', 'model' => $data['model'] ); }
     public static function status( $id ) { return array( 'status' => 'done', 'media' => array( 'id' => 9 ), 'asked' => $id ); }
 }
 
@@ -92,15 +93,30 @@ $bad_ratio = VKT_Images::start( 'bfl:flux-2-pro', 'Кухня', 'panorama' );
 $assert( 768 === VKT_Flux::$started['width'] && 1024 === VKT_Flux::$started['height'], 'Неизвестный формат заменяется вертикальным' );
 
 // Персонаж группы: фото уходят образцом тому, кто их берёт, внешность и визуал — в начало промпта.
-$persona = array( 'look' => 'женщина 34 лет, русые волосы до плеч', 'photos' => array( 11, 12, 13, 14, 15 ), 'visual' => 'фото на телефон, обычная квартира' );
+$persona = array( 'look' => 'женщина 34 лет, русые волосы до плеч', 'photos' => array( 11, 12, 13, 14, 15 ), 'items' => array(), 'visual' => 'фото на телефон, обычная квартира' );
 VKT_Images::start( 'bfl:flux-2-pro', 'Маша выбирает шторы', 'story', $persona );
 $prompt = VKT_Flux::$started['prompt'];
-$assert( array( 11, 12, 13, 14 ) === VKT_Flux::$started['images'], 'FLUX получает опорные фото, не больше своего предела' );
-$assert( str_starts_with( $prompt, 'Главный человек в кадре — тот же, что на опорных фото' ) && str_contains( $prompt, 'Внешность героя: женщина 34 лет' ) && str_contains( $prompt, 'Как снимает блог: фото на телефон' ) && str_ends_with( $prompt, "Сюжет:\nМаша выбирает шторы" ), 'Персонаж и визуал — до сюжета' );
+$assert( array( 11, 12, 13, 14, 15 ) === VKT_Flux::$started['images'], 'FLUX.2 pro получает все фото персонажа' );
+$assert( str_starts_with( $prompt, 'Опорные фото по порядку: фото 1–5 — главный человек кадра' ) && str_contains( $prompt, 'тот же, что на опорных фото 1–5' ) && str_contains( $prompt, 'Внешность героя: женщина 34 лет' ) && str_contains( $prompt, 'Как снимает блог: фото на телефон' ) && str_contains( $prompt, 'других людей и животных' ) && str_ends_with( $prompt, "Сюжет:\nМаша выбирает шторы" ), 'Персонаж и визуал — до сюжета, фото пронумерованы' );
 VKT_Images::start( 'bfl:flux-2-pro', 'Маша выбирает шторы', 'story' );
 $assert( array() === VKT_Flux::$started['images'] && 'Маша выбирает шторы' === VKT_Flux::$started['prompt'], 'Без персонажа промпт и образцы не трогаются' );
-$plain = VKT_Images::persona_prompt( 'Сюжет', array( 'look' => 'мужчина с бородой', 'photos' => array(), 'visual' => '' ), false );
+$plain = VKT_Images::persona_prompt( 'Сюжет', array( 'look' => 'мужчина с бородой', 'photos' => array(), 'items' => array(), 'visual' => '' ) );
 $assert( str_contains( $plain, 'всегда один и тот же. Его внешность: мужчина с бородой' ) && ! str_contains( $plain, 'опорных фото' ), 'Без фото (xAI) — только описание, про образцы ни слова' );
-$assert( mb_strlen( VKT_Images::persona_prompt( str_repeat( 'а', 6000 ), $persona, true ) ) <= 5000, 'Промпт с персонажем не длиннее 5000 знаков' );
+
+// Мир персонажа: в кадр идёт то, о чём сюжет; фото нумеруются, лицо первым.
+$world = array( 'look' => '', 'photos' => array( 1, 2, 3 ), 'visual' => '', 'items' => array(
+    array( 'title' => 'Кошка Муся', 'look' => 'серая британка с медными глазами', 'words' => 'кошк, Мус', 'photos' => array( 21, 22 ) ),
+    array( 'title' => 'Квартира', 'look' => 'светлая гостиная, бежевый диван', 'words' => 'дома, квартир, кухн', 'photos' => array( 31 ) ),
+    array( 'title' => 'Студия штор', 'look' => 'стеллажи с образцами тканей', 'words' => 'студи, работ', 'photos' => array( 41 ) ),
+    array( 'title' => 'Часы', 'look' => 'золотые часы-браслет', 'words' => '', 'photos' => array() ),
+) );
+$plan = VKT_Images::persona_plan( 'Вечер дома, Муся спит на подоконнике', $world, 8 );
+$assert( array( 1, 2, 3, 21, 31, 22 ) === $plan['refs'], 'Лицо, по фото на предмет, вторые фото — если есть место' );
+$assert( str_contains( $plain = $plan['prompt'], 'фото 1–3 — главный человек кадра; фото 4, 6 — Кошка Муся; фото 5 — Квартира' ) && str_contains( $plain, '- Кошка Муся: серая британка' ) && str_contains( $plain, '- Часы: золотые' ) && ! str_contains( $plain, 'Студия штор' ), 'Предметы по словам сюжета, без слов — всегда; студии в кадре нет' );
+$assert( array( 1, 2, 3, 41 ) === VKT_Images::persona_plan( 'Работа в студии', $world, 4 )['refs'], 'klein: четыре образца — лицо и студия' );
+$assert( array() === VKT_Images::persona_plan( 'Вечер дома с Мусей', $world, 0 )['refs'] && str_contains( VKT_Images::persona_plan( 'Вечер дома с Мусей', $world, 0 )['prompt'], 'серая британка' ), 'xAI: без фото, но с описанием кошки' );
+$ids = array_column( VKT_Images::providers(), 'refs', 'id' );
+$assert( 0 === $ids['xai'] && 8 === $ids['bfl:flux-2-pro'], 'Реестр знает, сколько образцов берёт каждая модель' );
+$assert( mb_strlen( VKT_Images::persona_prompt( str_repeat( 'а', 6000 ), $world, $world['items'], array( 'person' ) ) ) <= 5000, 'Промпт с персонажем не длиннее 5000 знаков' );
 
 echo "PASS: $checks shops and images checks\n";

@@ -38,6 +38,26 @@ final class VKT_Media {
         );
     }
 
+    /**
+     * Файл для образца нейросети: уменьшенная копия, которую WordPress сделал
+     * при загрузке (до 1536 px), иначе оригинал. Восемь снимков с телефона
+     * по 5–8 МБ — запрос под 80 МБ; лицу и интерьеру хватает 1536 px.
+     */
+    public static function reference_path( $attachment_id ) {
+        $item = self::item( $attachment_id );
+        if ( is_wp_error( $item ) || 'image' !== $item['type'] ) {
+            return $item;
+        }
+        foreach ( array( '1536x1536', 'large' ) as $size ) {
+            $copy = image_get_intermediate_size( $item['id'], $size );
+            $path = is_array( $copy ) && ! empty( $copy['path'] ) ? path_join( wp_get_upload_dir()['basedir'], $copy['path'] ) : '';
+            if ( '' !== $path && is_file( $path ) ) {
+                return array_merge( $item, array( 'path' => $path, 'size' => (int) filesize( $path ), 'mime' => (string) ( $copy['mime-type'] ?? $item['mime'] ) ) );
+            }
+        }
+        return $item;
+    }
+
     /** То же самое для браузера: без абсолютного пути, зато с превью. */
     public static function public_item( $attachment_id ) {
         $item = self::item( $attachment_id );
