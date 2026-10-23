@@ -595,7 +595,7 @@ final class VKT_Plugin {
                 return VKT_API::probe_matrix();
             case 'series_generate':
                 // Серия пишется под своё сообщество: паспорт и история постов уходят в модель.
-                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
+                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ), $data['length'] ?? '', $data['written'] ?? array() ) );
             case 'series_queue':
                 return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
             case 'series_cancel':

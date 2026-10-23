@@ -22,6 +22,13 @@ final class VKT_AI {
     );
     // Модель xAI, которая умеет инструмент web_search в /v1/responses.
     const SEARCH_MODEL = 'grok-4.7';
+    // Длина постов серии, знаков с пробелами. Пачками по длине управляет интерфейс (SERIES_LENGTHS в dashboard.js).
+    const POST_LENGTHS = array(
+        'short' => array( 300, 600 ),
+        'medium' => array( 600, 1200 ),
+        'long' => array( 1200, 2000 ),
+        'longread' => array( 2000, 3500 ),
+    );
     const IMAGE_MODEL = 'grok-imagine-image-2.0';
     const VIDEO_MODEL = 'grok-imagine-video-1.5';
     // Соотношения сторон, которые принимает xAI, под привычные подписи VK.
@@ -769,16 +776,28 @@ final class VKT_AI {
      * не знает, о чём уже написала, и посты повторяли бы друг друга. Поэтому
      * просим сразу список и разбираем ответ.
      */
-    public static function generate_series( $prompt, $count, $model = '', $context = '' ) {
+    /**
+     * $length — ключ POST_LENGTHS; пустой — длину задаёт паспорт группы.
+     * $written — начала уже написанных в этом заходе постов: длинные серии
+     * пишутся пачками, и следующая пачка не должна повторять темы прошлой.
+     */
+    public static function generate_series( $prompt, $count, $model = '', $context = '', $length = '', $written = array() ) {
         $prompt = self::prompt( $prompt );
         if ( is_wp_error( $prompt ) ) {
             return $prompt;
         }
         $count = max( 1, min( VKT_Publisher::MAX_SERIES_SLOTS, (int) $count ) );
+        $range = self::POST_LENGTHS[ is_string( $length ) ? $length : '' ] ?? null;
         $input = 'Подготовь ' . $count . ' готовых текстов для постов сообщества VK на русском языке. Это серия на период: посты не должны повторять друг друга и должны раскрывать тему с разных сторон.'
             . ' Верни строго JSON вида {"posts":["текст 1","текст 2"]} — без пояснений, без Markdown и без тройных кавычек.'
-            . ' Ровно ' . $count . ' элементов, каждый не длиннее 3000 символов. Не выдумывай факты, цены, ссылки и обещания.'
+            . ' Ровно ' . $count . ' элементов, каждый не длиннее ' . max( 3000, $range ? $range[1] : 0 ) . ' символов. Не выдумывай факты, цены, ссылки и обещания.'
+            // Модели пишут короче, чем просят: нижнюю границу называем отдельно и твёрдо.
+            . ( $range ? ' Длина каждого текста — от ' . $range[0] . ' до ' . $range[1] . ' знаков с пробелами. Короче ' . $range[0] . ' не пиши: раскрывай ситуацию подробностями, деталями и живыми мелочами, а не водой.' : '' )
             . "\n\nТема серии: " . $prompt;
+        $written = array_slice( array_filter( array_map( static fn( $text ) => mb_substr( trim( wp_strip_all_tags( (string) $text ) ), 0, 150 ), (array) $written ) ), 0, 30 );
+        if ( $written ) {
+            $input .= "\n\nЭти посты серии уже написаны — не повторяй их темы и ситуации:\n- " . implode( "\n- ", $written );
+        }
         // Серия из десятков текстов пишется дольше одиночного поста.
         $result = self::chat( self::with_group( $input, $context ), 180, $model );
         if ( is_wp_error( $result ) ) {
@@ -887,7 +906,8 @@ final class VKT_AI {
      * и любой другой модели есть «поиск плагина» — запросы составляет модель
      * для текста, выдачу читает сам плагин (VKT_News::search_feed()).
      */
-    const SEARCH_PRESETS = array( 'openrouter' => 'поиск OpenRouter', 'qwen' => 'поиск Qwen' );
+    // Поставщики, чьи модели для текста умеют искать сами. OpenAI ищет через /responses с web_search, как xAI.
+    const SEARCH_PRESETS = array( 'openai' => 'поиск OpenAI', 'openrouter' => 'поиск OpenRouter', 'qwen' => 'поиск Qwen' );
 
     private static function search_registry() {
         $list = array();
@@ -977,14 +997,16 @@ final class VKT_AI {
             return self::error( 'Поиск плагина идёт без модели с поиском — через VKT_News::search().', 400 );
         }
         $domains = array_slice( array_values( array_unique( array_filter( array_map( 'strval', (array) $domains ) ) ) ), 0, 5 );
-        if ( 'xai' === $entry['kind'] ) {
+        // xAI и OpenAI ищут одинаково: /responses с инструментом web_search и фильтром по сайтам.
+        $responses = in_array( $entry['kind'], array( 'xai', 'openai' ), true );
+        if ( $responses ) {
             $tool = array( 'type' => 'web_search' );
             if ( $domains ) {
                 $tool['filters'] = array( 'allowed_domains' => $domains );
             }
-            $url = 'https://api.x.ai/v1/responses';
-            $key = $entry['key'];
-            $body = array( 'model' => self::SEARCH_MODEL, 'input' => array( array( 'role' => 'user', 'content' => $input ) ), 'tools' => array( $tool ) );
+            $url = 'xai' === $entry['kind'] ? 'https://api.x.ai/v1/responses' : untrailingslashit( $entry['model']['base'] ) . '/responses';
+            $key = 'xai' === $entry['kind'] ? $entry['key'] : $entry['model']['key'];
+            $body = array( 'model' => 'xai' === $entry['kind'] ? self::SEARCH_MODEL : $entry['model']['model'], 'input' => array( array( 'role' => 'user', 'content' => $input ) ), 'tools' => array( $tool ) );
         } else {
             $url = $entry['model']['base'] . '/chat/completions';
             $key = $entry['model']['key'];
@@ -1029,7 +1051,7 @@ final class VKT_AI {
         }
         $text = '';
         $urls = array();
-        if ( 'xai' === $entry['kind'] ) {
+        if ( $responses ) {
             foreach ( (array) ( $data['output'] ?? array() ) as $item ) {
                 foreach ( (array) ( is_array( $item ) ? ( $item['content'] ?? array() ) : array() ) as $part ) {
                     if ( is_array( $part ) && 'output_text' === ( $part['type'] ?? '' ) ) {

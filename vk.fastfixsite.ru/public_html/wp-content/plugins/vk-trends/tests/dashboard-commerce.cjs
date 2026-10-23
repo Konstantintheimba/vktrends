@@ -397,6 +397,7 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     state.settings.images = [{id: 'xai', title: 'xAI · grok-imagine-image-2.0'}, {id: 'bfl:flux-2-pro', title: 'BFL · FLUX.2 [pro]'}];
     api.setPublishing({...api.getPublishing(), status: {...api.getPublishing().status, media_native: true}});
     const drawing = api.series();
+    check(drawing.includes('data-series-length') && drawing.includes('Длинные · 1200–2000 знаков'), 'Серия: выбор длины постов');
     check(drawing.includes('data-series-image="extra"'), 'Рисунок по теме записи можно добавить и к слотам с фото');
     check(drawing.includes('<option value="xai" selected>xAI · grok-imagine-image-2.0</option>') && drawing.includes('<option value="bfl:flux-2-pro" >BFL · FLUX.2 [pro]</option>'), 'В «Фото к записям» видны все подключённые модели, включая FLUX');
     check(JSON.stringify(api.pickOrder(['gpt-3.5-turbo', 'gpt-4o-2024-11-20', 'gpt-6-sol', 'o4-mini', 'gpt-6.1-sol', 'gpt-5.5', 'chatgpt-4o-latest'])) === JSON.stringify(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.5', 'gpt-3.5-turbo', 'chatgpt-4o-latest', 'gpt-4o-2024-11-20', 'o4-mini']), 'Свежие gpt-N — первыми, датированные и прочие — после');

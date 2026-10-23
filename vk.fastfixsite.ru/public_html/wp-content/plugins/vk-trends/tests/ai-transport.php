@@ -43,6 +43,7 @@ class VKT_Media {
     public static function reference_path( $id ) { return self::item( $id ); }
     public static function item( $id ) { return isset( self::$files[ $id ] ) ? array( 'id' => $id, 'type' => 'image', 'mime' => 'image/jpeg', 'name' => 'masha-' . $id . '.jpg', 'path' => self::$files[ $id ] ) : new WP_Error( 'gone', 'нет файла' ); }
 }
+class VKT_Publisher { const MAX_SERIES_SLOTS = 60; }
 class VKT_Flux { const MAX_REFERENCES = 4; const MAX_INPUTS = 8; public static function configured() { return false; } }
 
 require dirname( __DIR__ ) . '/includes/class-ai.php';
@@ -122,6 +123,27 @@ $GLOBALS['vkt_net'] = array( array( 'code' => 403, 'body' => json_encode( array(
 $result = VKT_Images::start( 'openai:gpt-image-1', 'Термос на столе', 'square' );
 $assert( is_wp_error( $result ) && str_contains( $result->get_error_message(), 'HTTP 403' ) && ! str_contains( $result->get_error_message(), 'sk-openai-key' ), 'Отказ OpenAI показан без ключа' );
 $assert( is_wp_error( VKT_Images::start( 'openai:dall-e-3', 'Термос на столе', 'square' ) ), 'Модель не из списка не запускается' );
+
+// Поиск OpenAI: модель OpenAI из списка — отдельный пункт «Кто ищет», запрос в /responses с web_search.
+$GLOBALS['options']['vkt_text_models']['models']['astra'] = array( 'title' => 'OpenAI · gpt-6-astra', 'preset' => 'openai', 'base' => 'https://api.openai.com/v1', 'model' => 'gpt-6-astra', 'key' => '' );
+$engines = array_column( VKT_AI::search_providers(), 'title', 'id' );
+$assert( isset( $engines['openai-astra'] ) && str_contains( $engines['openai-astra'], 'gpt-6-astra · поиск OpenAI' ), 'Модель OpenAI появляется в «Кто ищет»' );
+$GLOBALS['vkt_calls'] = array();
+$GLOBALS['vkt_net'] = array( array( 'body' => json_encode( array( 'output' => array( array( 'type' => 'web_search_call' ), array( 'type' => 'message', 'content' => array( array( 'type' => 'output_text', 'text' => 'Найдено', 'annotations' => array( array( 'type' => 'url_citation', 'url' => 'https://news.example/1' ) ) ) ) ) ) ) ) ) );
+$found = VKT_AI::search( 'Новости Саранска', array( 'rg.ru' ), 'openai-astra' );
+$call = $GLOBALS['vkt_calls'][0];
+$assert( 'https://api.openai.com/v1/responses' === $call['url'] && 'gpt-6-astra' === $call['body']['model'] && 'web_search' === $call['body']['tools'][0]['type'] && array( 'rg.ru' ) === $call['body']['tools'][0]['filters']['allowed_domains'] && 'Bearer sk-openai-key' === $call['headers']['Authorization'], 'Поиск OpenAI: /responses, выбранная модель, ключ поставщика, фильтр по сайтам' );
+$assert( 'Найдено' === $found['text'] && array( 'https://news.example/1' ) === $found['urls'], 'Ответ и источники поиска OpenAI разобраны' );
+
+// Длина постов серии: границы в задании, нижняя — твёрдо; уже написанное — чтобы пачки не повторялись.
+$GLOBALS['vkt_calls'] = array();
+$GLOBALS['vkt_net'] = array( array( 'body' => json_encode( array( 'choices' => array( array( 'message' => array( 'content' => '{"posts":["Первый","Второй"]}' ) ) ) ) ) ) );
+$series = VKT_AI::generate_series( 'Осень Маши', 2, 'ds', '', 'long', array( 'Сегодня ходила за хлебом и вернулась с пакетом' ) );
+$sent = $GLOBALS['vkt_calls'][0]['body']['messages'][0]['content'];
+$assert( array( 'Первый', 'Второй' ) === $series['posts'] && str_contains( $sent, 'от 1200 до 2000 знаков' ) && str_contains( $sent, 'Короче 1200 не пиши' ) && str_contains( $sent, '- Сегодня ходила за хлебом' ), 'Длина и уже написанное уходят в задание серии' );
+$GLOBALS['vkt_net'] = array( array( 'body' => json_encode( array( 'choices' => array( array( 'message' => array( 'content' => '{"posts":["Первый","Второй"]}' ) ) ) ) ) ) );
+VKT_AI::generate_series( 'Осень Маши', 2, 'ds', '', 'nonsense' );
+$assert( ! str_contains( end( $GLOBALS['vkt_calls'] )['body']['messages'][0]['content'], 'знаков с пробелами' ), 'Без длины — как раньше, по паспорту' );
 
 // Ключ удалили — модели картинок пропадают из списка.
 unset( $GLOBALS['options']['vkt_ai_keys']['openai']['key'] );

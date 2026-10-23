@@ -112,6 +112,9 @@
     // Открытая на правку запись из очереди: черновик живёт до «Сохранить».
     let seriesEdit = null;
     // Фото к записям серии: общий стиль, чем рисуем и идущий пакет.
+    // Длина постов серии: ключ VKT_AI::POST_LENGTHS, пусто — как в паспорте. Пачка — сколько таких постов помещается в один ответ модели.
+    const SERIES_LENGTHS = {'': ['Как в паспорте группы', 30], short: ['Короткие · 300–600 знаков', 30], medium: ['Средние · 600–1200 знаков', 10], long: ['Длинные · 1200–2000 знаков', 5], longread: ['Лонгрид · 2000–3500 знаков', 3]};
+    let seriesLength = '';
     let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false, persona: true}, seriesImageRun = null;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
@@ -145,7 +148,7 @@
     function persistDrafts() {
         if (!draftStorage) return;
         groupDraftsSave();
-        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesPrompt, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
+        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesPrompt, seriesLength, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
         // Хранилище может быть переполнено или запрещено — тогда работаем как раньше, в памяти вкладки.
         try { draftStorage.setItem(draftKey, JSON.stringify(snapshot)); } catch {}
     }
@@ -163,6 +166,7 @@
         if (plain(saved.seriesSetup).times !== undefined) seriesSetup = {span: saved.seriesSetup.span === 'month' ? 'month' : 'week', start: text(saved.seriesSetup.start), weekdays: list(saved.seriesSetup.weekdays).map(String), times: text(saved.seriesSetup.times)};
         seriesSlots = list(saved.seriesSlots).filter(slot => slot && typeof slot.at === 'string').map(slot => ({...slot, message: text(slot.message), attachments: text(slot.attachments), media: list(slot.media)}));
         seriesPrompt = text(saved.seriesPrompt);
+        seriesLength = Object.hasOwn(SERIES_LENGTHS, text(saved.seriesLength)) ? text(saved.seriesLength) : '';
         seriesGroup = Number(saved.seriesGroup) || 0;
         seriesTarget = text(saved.seriesTarget);
         seriesImage = {...seriesImage, ...plain(saved.seriesImage)};
@@ -670,6 +674,7 @@
                     <p class="vkt-help">${bound?.has_passport ? `Модель учтёт паспорт группы «${esc(bound.name)}» и её последние посты — темы не повторятся.` : `Модель учтёт последние посты группы. Паспорта у неё нет — ${button('Заполнить паспорт', 'group-open', `data-id="${Number(seriesGroup)}"`)}`}${Number(bound?.materials_count) ? ` Пишет по базе ведения группы — материалов: ${num(bound.materials_count)}.` : ''}</p>
                     ${modelPicker(state.settings.ai)}
                     <label>Тема серии<textarea name="prompt" data-series-prompt rows="4" maxlength="5000" placeholder="Например: неделя про доставку запчастей — каждый пост об одном возражении клиента">${esc(seriesPrompt)}</textarea></label>
+                    <label>Длина постов<select data-series-length>${Object.entries(SERIES_LENGTHS).map(([id, [title]]) => `<option value="${esc(id)}" ${id === seriesLength ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select><small class="vkt-help">${seriesLength && SERIES_LENGTHS[seriesLength][1] < seriesSlots.length ? `Длинные посты пишутся пачками по ${SERIES_LENGTHS[seriesLength][1]}: в один ответ модели больше не помещается. Каждая пачка — один текст лимита, темы между пачками не повторяются.` : 'Модели пишут короче, чем просят: с выбранной длиной нижняя граница для них обязательна.'}</small></label>
                     <div class="vkt-form-actions"><button class="vkt-button" ${seriesSlots.length ? '' : 'disabled'}>${icon('fire')} Сгенерировать ${seriesSlots.length || ''} текстов</button></div>
                     ${quotaNote(state.settings.ai)}
                     <p class="vkt-help">${seriesSlots.length ? 'Заполнятся только пустые слоты — написанное руками останется.' : 'Сначала постройте сетку: модели нужно знать количество.'}</p>
@@ -3208,10 +3213,27 @@
                     seriesPrompt = values.prompt || '';
                     const empties = seriesSlots.filter(slot => !slot.message.trim());
                     const targets = empties.length ? empties : seriesSlots;
-                    const result = await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: targets.length, group_id: Number(seriesGroup)});
-                    const texts = result.posts || [];
-                    targets.forEach((slot, index) => { if (texts[index]) slot.message = String(texts[index]); });
+                    // Длинные посты — пачками: следующая получает начала уже написанных, чтобы темы не повторялись.
+                    const batch = SERIES_LENGTHS[seriesLength]?.[1] || targets.length;
+                    const texts = [];
+                    let failure = null;
+                    const progress = form.querySelector('.vkt-help:last-of-type');
+                    for (let from = 0; from < targets.length; from += batch) {
+                        if (targets.length > batch && progress) progress.textContent = `Пишем тексты ${from + 1}–${Math.min(from + batch, targets.length)} из ${targets.length}… Не закрывайте вкладку.`;
+                        let posts = [];
+                        try {
+                            posts = (await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: Math.min(batch, targets.length - from), group_id: Number(seriesGroup), length: seriesLength, written: texts.map(text => text.slice(0, 150))})).posts || [];
+                        } catch (error) {
+                            // Написанное пачками раньше не теряем: оно уже в слотах.
+                            if (!texts.length) throw error;
+                            failure = error;
+                            break;
+                        }
+                        posts.forEach((text, index) => { if (targets[from + index]) { targets[from + index].message = String(text); texts.push(String(text)); } });
+                        if (posts.length < Math.min(batch, targets.length - from)) break;
+                    }
                     render();
+                    if (failure) { toast(`Записано ${texts.length} текстов из ${targets.length}. Ошибка: ${failure.message}`, true, failure.fix); return; }
                     toast(texts.length < targets.length
                         ? `Модель вернула ${texts.length} текстов из ${targets.length}: остальные слоты остались пустыми.`
                         : `Готово: ${texts.length} текстов разложены по слотам.`, texts.length < targets.length);
@@ -3549,6 +3571,7 @@
         if (event.target.matches('[data-ai-model]')) { aiModel = event.target.value; return; }
         if (event.target.matches('[data-series-group]')) { seriesGroup = Number(event.target.value) || 0; seriesTarget = ''; render(); return; }
         if (event.target.matches('[data-series-target]')) { seriesTarget = event.target.value; render(); return; }
+        if (event.target.matches('[data-series-length]')) { seriesLength = Object.hasOwn(SERIES_LENGTHS, event.target.value) ? event.target.value : ''; scheduleDrafts(); render(); return; }
         if (event.target.matches('[data-series-image]')) {
             const key = event.target.dataset.seriesImage;
             seriesImage[key] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
