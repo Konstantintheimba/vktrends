@@ -137,6 +137,7 @@ final class VKT_Groups {
             // Паспорт, материалы и сводку список не везёт: они большие и нужны только в карточке группы.
             $group['is_news'] = VKT_News::settings( $group['news'] )['enabled'];
             $group['has_persona'] = self::has_persona( $group );
+            $group['has_visual'] = '' !== self::passport_visual( (string) $group['passport'] );
             unset( $group['passport'], $group['persona'], $group['materials'], $group['news'] );
             $group['stats'] = self::stats_summary( $group['stats'] );
             $group['best_times'] = self::digest( $group['group_id'] )['best_hours'];
@@ -319,12 +320,16 @@ final class VKT_Groups {
      * Что знает о картинках группы рисование: персонаж, его мир и строка
      * «Визуал» из паспорта. Паспорт целиком в промпт картинки не идёт — тон и
      * призывы модели рисования только мешают. Какие предметы мира попадут в
-     * кадр, решает VKT_Images по тексту записи.
+     * кадр, решает VKT_Images по тексту записи. $card и $visual — переключатели
+     * из окна записи: выключенная часть в промпт не идёт.
      */
-    public static function image_brief( $id ) {
+    public static function image_brief( $id, $card = true, $visual = true ) {
         $group = self::group( $id );
         if ( is_wp_error( $group ) ) {
             return $group;
+        }
+        if ( ! $card ) {
+            $group['persona'] = '';
         }
         $alive = static fn( $ids ) => array_values( array_filter( $ids, static function ( $photo ) {
             $item = VKT_Media::item( $photo );
@@ -336,7 +341,7 @@ final class VKT_Groups {
             $item['photos'] = $alive( $item['photos'] );
         }
         unset( $item );
-        $persona['visual'] = self::passport_visual( (string) ( $group['passport'] ?? '' ) );
+        $persona['visual'] = $visual ? self::passport_visual( (string) ( $group['passport'] ?? '' ) ) : '';
         return '' === $persona['look'] && ! $persona['photos'] && ! $persona['items'] && '' === $persona['visual'] ? null : $persona;
     }
 

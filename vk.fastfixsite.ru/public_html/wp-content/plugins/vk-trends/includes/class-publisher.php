@@ -552,8 +552,9 @@ final class VKT_Publisher {
         $groups = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . VKT_Store::table( 'publishing_groups' ) . ' WHERE user_id=%d ORDER BY enabled DESC,can_post DESC,name,id LIMIT 1000', $user_id ), ARRAY_A );
         // Паспорт, материалы и охваты живут в карточке группы, секреты Callback — на сервере: списку они только утяжеляют ответ.
         foreach ( $groups as &$group ) {
-            // Серии нужно только знать, есть ли персонаж: тогда рисование предлагает его.
+            // Серии нужно только знать, есть ли персонаж и «Визуал» в паспорте: тогда рисование предлагает их.
             $group['has_persona'] = VKT_Groups::has_persona( $group );
+            $group['has_visual'] = '' !== VKT_Groups::passport_visual( (string) ( $group['passport'] ?? '' ) );
             unset( $group['passport'], $group['persona'], $group['materials'], $group['news'], $group['stats'], $group['callback_code'], $group['callback_secret'] );
         }
         unset( $group );

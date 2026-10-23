@@ -234,6 +234,9 @@ $act( $a, 'group_passport', array( 'id' => $g1, 'passport' => "# Паспорт\
 wp_set_current_user( $a );
 $brief = VKT_Groups::image_brief( $g1 );
 $ok( array( $photo ) === $brief['photos'] && 'фото на телефон, обычная квартира' === $brief['visual'] && 'женщина 34 лет, русые волосы' === $brief['look'], 'Бриф рисования: фото, внешность и «Визуал» паспорта' );
+$only_visual = VKT_Groups::image_brief( $g1, false, true );
+$only_card = VKT_Groups::image_brief( $g1, true, false );
+$ok( array() === $only_visual['photos'] && '' === $only_visual['look'] && 'фото на телефон, обычная квартира' === $only_visual['visual'] && '' === $only_card['visual'] && array( $photo ) === $only_card['photos'] && null === VKT_Groups::image_brief( $g1, false, false ), 'Выключенная пилюля — её части в брифе нет' );
 // Мир персонажа: предметы с фото, без названия — отказ, чужое фото у предмета — отказ.
 $ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'items' => array( array( 'look' => 'серая', 'photos' => array() ) ) ) ) ), 'Предмет без названия не сохраняется' );
 $ok( is_wp_error( $act( $a, 'group_persona', array( 'id' => $g1, 'items' => array( array( 'title' => 'Кошка', 'photos' => array( $foreign ) ) ) ) ) ), 'Чужое фото у предмета не принимается' );
@@ -261,6 +264,7 @@ wp_delete_attachment( $big_id, true );
 $listed = array_values( array_filter( VKT_Publisher::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
 $card = array_values( array_filter( VKT_Groups::state()['groups'], static fn( $group ) => (int) $group['id'] === $g1 ) )[0];
 $ok( $listed['has_persona'] && ! array_key_exists( 'persona', $listed ) && $card['has_persona'] && ! array_key_exists( 'persona', $card ), 'Списки групп знают о персонаже, но не везут его' );
+$ok( $listed['has_visual'] && $card['has_visual'] && ! array_key_exists( 'passport', $listed ), 'Списки групп знают о «Визуале» паспорта, но паспорт не везут' );
 wp_delete_attachment( $photo, true );
 $ok( array() === VKT_Groups::image_brief( $g1 )['photos'] && array() === $act( $a, 'group_detail', array( 'id' => $g1 ) )['persona']['photos'] && array() === VKT_Groups::image_brief( $g1 )['items'][0]['photos'], 'Удалённое из медиатеки фото выпадает из персонажа и его мира' );
 wp_delete_attachment( $foreign, true );

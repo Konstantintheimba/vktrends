@@ -664,3 +664,9 @@ button.vkt-persona-add { font: inherit; font-size: 12px; }
 .vkt-persona-item { border: 1px solid var(--vkt-line); border-radius: 12px; padding: 14px; margin: 0; display: grid; gap: 12px; }
 .vkt-persona-item .vkt-persona-photo, .vkt-persona-item .vkt-persona-add { width: 80px; height: 80px; }
 .vkt-persona-add.is-busy { opacity: .55; pointer-events: none; }
+/* Из чего собирается промпт картинки: пилюли-переключатели над «Дополнением к промпту». */
+.vkt-prompt-parts { display: grid; gap: 7px; }
+.vkt-prompt-parts > span { font-size: 12px; font-weight: 600; color: var(--vkt-ink); }
+.vkt-prompt-part { position: relative; cursor: pointer; user-select: none; }
+.vkt-prompt-part input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.vkt-prompt-part:has(input:focus-visible) { outline: 2px solid #bcd3fb; outline-offset: 2px; }

@@ -612,8 +612,11 @@ final class VKT_Plugin {
                 return self::metered( 'text', static fn() => VKT_AI::generate_shop_post( $brief, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
             }
             case 'image_start': {
-                // Рисунок к записи группы: персонаж и визуал из её паспорта, если не выключены галочкой.
-                $persona = ! empty( $data['persona'] ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'] ) : null;
+                // Рисунок к записи группы: карточка персонажа и «Визуал» паспорта, если не выключены.
+                // Старая вкладка шлёт только persona — тогда визуал идёт вместе с карточкой, как раньше.
+                $card = ! empty( $data['persona'] );
+                $visual = array_key_exists( 'visual', $data ) ? ! empty( $data['visual'] ) : $card;
+                $persona = ( $card || $visual ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'], $card, $visual ) : null;
                 if ( is_wp_error( $persona ) ) { return $persona; }
                 return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona ) );
             }

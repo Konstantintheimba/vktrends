@@ -115,7 +115,7 @@
     // Длина постов серии: ключ VKT_AI::POST_LENGTHS, пусто — как в паспорте. Пачка — сколько таких постов помещается в один ответ модели.
     const SERIES_LENGTHS = {'': ['Как в паспорте группы', 30], short: ['Короткие · 300–600 знаков', 30], medium: ['Средние · 600–1200 знаков', 10], long: ['Длинные · 1200–2000 знаков', 5], longread: ['Лонгрид · 2000–3500 знаков', 3]};
     let seriesLength = '';
-    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false, persona: true}, seriesImageRun = null;
+    let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false, persona: true, visual: true, post: true}, seriesImageRun = null;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
@@ -505,34 +505,48 @@
     const imagesReady = () => !!publishingData?.status?.media_native && imageProviders().length > 0;
     // Стороны кратны 32 — иначе BFL отвечает 422.
     const fluxSizes = {portrait: [768, 1024], square: [1024, 1024], landscape: [1344, 768], story: [768, 1344]};
-    function seriesImagePrompt(text, own = '') {
+    // Дополнение автора идёт к сюжету поста, а не вместо него: «вечер, крупный план» уточняет кадр,
+    // а карточку персонажа и «Визуал» паспорта к этому добавит сервер. Без текста поста дополнение и есть сюжет.
+    function seriesImagePrompt(text, own = '', post = true) {
         const style = seriesImage.style.trim();
+        const body = post ? String(text || '').trim().slice(0, 1800) : '';
+        own = String(own || '').trim();
         return [
-            own.trim() || `Иллюстрация к посту в соцсети. Содержание поста: ${String(text || '').trim().slice(0, 1800)}`,
+            body ? `Иллюстрация к посту в соцсети. Содержание поста: ${body}` : '',
+            own ? (body ? `Дополнительно к сюжету — это важнее текста поста: ${own}` : own) : '',
             style ? `Стиль: ${style}` : '',
             'Без текста, надписей и логотипов на изображении.',
         ].filter(Boolean).join('\n\n').slice(0, 5000);
     }
-    // Кнопка «Нарисовать» в окне записи вместе с выбором модели: выбор общий с пачкой серии.
-    function drawRow(label, command, attr = '') {
+    // Кнопка «Нарисовать» в окне записи: из чего собирается промпт, дополнение к нему и выбор модели (общий с пачкой серии).
+    function drawRow(label, command, attr = '', target = null) {
         if (!imagesReady()) return '';
         const providers = imageProviders();
         const pick = providers.length > 1 ? `<label class="vkt-model-pick">Чем рисуем<select data-series-image="provider">${providers.map(([id, title]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>` : '';
-        return `<div class="vkt-ai-row">${pick}${button(`${icon('fire')} ${label}`, command, attr)}</div>${personaToggle()}`;
+        const own = target ? `<label>Дополнение к промпту<textarea name="image_prompt" rows="2" maxlength="3000" placeholder="Например: крупный план, вечер, в руках чашка какао">${esc(target.imagePrompt || '')}</textarea><small class="vkt-help">Добавляется к выбранному выше и уточняет кадр. Без текста поста дополнение и есть сюжет.</small></label>` : '';
+        return `${promptParts(seriesGroupRow(), !!target)}${own}<div class="vkt-ai-row">${pick}${button(`${icon('fire')} ${label}`, command, attr)}</div>`;
     }
     // Группа серии в списке «Автопостинга»: знает, заведён ли у неё персонаж для фото.
     const seriesGroupRow = () => (publishingData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
     // imageProviders() заодно поправит выбор, если сохранённой модели уже нет в списке.
     const providerRefs = () => { imageProviders(); return Number((state?.settings?.images || []).find(item => item.id === seriesImage.provider)?.refs) || 0; };
-    // Галочка «Персонаж из паспорта» и честная подсказка, если выбранная модель фото-образцы не берёт.
-    function personaToggle(group = seriesGroupRow()) {
-        if (!group?.has_persona) return '';
+    // Из чего собирается промпт картинки — переключатели-пилюли. Пункт есть, только если группе есть что дать:
+    // карточка персонажа, строка «Визуал» в паспорте. «Текст поста» — только в окне записи: пачке без него рисовать не по чему.
+    // Под карточкой — честная подсказка, если выбранная модель фото-образцы не берёт.
+    function promptParts(group = seriesGroupRow(), post = false) {
+        const part = (key, label, hint) => `<label class="vkt-chip-button vkt-prompt-part ${seriesImage[key] ? 'is-active' : ''}" title="${esc(hint)}"><input type="checkbox" data-series-image="${key}" ${seriesImage[key] ? 'checked' : ''}>${label}</label>`;
+        const parts = [
+            group?.has_persona ? part('persona', 'Карточка персонажа', 'Фото и внешность героя, его места, вещи и питомцы') : '',
+            group?.has_visual ? part('visual', 'Визуал паспорта', 'Строка «Визуал» из паспорта группы') : '',
+            post ? part('post', 'Текст поста', 'Сюжет кадра — из текста записи') : '',
+        ].filter(Boolean);
+        if (!parts.length) return '';
         const note = providerRefs() ? 'Фото персонажа уйдут образцом — модель нарисует того же человека.' : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите FLUX.2 или OpenAI gpt-image.';
-        return `<label class="vkt-check"><input type="checkbox" data-series-image="persona" ${seriesImage.persona ? 'checked' : ''}>Персонаж из паспорта группы</label><small class="vkt-help">${note}</small>`;
+        return `<div class="vkt-prompt-parts"><span>Что идёт в промпт</span><div class="vkt-chips">${parts.join('')}</div>${group?.has_persona ? `<small class="vkt-help" data-persona-note ${seriesImage.persona ? '' : 'hidden'}>${note}</small>` : ''}</div>`;
     }
     // Рисунок к записи группы получает её персонажа и «Визуал» из паспорта — их подставляет сервер.
     async function drawImage(prompt, report = null, group = seriesGroup) {
-        const started = await act('image_start', {provider: seriesImage.provider, prompt, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona});
+        const started = await act('image_start', {provider: seriesImage.provider, prompt, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona, visual: !!seriesImage.visual});
         // Одни поставщики отдают картинку сразу, другие — задачу, которую надо дождаться.
         return started.status === 'done' ? started.media : (await fluxAwait(started.id, report, 'image_status')).media;
     }
@@ -578,7 +592,7 @@
                 <label>Чем рисуем<select data-series-image="provider">${providers.map(([id, label]) => `<option value="${esc(id)}" ${id === seriesImage.provider ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
                 <label>Формат<select data-series-image="ratio">${ratios.map(value => `<option value="${esc(value)}" ${value === seriesImage.ratio ? 'selected' : ''}>${esc(ratioLabels[value] || value)}</option>`).join('')}</select></label>
             </div>
-            ${personaToggle()}
+            ${promptParts()}
             <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label><label class="vkt-check"><input type="checkbox" data-series-image="extra" ${seriesImage.extra ? 'checked' : ''}>Добавлять и в слоты, где фото уже есть</label></div>
             <div class="vkt-form-actions">${run ? button('Остановить', 'series-images-stop') : `<button class="vkt-button">${icon('fire')} Нарисовать фото · <span data-series-images-count>${seriesImageTargets().length}</span></button>`}</div>
             <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов; с галочкой «Добавлять и в слоты, где фото уже есть» рисунок по теме записи встанет после уже прикреплённых фото. Убрать или переставить его можно в окне записи.'}</p>
@@ -901,7 +915,6 @@
         finally { trigger.disabled = false; }
         reopenSeriesDialog();
     }
-    const imageField = value => imagesReady() ? `<label>Промпт для фото<input name="image_prompt" value="${esc(value || '')}" maxlength="3000" placeholder="Пусто — по тексту записи и общему стилю"></label>` : '';
 
     // Товарный пост по методике VK Shops: нужен одной-двум записям серии, поэтому живёт в окне записи.
     function shopBox(target, attr = '') {
@@ -954,11 +967,10 @@
                 ${rewriteButton(`data-index="${Number(index)}"`, slot)}
                 ${shopBox(slot, `data-index="${Number(index)}"`)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(slot.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
-                ${imageField(slot.imagePrompt)}
                 ${sourceBox(slot)}
                 ${designBox(slot)}
                 ${sortableChips(slot.media)}
-                ${drawRow(slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-slot-image', `data-index="${Number(index)}"`)}
+                ${drawRow(slot.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-slot-image', `data-index="${Number(index)}"`, slot)}
                 <div class="vkt-media-actions">${button(`${icon('layers')} Из медиатеки`, 'series-media', `data-index="${Number(index)}"`)}${slot.media.length ? button('Эти файлы во все слоты', 'series-apply-media', `data-index="${Number(index)}"`) : ''}${button('Очистить слот', 'series-slot-clear', `data-index="${Number(index)}"`)}${button('Убрать слот', 'series-slot-remove', `data-index="${Number(index)}"`)}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить слот</button></div>
@@ -989,11 +1001,10 @@
                 ${rewriteButton('', draft)}
                 ${shopBox(draft)}
                 <label>Вложения VK или ссылка<input name="attachments" class="vkt-code-input" value="${esc(draft.attachments)}" placeholder="photo-123_456 или https://example.com"></label>
-                ${imageField(draft.imagePrompt)}
                 ${sourceBox(draft)}
                 ${designBox(draft)}
                 ${sortableChips(draft.media)}
-                ${drawRow(draft.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-post-image')}
+                ${drawRow(draft.media.length ? 'Нарисовать ещё по теме записи' : 'Нарисовать фото по теме записи', 'series-post-image', '', draft)}
                 <div class="vkt-media-actions">${publishingData?.status?.media_native ? button(`${icon('layers')} Из медиатеки`, 'series-post-media') : ''}</div>
                 <p class="vkt-help" id="vkt-series-dialog-progress" hidden></p>
                 <div class="vkt-form-actions"><button class="vkt-button vkt-primary">Сохранить</button>${button('Убрать из серии', 'series-post-delete', `data-id="${Number(post.id)}"`)}</div>
@@ -1006,14 +1017,14 @@
         const slot = trigger.dataset.index !== undefined ? seriesSlots[Number(trigger.dataset.index)] : null;
         const target = slot || seriesEdit?.draft;
         if (!target) return;
-        if (!String(target.message || '').trim() && !String(target.imagePrompt || '').trim()) { toast('Нужен текст записи или свой промпт для фото.', true); return; }
+        if (!(seriesImage.post && String(target.message || '').trim()) && !String(target.imagePrompt || '').trim()) { toast(seriesImage.post ? 'Нужен текст записи или дополнение к промпту.' : '«Текст поста» выключен — впишите, что рисовать, в «Дополнение к промпту».', true); return; }
         if (target.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return; }
         const note = $('#vkt-series-dialog-progress');
         const say = text => { if (note) { note.hidden = false; note.textContent = text; } };
         trigger.disabled = true;
         say('Рисуем… Обычно это 10–40 секунд.');
         try {
-            const media = await drawImage(seriesImagePrompt(target.message, target.imagePrompt || ''), text => say(text));
+            const media = await drawImage(seriesImagePrompt(target.message, target.imagePrompt || '', seriesImage.post), text => say(text));
             target.media.push(media);
             toast(slot ? 'Фото прикреплено к слоту.' : 'Фото прикреплено. Нажмите «Сохранить», чтобы запись в очереди его получила.');
         } catch (error) { toast(error.message, true, error.fix); }
@@ -3581,6 +3592,11 @@
                 // В окне записи подсказка под выбором тоже зависит от модели.
                 if (dialog.open && seriesEdit) seriesPostDialog(0, false); else if (dialog.open && null !== seriesSlotTarget && seriesSlots[seriesSlotTarget]) seriesSlotDialog(seriesSlotTarget);
                 return;
+            }
+            // Пилюли «Что идёт в промпт» есть и в панели серии, и в окне записи — держим их одинаковыми без перерисовки, чтобы не терять набранное.
+            if (event.target.closest('.vkt-prompt-part')) {
+                document.querySelectorAll(`[data-series-image="${key}"]`).forEach(input => { input.checked = !!seriesImage[key]; input.closest('.vkt-prompt-part')?.classList.toggle('is-active', !!seriesImage[key]); });
+                document.querySelectorAll('[data-persona-note]').forEach(note => { note.hidden = !seriesImage.persona; });
             }
             const count = $('[data-series-images-count]');
             if (count) count.textContent = seriesImageTargets().length;
