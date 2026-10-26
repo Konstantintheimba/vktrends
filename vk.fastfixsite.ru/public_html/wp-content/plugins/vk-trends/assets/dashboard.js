@@ -242,7 +242,12 @@
     }
     async function parse(response) {
         let payload;
-        try { payload = await response.json(); } catch { throw new Error('Сервер вернул неожиданный ответ. Проверьте журнал PHP и доступность REST API.'); }
+        try { payload = await response.json(); } catch {
+            const error = new Error(`Сервер вернул неожиданный ответ${response.ok ? '' : ` (${response.status})`}. Проверьте журнал PHP и доступность REST API.`);
+            // Не JSON — страница хостинга вместо ответа сайта: чаще всего прокси не дождался долгого запроса.
+            error.gateway = true;
+            throw error;
+        }
         if (!response.ok) {
             const error = new Error(payload.message || 'Не удалось выполнить запрос.');
             error.payload = payload;
@@ -261,6 +266,23 @@
         return parse(await fetch(restUrl('media-upload'), {method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: {'X-WP-Nonce': config.nonce}, body}));
     }
     const act = (action, values = {}) => request('action', {action, ...values});
+    // Долгий запрос к модели: прокси хостинга рвёт соединение через минуту, а сервер дописывает
+    // ответ и хранит его под номером задания. При обрыве забираем ответ оттуда.
+    async function actLong(action, values = {}) {
+        const job = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+        const lost = error => error.gateway || error instanceof TypeError;
+        try { return await act(action, {...values, job}); }
+        catch (error) { if (!lost(error)) throw error; }
+        const until = Date.now() + 5 * 60000;
+        while (Date.now() < until) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            try {
+                const result = await act('job_result', {job});
+                if (!result.pending) return result;
+            } catch (error) { if (!lost(error)) throw error; }
+        }
+        throw new Error('Модель не ответила за 5 минут. Посмотрите «Журнал» и повторите генерацию.');
+    }
     async function load(renderView = true) {
         const sequence = ++requestSequence;
         const result = await request(`state?page=${page}&search=${encodeURIComponent(localSearch)}&sort=${sort}`);
@@ -3367,7 +3389,7 @@
                         if (targets.length > batch && progress) progress.textContent = `Пишем тексты ${from + 1}–${Math.min(from + batch, targets.length)} из ${targets.length}… Не закрывайте вкладку.`;
                         let posts = [];
                         try {
-                            posts = (await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: Math.min(batch, targets.length - from), group_id: group, length: seriesLength, written: texts.map(text => text.slice(0, 150))})).posts || [];
+                            posts = (await actLong('series_generate', {model: aiModel, prompt: seriesPrompt, count: Math.min(batch, targets.length - from), group_id: group, length: seriesLength, written: texts.map(text => text.slice(0, 150))})).posts || [];
                         } catch (error) {
                             // Написанное пачками раньше не теряем: оно уже в слотах.
                             if (!texts.length) throw error;

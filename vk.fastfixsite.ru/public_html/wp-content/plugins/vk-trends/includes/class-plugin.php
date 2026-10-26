@@ -604,7 +604,14 @@ final class VKT_Plugin {
                 return VKT_API::probe_matrix();
             case 'series_generate':
                 // Серия пишется под своё сообщество: паспорт и история постов уходят в модель.
-                return self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ), $data['length'] ?? '', $data['written'] ?? array() ) );
+                return self::job( $data['job'] ?? '', static fn() => self::metered( 'text', static fn() => VKT_AI::generate_series( $data['prompt'] ?? '', $data['count'] ?? 0, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ), $data['length'] ?? '', $data['written'] ?? array() ) ) );
+            case 'job_result': {
+                $key = self::job_key( $data['job'] ?? '' );
+                $stored = $key ? get_transient( $key ) : false;
+                if ( ! is_array( $stored ) ) { return self::error( 'Ответ модели не сохранился: сервер прервал запрос раньше, чем она ответила. Повторите генерацию.', 404 ); }
+                if ( isset( $stored['error'] ) ) { return new WP_Error( $stored['error']['code'], $stored['error']['message'], $stored['error']['data'] ); }
+                return $stored;
+            }
             case 'series_queue':
                 return VKT_Publisher::create_series( is_array( $data ) ? $data : array() );
             case 'series_cancel':
@@ -859,6 +866,36 @@ final class VKT_Plugin {
             VKT_Account::ai_spend( $kind );
         }
         return $result;
+    }
+
+    /**
+     * Долгий запрос к модели под номером задания. Прокси хостинга рвёт
+     * соединение примерно через минуту и отдаёт браузеру 504, а PHP дописывает
+     * ответ до конца — без хранения он пропадал, хотя в журнале «Успешно».
+     * Поэтому ответ (или ошибка) кладётся в transient, и вкладка забирает его
+     * действием job_result. Старая вкладка номер не шлёт — работает как раньше.
+     */
+    private static function job( $job, callable $run ) {
+        $key = self::job_key( $job );
+        if ( ! $key ) {
+            return $run();
+        }
+        ignore_user_abort( true );
+        if ( function_exists( 'set_time_limit' ) ) {
+            set_time_limit( 300 );
+        }
+        set_transient( $key, array( 'pending' => true ), 15 * MINUTE_IN_SECONDS );
+        $result = $run();
+        $stored = is_wp_error( $result )
+            ? array( 'error' => array( 'code' => $result->get_error_code(), 'message' => $result->get_error_message(), 'data' => $result->get_error_data() ) )
+            : $result;
+        set_transient( $key, $stored, 15 * MINUTE_IN_SECONDS );
+        return $result;
+    }
+
+    /** Ключ transient задания: номер привязан к пользователю, чужой ответ не забрать. */
+    private static function job_key( $job ) {
+        return is_string( $job ) && preg_match( '/^[a-z0-9]{8,32}$/', $job ) && get_current_user_id() ? 'vkt_job_' . get_current_user_id() . '_' . $job : '';
     }
 
     /** ID модели для текстов из запроса: пустой — модель по умолчанию. */
