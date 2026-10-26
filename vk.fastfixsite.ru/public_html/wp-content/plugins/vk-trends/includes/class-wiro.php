@@ -28,6 +28,10 @@ final class VKT_Wiro {
         'z-image-pro' => array( 'title' => 'Z Image Pro Uncensored', 'slug' => 'wiro-partners/z-image-pro-uncensored', 'refs' => 0, 'seed' => true, 'hint' => '$0,02 за картинку, 2K, только по тексту' ),
         // Seed у Seedream в Tool/Detail нет — не отправляем.
         'seedream-4-5' => array( 'title' => 'Seedream 4.5 Uncensored', 'slug' => 'bytedance/seedream-v4-5-uncensored', 'refs' => 4, 'seed' => false, 'hint' => '$0,04 за картинку, 2K, берёт до 4 фото персонажа образцами' ),
+        // Поля те же, что у 4.5 (Tool/Detail 27.10.2026); разрешения 2k/3k, пропорции — тот же набор.
+        'seedream-5-lite' => array( 'title' => 'Seedream 5 Lite Uncensored', 'slug' => 'bytedance/seedream-v5-lite-uncensored', 'refs' => 4, 'seed' => false, 'hint' => '$0,035 за картинку, 2K, берёт до 4 фото персонажа образцами' ),
+        // Pro берёт до 10 образцов — хватает на лицо и вещи мира персонажа, как у FLUX.2. Поля другие: см. payload().
+        'seedream-5-pro' => array( 'title' => 'Seedream 5 Pro Uncensored', 'slug' => 'bytedance/seedream-v5-pro-uncensored', 'refs' => 8, 'seed' => false, 'hint' => '$0,09 за картинку, 2K, берёт до 8 образцов: лицо и вещи персонажа' ),
     );
     // На этих стадиях задача ещё ждёт машину, дальше — рисует.
     const QUEUED = array( 'task_queue', 'task_accept', 'task_preprocess_start', 'task_preprocess_end', 'task_assign' );
@@ -263,7 +267,11 @@ final class VKT_Wiro {
     public static function payload( $model, $prompt, $ratio, $seed = 0 ) {
         $ratio = self::RATIOS[ $ratio ] ?? self::RATIOS['portrait'];
         $seed = min( 2147483647, absint( $seed ) );
-        if ( 'seedream-4-5' === $model ) {
+        if ( 'seedream-5-pro' === $model ) {
+            // У Pro картинка всегда одна — поля maxImages нет; формат файла задаём jpeg, png весит вчетверо больше.
+            return array( 'prompt' => $prompt, 'resolution' => '2k', 'aspectRatio' => $ratio, 'outputFormat' => 'jpeg', 'watermark' => 'false' );
+        }
+        if ( str_starts_with( $model, 'seedream' ) ) {
             // Пропорции задаём сами: иначе Seedream возьмёт их у первого образца — портрета лица.
             return array( 'prompt' => $prompt, 'resolution' => '2k', 'aspectRatio' => $ratio, 'maxImages' => 1, 'watermark' => 'false' );
         }

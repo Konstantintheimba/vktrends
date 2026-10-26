@@ -576,6 +576,10 @@
     const seriesGroupRow = () => (publishingData?.groups || []).find(group => Number(group.id) === Number(seriesGroup));
     // imageProviders() заодно поправит выбор, если сохранённой модели уже нет в списке.
     const providerRefs = () => { imageProviders(); return Number((state?.settings?.images || []).find(item => item.id === seriesImage.provider)?.refs) || 0; };
+    const providerTitle = () => (state?.settings?.images || []).find(item => item.id === seriesImage.provider)?.title || seriesImage.provider;
+    // Карточка с фото лица включена, а модель образцов не берёт — нарисует чужое лицо.
+    const strangerRisk = (group = seriesGroupRow()) => !!seriesImage.persona && Number(group?.persona_photos) > 0 && !providerRefs();
+    const strangerOk = (group = seriesGroupRow()) => !strangerRisk(group) || confirm(`«${providerTitle()}» фото персонажа не принимает: в кадре будет незнакомый человек, похожий только по описанию. Для того же лица выберите Seedream (Wiro), FLUX.2 или OpenAI gpt-image.\n\nРисовать всё равно?`);
     // Из чего собирается промпт картинки — переключатели-пилюли. Пункт есть, только если группе есть что дать:
     // карточка персонажа, строка «Визуал» в паспорте. «Текст поста» — только в окне записи: пачке без него рисовать не по чему.
     // Под карточкой — честная подсказка, если выбранная модель фото-образцы не берёт.
@@ -587,8 +591,10 @@
             post ? part('post', 'Текст поста', 'Сюжет кадра — из текста записи') : '',
         ].filter(Boolean);
         if (!parts.length) return '';
-        const note = providerRefs() ? 'Фото персонажа уйдут образцом — модель нарисует того же человека.' : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите FLUX.2, OpenAI gpt-image или Seedream через Wiro.';
-        return `<div class="vkt-prompt-parts"><span>Что идёт в промпт</span><div class="vkt-chips">${parts.join('')}</div>${group?.has_persona ? `<small class="vkt-help" data-persona-note ${seriesImage.persona ? '' : 'hidden'}>${note}</small>` : ''}</div>`;
+        const note = providerRefs() ? `Фото персонажа уйдут образцом (до ${providerRefs()}) — модель нарисует того же человека.` : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите Seedream (Wiro), FLUX.2 или OpenAI gpt-image.';
+        // Фото лица есть, а модель их не берёт — в кадре будет незнакомец: это не подсказка, а предупреждение.
+        const stranger = strangerRisk(group);
+        return `<div class="vkt-prompt-parts"><span>Что идёт в промпт</span><div class="vkt-chips">${parts.join('')}</div>${group?.has_persona ? `<small class="${stranger ? 'vkt-info vkt-info-warning' : 'vkt-help'}" data-persona-note ${seriesImage.persona ? '' : 'hidden'}>${stranger ? `«${esc(providerTitle())}» фото персонажа не принимает: в кадре будет незнакомый человек, похожий только по описанию. Выберите в «Чем рисуем» Seedream (Wiro), FLUX.2 или OpenAI gpt-image.` : note}</small>` : ''}</div>`;
     }
     // Рисунок к записи группы получает её персонажа и «Визуал» из паспорта — их подставляет сервер.
     // Wiro на малом балансе держит одну задачу за раз: «занят» — это очередь, а не ошибка. Ждём и ставим снова.
@@ -663,6 +669,7 @@
         if (seriesImageRun) return;
         const targets = seriesImageTargets();
         if (!targets.length) { toast('Нечего рисовать: нужны записи с текстом и без файлов.', true); return; }
+        if (!strangerOk()) return;
         if (!confirm(`Нарисовать ${targets.length} картинок и прикрепить их к записям?`)) return;
         const run = seriesImageRun = {total: targets.length, done: 0, failed: 0, stop: false, error: ''};
         const group = Number(seriesGroup);
@@ -1082,6 +1089,7 @@
         if (!target) return;
         if (!(seriesImage.post && String(target.message || '').trim()) && !String(target.imagePrompt || '').trim()) { toast(seriesImage.post ? 'Нужен текст записи или дополнение к промпту.' : '«Текст поста» выключен — впишите, что рисовать, в «Дополнение к промпту».', true); return; }
         if (target.media.length >= 10) { toast('VK принимает не больше 10 вложений в одной записи.', true); return; }
+        if (!strangerOk()) return;
         const note = $('#vkt-series-dialog-progress');
         const say = text => { if (note) { note.hidden = false; note.textContent = text; } };
         trigger.disabled = true;

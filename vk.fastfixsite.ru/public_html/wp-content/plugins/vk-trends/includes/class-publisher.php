@@ -554,6 +554,8 @@ final class VKT_Publisher {
         foreach ( $groups as &$group ) {
             // Серии нужно только знать, есть ли персонаж и «Визуал» в паспорте: тогда рисование предлагает их.
             $group['has_persona'] = VKT_Groups::has_persona( $group );
+            // Сколько фото лица в карточке: модель без образцов нарисует вместо героя незнакомца — интерфейс предупредит.
+            $group['persona_photos'] = count( VKT_Groups::persona( $group )['photos'] );
             $group['has_visual'] = '' !== VKT_Groups::passport_visual( (string) ( $group['passport'] ?? '' ) );
             unset( $group['passport'], $group['persona'], $group['materials'], $group['news'], $group['stats'], $group['callback_code'], $group['callback_secret'] );
         }

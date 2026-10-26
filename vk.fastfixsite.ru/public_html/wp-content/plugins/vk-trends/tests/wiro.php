@@ -119,7 +119,9 @@ $assert( array( 'prompt' => 'кот', 'resolution' => '2k', 'ratio' => '3:4', 'p
 $assert( '9:16' === VKT_Wiro::payload( 'z-image-pro', 'кот', 'story' )['ratio'] && '3:4' === VKT_Wiro::payload( 'z-image-pro', 'кот', 'нет' )['ratio'], 'Неизвестный формат — вертикаль 3:4' );
 $seedream = VKT_Wiro::payload( 'seedream-4-5', 'кот', 'landscape' );
 $assert( '16:9' === $seedream['aspectRatio'] && 1 === $seedream['maxImages'] && 'false' === $seedream['watermark'] && ! isset( $seedream['inputImage'] ), 'Seedream: одна картинка, без водяного знака, пропорции заданы явно' );
-$assert( 0 === VKT_Wiro::refs( 'z-image-pro' ) && 4 === VKT_Wiro::refs( 'seedream-4-5' ) && 0 === VKT_Wiro::refs( 'flux' ), 'Образцы: Z Image — нет, Seedream — четыре ракурса лица' );
+$assert( 0 === VKT_Wiro::refs( 'z-image-pro' ) && 4 === VKT_Wiro::refs( 'seedream-4-5' ) && 4 === VKT_Wiro::refs( 'seedream-5-lite' ) && 0 === VKT_Wiro::refs( 'flux' ), 'Образцы: Z Image — нет, Seedream 4.5 и 5 Lite — четыре ракурса лица' );
+$assert( VKT_Wiro::payload( 'seedream-4-5', 'кот', 'story' ) === VKT_Wiro::payload( 'seedream-5-lite', 'кот', 'story' ), 'Seedream 5 Lite — те же поля, что у 4.5' );
+$assert( array( 'prompt' => 'кот', 'resolution' => '2k', 'aspectRatio' => '9:16', 'outputFormat' => 'jpeg', 'watermark' => 'false' ) === VKT_Wiro::payload( 'seedream-5-pro', 'кот', 'story' ) && 8 === VKT_Wiro::refs( 'seedream-5-pro' ), 'Seedream 5 Pro: без maxImages, jpeg, до 8 образцов' );
 
 // ——— Запуск ———
 $GLOBALS['sent'] = array();

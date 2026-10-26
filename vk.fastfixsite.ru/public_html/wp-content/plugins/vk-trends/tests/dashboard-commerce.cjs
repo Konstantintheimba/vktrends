@@ -410,6 +410,9 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     state.settings.images = [{id: 'xai', title: 'xAI · grok', refs: 0}, {id: 'bfl:flux-2-pro', title: 'BFL · FLUX.2 [pro]', refs: 4}];
     check('' === api.promptParts({has_persona: false}) && '' === api.promptParts(null), 'Нет персонажа и визуала — нет и переключателей');
     check(api.promptParts({has_persona: true}).includes('data-series-image="persona"') && api.promptParts({has_persona: true}).includes('только по описанию'), 'xAI честно предупреждает, что фото не возьмёт');
+    // Фото лица в карточке есть, а модель их не берёт — не подсказка, а предупреждение о незнакомце.
+    const stranger = (() => { const saved = state.settings.images; state.settings.images = [{id: 'wiro:z-image-pro', title: 'Wiro · Z Image Pro Uncensored', refs: 0}]; const html = api.promptParts({has_persona: true, persona_photos: 4}); const noPhotos = api.promptParts({has_persona: true, persona_photos: 0}); state.settings.images = saved; return [html, noPhotos]; })();
+    check(stranger[0].includes('vkt-info-warning') && stranger[0].includes('незнакомый человек') && stranger[0].includes('Z Image Pro') && !stranger[1].includes('незнакомый человек'), 'Модель без образцов при фото в карточке — предупреждение о незнакомом человеке');
     const rowFlux = (() => { const saved = state.settings.images; state.settings.images = [{id: 'bfl:flux-2-pro', title: 'BFL', refs: 4}]; const html = api.promptParts({has_persona: true}); state.settings.images = saved; return html; })();
     check(rowFlux.includes('уйдут образцом'), 'FLUX: фото персонажа уходят образцом');
     const parts = api.promptParts({has_persona: true, has_visual: true}, true);
