@@ -58,6 +58,19 @@ final class VKT_Media {
         return $item;
     }
 
+    /** Промпт и модель при нарисованной картинке: видны в карточке файла, чтобы разбирать неудачные кадры. */
+    public static function describe( $media, $note ) {
+        $id = absint( $media['id'] ?? 0 );
+        if ( ! $id ) {
+            return $media;
+        }
+        $prompt = mb_substr( (string) ( $note['prompt'] ?? '' ), 0, 6000 );
+        $model = sanitize_text_field( (string) ( $note['model'] ?? '' ) ) . ( ! empty( $note['refs'] ) ? ' · образцов: ' . absint( $note['refs'] ) : '' );
+        update_post_meta( $id, '_vkt_prompt', wp_slash( $prompt ) );
+        update_post_meta( $id, '_vkt_prompt_model', $model );
+        return array_merge( $media, array( 'prompt' => $prompt, 'prompt_model' => $model ) );
+    }
+
     /** То же самое для браузера: без абсолютного пути, зато с превью. */
     public static function public_item( $attachment_id ) {
         $item = self::item( $attachment_id );
@@ -70,6 +83,11 @@ final class VKT_Media {
         // Обложка сообщества: интерфейс заменяет её новой, а не накладывает макет поверх макета.
         if ( get_post_meta( $item['id'], '_vkt_cover', true ) ) {
             $item['cover'] = true;
+        }
+        $prompt = (string) get_post_meta( $item['id'], '_vkt_prompt', true );
+        if ( '' !== $prompt ) {
+            $item['prompt'] = $prompt;
+            $item['prompt_model'] = (string) get_post_meta( $item['id'], '_vkt_prompt_model', true );
         }
         return $item;
     }

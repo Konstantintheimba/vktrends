@@ -93,7 +93,7 @@ final class VKT_Plugin {
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
     // Стенд фото открыт всем кабинетам в пределах суточного лимита; баланс кредитов BFL — дело хозяина ключа.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'ai_reach', 'notify_site' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'ai_reach', 'wiro_save', 'wiro_check', 'wiro_delete', 'notify_site' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -145,6 +145,7 @@ final class VKT_Plugin {
             'vkid' => $admin ? VKT_VKID::public_status() : array( 'configured' => VKT_VKID::configured() ),
             'ai' => VKT_AI::public_status(),
             'flux' => VKT_Flux::public_status(),
+            'wiro' => VKT_Wiro::public_status(),
             // Чем можно рисовать картинки к записям — всем кабинетам, в пределах суточного лимита.
             'images' => VKT_Images::providers(),
             'shops' => VKT_Shops::options(),
@@ -528,6 +529,12 @@ final class VKT_Plugin {
                 return VKT_AI::check_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
             case 'ai_reach':
                 return VKT_AI::reach();
+            case 'wiro_save':
+                return VKT_Wiro::save( is_array( $data ) ? $data : array() );
+            case 'wiro_check':
+                return VKT_Wiro::check();
+            case 'wiro_delete':
+                return VKT_Wiro::forget();
             case 'ai_key_delete':
                 return VKT_AI::delete_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
             case 'ai_model_save':
@@ -618,10 +625,20 @@ final class VKT_Plugin {
                 $visual = array_key_exists( 'visual', $data ) ? ! empty( $data['visual'] ) : $card;
                 $persona = ( $card || $visual ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'], $card, $visual ) : null;
                 if ( is_wp_error( $persona ) ) { return $persona; }
-                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona ) );
+                // source — текст записи по-русски: по нему отбираются предметы мира персонажа, промпт уже английский.
+                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona, mb_substr( is_string( $data['source'] ?? null ) ? $data['source'] : '', 0, 4000 ) ) );
             }
             case 'image_status':
                 return VKT_Images::status( $data['id'] ?? '' );
+            case 'image_scene': {
+                // Мир персонажа и «Визуал» паспорта — чтобы кадр шёл в знакомых местах блога, а не в случайной студии.
+                $brief = absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'] ) : null;
+                $world = is_array( $brief ) ? implode( '; ', array_filter( array_merge(
+                    array_map( static fn( $item ) => $item['title'] . ( '' !== $item['look'] ? ' (' . $item['look'] . ')' : '' ), $brief['items'] ),
+                    array( '' !== $brief['visual'] ? 'как снимает блог: ' . $brief['visual'] : '' )
+                ) ) ) : '';
+                return self::metered( 'text', static fn() => VKT_AI::image_scene( $data['text'] ?? '', $data['own'] ?? '', self::model_id( $data ), $world ) );
+            }
             case 'ai_video_start': {
                 $started = self::metered( 'media', static fn() => VKT_AI::start_video( $data['prompt'] ?? '', $data['ratio'] ?? 'story' ) );
                 // Готовый ролик заберёт только тот, кто его заказал.
@@ -640,10 +657,15 @@ final class VKT_Plugin {
                 return VKT_Account::set_status( $data['id'] ?? 0, sanitize_key( $data['status'] ?? '' ) );
             case 'flux_credits':
                 return VKT_Flux::credits();
-            case 'flux_start':
-                return self::metered( 'media', static fn() => VKT_Flux::start( is_array( $data ) ? $data : array() ) );
-            case 'flux_status':
-                return VKT_Flux::status( $data['id'] ?? '' );
+            case 'flux_start': {
+                // Стенд один на всех поставщиков: модели Wiro приходят с приставкой «wiro:».
+                $data = is_array( $data ) ? $data : array();
+                return self::metered( 'media', static fn() => str_starts_with( (string) ( $data['model'] ?? '' ), 'wiro:' ) ? VKT_Wiro::stand_start( $data ) : VKT_Flux::start( $data ) );
+            }
+            case 'flux_status': {
+                $id = is_string( $data['id'] ?? null ) ? $data['id'] : '';
+                return str_starts_with( $id, 'wiro:' ) ? VKT_Wiro::status( substr( $id, strlen( 'wiro:' ) ) ) : VKT_Flux::status( $id );
+            }
             case 'publishing_group_toggle':
                 return VKT_Publisher::toggle_group( $data['id'] ?? 0, ! empty( $data['enabled'] ) );
             case 'publishing_create':

@@ -102,6 +102,9 @@
     // Серия привязана к одному сообществу: его сетку и видно в календаре.
     // seriesTarget — ID серии, которую дополняем; пусто — новая серия.
     let seriesGroup = 0, seriesTarget = '';
+    // Несохранённые сетки других сообществ. Календарь показывает сетку только выбранного:
+    // при смене сообщества она откладывается сюда, а не переезжает в чужую группу.
+    let seriesSlotsBy = {};
     // Мои сообщества: список, открытая группа и несохранённый паспорт.
     let groupsData = null, groupOpen = 0, groupDetail = null, groupPassportDraft = null, groupPersonaDraft = null, groupShowHidden = false;
     // База ведения группы: какой материал открыт на правку ('new' — новый) и его несохранённый текст.
@@ -148,7 +151,7 @@
     function persistDrafts() {
         if (!draftStorage) return;
         groupDraftsSave();
-        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesPrompt, seriesLength, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
+        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesSlotsBy, seriesPrompt, seriesLength, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
         // Хранилище может быть переполнено или запрещено — тогда работаем как раньше, в памяти вкладки.
         try { draftStorage.setItem(draftKey, JSON.stringify(snapshot)); } catch {}
     }
@@ -164,7 +167,9 @@
         const plain = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
         const list = value => Array.isArray(value) ? value : [];
         if (plain(saved.seriesSetup).times !== undefined) seriesSetup = {span: saved.seriesSetup.span === 'month' ? 'month' : 'week', start: text(saved.seriesSetup.start), weekdays: list(saved.seriesSetup.weekdays).map(String), times: text(saved.seriesSetup.times)};
-        seriesSlots = list(saved.seriesSlots).filter(slot => slot && typeof slot.at === 'string').map(slot => ({...slot, message: text(slot.message), attachments: text(slot.attachments), media: list(slot.media)}));
+        const slots = value => list(value).filter(slot => slot && typeof slot.at === 'string').map(slot => ({...slot, message: text(slot.message), attachments: text(slot.attachments), media: list(slot.media)}));
+        seriesSlots = slots(saved.seriesSlots);
+        seriesSlotsBy = Object.fromEntries(Object.entries(plain(saved.seriesSlotsBy)).map(([id, value]) => [id, slots(value)]).filter(([id, value]) => Number(id) && value.length));
         seriesPrompt = text(saved.seriesPrompt);
         seriesLength = Object.hasOwn(SERIES_LENGTHS, text(saved.seriesLength)) ? text(saved.seriesLength) : '';
         seriesGroup = Number(saved.seriesGroup) || 0;
@@ -419,6 +424,27 @@
     const seriesPosts = () => (publishingData?.series?.posts || []).filter(post => post.status !== 'cancelled');
     const seriesGroupsList = () => (publishingData?.groups || []).filter(group => Number(group.enabled) && Number(group.can_post));
     // В календаре — только выбранное сообщество: у каждой группы своя сетка.
+    // Смена сообщества серии: его сетка достаётся из отложенных, текущая уходит туда же.
+    function seriesSwitch(id) {
+        id = Number(id) || 0;
+        if (id === Number(seriesGroup)) return;
+        const current = seriesSlots;
+        if (Number(seriesGroup) && current.length) seriesSlotsBy[seriesGroup] = current;
+        else delete seriesSlotsBy[seriesGroup];
+        // Сетка без сообщества (черновик старых версий) достаётся первому выбранному.
+        seriesSlots = seriesSlotsBy[id] || (Number(seriesGroup) ? [] : current);
+        delete seriesSlotsBy[id];
+        seriesGroup = id;
+        seriesTarget = '';
+        seriesSlotTarget = null;
+    }
+    // Долгие операции помнят своё сообщество: пока они идут, в календаре могут выбрать другое.
+    const seriesSlotsOf = id => Number(id) === Number(seriesGroup) ? seriesSlots : (seriesSlotsBy[id] || []);
+    function seriesSlotsPut(id, list) {
+        if (Number(id) === Number(seriesGroup)) seriesSlots = list;
+        else if (list.length) seriesSlotsBy[id] = list;
+        else delete seriesSlotsBy[id];
+    }
     const seriesGroupPosts = () => seriesPosts().filter(post => (post.group_ids || []).map(Number).includes(Number(seriesGroup)));
     // Сообщество серии по её записям. У серий до 0.26 групп могло быть несколько — тогда привязки нет.
     function seriesGroupOf(seriesId) {
@@ -518,6 +544,25 @@
             'Без текста, надписей и логотипов на изображении.',
         ].filter(Boolean).join('\n\n').slice(0, 5000);
     }
+    // Сцена к картинке: модель для текста пишет из поста один кадр на английском. Сами модели картинок
+    // превращают рассуждения в шаблон (27.10.2026 — четыре поста серии, одна кухня). Без модели для
+    // текста, без текста поста или при отказе — прежний промпт с текстом записи.
+    // Ответ — {prompt, source}: source (текст записи по-русски) нужен серверу, чтобы отобрать предметы мира персонажа.
+    async function postImagePrompt(text, own = '', post = true, group = seriesGroup, report = null) {
+        const body = String(text || '').trim();
+        const source = [post ? body : '', String(own || '').trim()].filter(Boolean).join('\n');
+        if (post && body.length >= 10 && state.settings.ai?.configured) {
+            const style = seriesImage.style.trim();
+            try {
+                if (report) report('Пишем сцену для картинки по тексту записи…');
+                const {scene} = await act('image_scene', {text: body, own: [String(own || '').trim(), style ? `Стиль фото: ${style}` : ''].filter(Boolean).join('. '), group_id: Number(group) || 0, model: aiModel});
+                return {prompt: `${scene}\n\nNo text, captions, letters or logos in the image.`, source};
+            } catch (error) {
+                if (report) report(`Сцену написать не вышло (${error.message}) — рисуем по тексту записи.`);
+            }
+        }
+        return {prompt: seriesImagePrompt(text, own, post), source};
+    }
     // Кнопка «Нарисовать» в окне записи: из чего собирается промпт, дополнение к нему и выбор модели (общий с пачкой серии).
     function drawRow(label, command, attr = '', target = null) {
         if (!imagesReady()) return '';
@@ -541,12 +586,26 @@
             post ? part('post', 'Текст поста', 'Сюжет кадра — из текста записи') : '',
         ].filter(Boolean);
         if (!parts.length) return '';
-        const note = providerRefs() ? 'Фото персонажа уйдут образцом — модель нарисует того же человека.' : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите FLUX.2 или OpenAI gpt-image.';
+        const note = providerRefs() ? 'Фото персонажа уйдут образцом — модель нарисует того же человека.' : 'Эта модель фото-образцы не принимает и рисует только по описанию внешности — похожесть ниже. Для того же лица выберите FLUX.2, OpenAI gpt-image или Seedream через Wiro.';
         return `<div class="vkt-prompt-parts"><span>Что идёт в промпт</span><div class="vkt-chips">${parts.join('')}</div>${group?.has_persona ? `<small class="vkt-help" data-persona-note ${seriesImage.persona ? '' : 'hidden'}>${note}</small>` : ''}</div>`;
     }
     // Рисунок к записи группы получает её персонажа и «Визуал» из паспорта — их подставляет сервер.
+    // Wiro на малом балансе держит одну задачу за раз: «занят» — это очередь, а не ошибка. Ждём и ставим снова.
+    async function startWhenFree(action, values, report = null) {
+        for (let attempt = 1; ; attempt += 1) {
+            try { return await act(action, values); }
+            catch (error) {
+                // Десять минут ожидания — дольше любая задача не идёт; дальше честно показываем отказ.
+                if (!error.payload?.data?.busy || attempt >= 120) throw error;
+                if (report) report(`${error.message} Не закрывайте вкладку.`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+        }
+    }
+    // prompt — строка или {prompt, source} из postImagePrompt.
     async function drawImage(prompt, report = null, group = seriesGroup) {
-        const started = await act('image_start', {provider: seriesImage.provider, prompt, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona, visual: !!seriesImage.visual});
+        const {prompt: text, source = ''} = typeof prompt === 'string' ? {prompt} : prompt;
+        const started = await startWhenFree('image_start', {provider: seriesImage.provider, prompt: text, source, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona, visual: !!seriesImage.visual}, report);
         // Одни поставщики отдают картинку сразу, другие — задачу, которую надо дождаться.
         return started.status === 'done' ? started.media : (await fluxAwait(started.id, report, 'image_status')).media;
     }
@@ -595,7 +654,7 @@
             ${promptParts()}
             <div class="vkt-form-row"><label class="vkt-check"><input type="checkbox" data-series-image="slots" ${seriesImage.slots ? 'checked' : ''}>Новые слоты</label><label class="vkt-check"><input type="checkbox" data-series-image="queued" ${seriesImage.queued ? 'checked' : ''}>Записи в очереди</label><label class="vkt-check"><input type="checkbox" data-series-image="extra" ${seriesImage.extra ? 'checked' : ''}>Добавлять и в слоты, где фото уже есть</label></div>
             <div class="vkt-form-actions">${run ? button('Остановить', 'series-images-stop') : `<button class="vkt-button">${icon('fire')} Нарисовать фото · <span data-series-images-count>${seriesImageTargets().length}</span></button>`}</div>
-            <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Берутся записи с текстом и без файлов; с галочкой «Добавлять и в слоты, где фото уже есть» рисунок по теме записи встанет после уже прикреплённых фото. Убрать или переставить его можно в окне записи.'}</p>
+            <p class="vkt-help" id="vkt-series-image-progress">${run ? seriesImageProgress(run) : 'Сцену к каждой картинке сначала пишет модель для текста по самой записи — это один текст суточного лимита на картинку. Берутся записи с текстом и без файлов; с галочкой «Добавлять и в слоты, где фото уже есть» рисунок по теме записи встанет после уже прикреплённых фото. Убрать или переставить его можно в окне записи.'}</p>
             ${quotaNote(ai)}
         </form>`;
     }
@@ -605,6 +664,7 @@
         if (!targets.length) { toast('Нечего рисовать: нужны записи с текстом и без файлов.', true); return; }
         if (!confirm(`Нарисовать ${targets.length} картинок и прикрепить их к записям?`)) return;
         const run = seriesImageRun = {total: targets.length, done: 0, failed: 0, stop: false, error: ''};
+        const group = Number(seriesGroup);
         render();
         const progress = () => { const el = $('#vkt-series-image-progress'); if (el) el.textContent = seriesImageProgress(run); };
         const queue = targets.slice();
@@ -613,14 +673,14 @@
                 const target = queue.shift();
                 try {
                     if (target.slot) {
-                        const media = await drawImage(seriesImagePrompt(target.slot.message, target.slot.imagePrompt || ''));
+                        const media = await drawImage(await postImagePrompt(target.slot.message, target.slot.imagePrompt || '', true, group), null, group);
                         // Пока рисовали, слот могли убрать или приложить к нему файл руками.
-                        if (seriesSlots.includes(target.slot) && (seriesImage.extra ? target.slot.media.length < 10 : !target.slot.media.length)) target.slot.media.push(media);
+                        if (seriesSlotsOf(group).includes(target.slot) && (seriesImage.extra ? target.slot.media.length < 10 : !target.slot.media.length)) target.slot.media.push(media);
                     } else {
                         // В сетке только начало текста — для сюжета нужен весь.
                         const full = await act('publishing_get', {id: Number(target.post.id)});
                         if (full.editable && !(full.media_items || []).length) {
-                            const media = await drawImage(seriesImagePrompt(full.message));
+                            const media = await drawImage(await postImagePrompt(full.message, '', true, group), null, group);
                             await act('publishing_update', {id: Number(target.post.id), post: {media: [Number(media.id)]}});
                             target.post.media_count = 1;
                         }
@@ -653,7 +713,7 @@
             return heading('Серия постов', subtitle) +
                 empty('Нет доступных сообществ', 'Включите хотя бы одно сообщество в «Автопостинге»: серия отправляется туда же, куда и одиночная запись.', 'publishing', 'Открыть автопостинг');
         }
-        if (!groups.some(group => Number(group.id) === Number(seriesGroup))) { seriesGroup = Number(groups[0].id); seriesTarget = ''; }
+        if (!groups.some(group => Number(group.id) === Number(seriesGroup))) seriesSwitch(groups[0].id);
         // Дополнять можно только серию этого сообщества.
         const own = (publishingData.series?.list || []).filter(item => seriesGroupOf(item.series_id) === Number(seriesGroup));
         if (seriesTarget && !own.some(item => item.series_id === seriesTarget)) seriesTarget = '';
@@ -823,9 +883,9 @@
         reopenSeriesDialog();
     }
     // Обложка встаёт первой. Фон — первое фото записи; прежняя обложка заменяется, а не копится.
-    async function applyCover(target, title) {
+    async function applyCover(target, title, group = seriesGroup) {
         const base = target.media.find(item => item.type === 'image' && !item.cover);
-        const made = await act('cover_make', {group_id: Number(seriesGroup), title, media_id: base ? Number(base.id) : 0});
+        const made = await act('cover_make', {group_id: Number(group), title, media_id: base ? Number(base.id) : 0});
         target.media = target.media.filter(item => !item.cover && (target.coverKeep || item !== base));
         target.media.unshift(made);
         if (target.media.length > 10) target.media.length = 10;
@@ -839,11 +899,12 @@
         if (!queue.length) return;
         if (!window.confirm(`Сделать обложки сообщества для ${queue.length} записей? Первое фото каждой записи станет фоном обложки и заменится ею.`)) return;
         const run = seriesCoverRun = {total: queue.length, done: 0, failed: 0, error: ''};
+        const group = Number(seriesGroup);
         render();
         const worker = async () => {
             while (queue.length) {
                 const slot = queue.shift();
-                try { await applyCover(slot, firstLine(slot.message)); run.done += 1; }
+                try { await applyCover(slot, firstLine(slot.message), group); run.done += 1; }
                 catch (error) { run.failed += 1; run.error = error.message; if (501 === Number(error.payload?.data?.status)) queue.length = 0; }
                 persistDrafts();
                 const el = $('[data-series-cover-note]');
@@ -863,6 +924,7 @@
         const queue = seriesSourceTargets();
         if (!queue.length) return;
         const run = seriesSourceRun = {total: queue.length, done: 0, texts: 0, photos: 0, stop: ''};
+        const group = Number(seriesGroup);
         const say = () => { const el = $('[data-series-source-note]'); if (el) el.textContent = `Дополняем из статей: ${run.done} из ${run.total}. Не закрывайте вкладку.`; };
         render();
         const worker = async () => {
@@ -870,7 +932,7 @@
                 const slot = queue.shift();
                 const link = sourceLink(slot);
                 if (!slot.rewritten && state.settings.ai?.configured) {
-                    try { slot.message = (await act('group_news_rewrite', {id: Number(seriesGroup), model: aiModel, link})).text; slot.rewritten = true; run.texts += 1; }
+                    try { slot.message = (await act('group_news_rewrite', {id: group, model: aiModel, link})).text; slot.rewritten = true; run.texts += 1; }
                     catch (error) { if (429 === Number(error.payload?.data?.status) || /лимит|не подключена/i.test(error.message)) run.stop = error.message; }
                 }
                 if (!slot.media.length) {
@@ -1024,7 +1086,7 @@
         trigger.disabled = true;
         say('Рисуем… Обычно это 10–40 секунд.');
         try {
-            const media = await drawImage(seriesImagePrompt(target.message, target.imagePrompt || '', seriesImage.post), text => say(text));
+            const media = await drawImage(await postImagePrompt(target.message, target.imagePrompt || '', seriesImage.post, seriesGroup, say), say);
             target.media.push(media);
             toast(slot ? 'Фото прикреплено к слоту.' : 'Фото прикреплено. Нажмите «Сохранить», чтобы запись в очереди его получила.');
         } catch (error) { toast(error.message, true, error.fix); }
@@ -1311,6 +1373,22 @@
                 <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('check')} Проверить и сохранить</button>${provider.connected ? button('Проверить ключ', 'ai-key-check', `data-id="${esc(provider.id)}"`) + button('Удалить ключ', 'ai-key-delete', `data-id="${esc(provider.id)}" data-title="${esc(provider.title)}"`) : ''}</div>
             </form>`}
         </article>`;
+    // Wiro — только картинки: ключ и секрет проекта, без текстовых моделей и адреса API.
+    function wiroCard() {
+        const wiro = state.settings.wiro || {};
+        const probe = wiro.probe;
+        const models = Object.values(wiro.models || {}).map(model => `<li class="${wiro.configured ? 'is-ok' : ''}"><strong>${esc(model.title)}</strong><span>${esc(model.hint)}</span></li>`).join('');
+        return `<article class="vkt-provider ${wiro.configured ? 'is-on' : ''}">
+            <header><strong>Wiro · картинки</strong>${wiro.configured ? badge(`ключ ${esc(wiro.preview)}${wiro.signed ? ' + секрет' : ''}`, 'green') : badge('не подключён')}</header>
+            <ul class="vkt-provider-caps">${models}</ul>
+            ${probe ? `<p class="${probe.ok ? 'vkt-muted' : 'vkt-info vkt-info-warning'}">${esc(probe.message)} <small>Проверено ${date(probe.at)}</small></p>` : ''}
+            ${wiro.configured ? '<p class="vkt-muted">Модели выбираются в «Чем рисуем» — в окне записи, в серии и в «Автопостинге».</p>' : ''}
+            <form data-form="wiro-key" class="vkt-form">
+                <div class="vkt-form-row"><label>${wiro.configured ? 'Заменить ключ API' : 'Ключ API'}<input name="key" type="password" class="vkt-code-input" autocomplete="off" required></label><label>Секрет API<input name="secret" type="password" class="vkt-code-input" autocomplete="off"><small class="vkt-help">Из того же проекта Wiro. Нужен, если проект подписывает запросы (так по умолчанию); в режиме «API Key Only» можно оставить пустым.</small></label></div>
+                <div class="vkt-form-actions"><button type="submit" class="vkt-button vkt-primary">${icon('check')} Проверить и сохранить</button>${wiro.configured ? button('Проверить ключ', 'wiro-check') + button('Удалить ключ', 'wiro-delete') : ''}</div>
+            </form>
+        </article>`;
+    }
     // Итог «Проверить связь»: живёт до перезагрузки страницы, перерисовку раздела переживает.
     let reachResult = null;
     function reachBox() {
@@ -1325,13 +1403,13 @@
             `<div class="vkt-settings-grid"><section class="vkt-panel">
                 <h2>Ключи поставщиков</h2>
                 <p class="vkt-muted">Один ключ на поставщика — им работают все его модели. Перед сохранением ключ проверяется: плагин запрашивает список моделей и просит одну из них ответить одним словом. Больше ничего платного проверка не делает.</p>
-                <div class="vkt-providers">${providers.map(providerCard).join('')}</div>
+                <div class="vkt-providers">${providers.map(providerCard).join('')}${wiroCard()}</div>
                 <hr class="vkt-settings-sep">
                 ${reachBox()}
                 <hr class="vkt-settings-sep">
                 ${textModels()}
             </section>
-            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Что где</h2><p>Ключи хранятся зашифрованными и в браузер не возвращаются — виден только огрызок.</p><p><strong>Адрес API</strong> меняйте, только если ходите к поставщику через свой прокси: часть поставщиков не обслуживает серверы в России, и проверка скажет об этом сразу.</p><p><strong>Картинки и видео Grok</strong> работают, пока подключён ключ xAI. <strong>FLUX</strong> — отдельный ключ в «Генерации фото».</p><p>Об отказе из-за денег или ключа вам придёт оповещение.</p></aside></div>`;
+            <aside class="vkt-panel vkt-settings-help"><span class="vkt-help-icon">${icon('lock')}</span><h2>Что где</h2><p>Ключи хранятся зашифрованными и в браузер не возвращаются — виден только огрызок.</p><p><strong>Адрес API</strong> меняйте, только если ходите к поставщику через свой прокси: часть поставщиков не обслуживает серверы в России, и проверка скажет об этом сразу.</p><p><strong>Картинки и видео Grok</strong> работают, пока подключён ключ xAI. <strong>FLUX</strong> — отдельный ключ в «Генерации фото». <strong>Wiro</strong> — ключ и секрет проекта из wiro.ai → Dashboard → Projects; оплата идёт с баланса Wiro.</p><p>Об отказе из-за денег или ключа вам придёт оповещение.</p></aside></div>`;
     }
     function settings() {
         const s = state.settings;
@@ -1358,30 +1436,49 @@
 
     // ——— Стенд генерации фото: FLUX через api.bfl.ai ———
     const fluxStatuses = {pending: ['Выполняется', ''], done: ['Готово', 'green'], error: ['Отказ', 'red']};
-    const fluxRunRow = run => `<tr><td>${date(run.at)}<small class="vkt-muted">${esc(run.model || '')}</small></td><td>${badge(...(fluxStatuses[run.status] || [esc(run.status), '']))}</td><td>${run.media ? `<span class="vkt-media-mini">${safeUrl(run.media.thumbnail || run.media.url) ? `<img src="${safeUrl(run.media.thumbnail || run.media.url)}" alt="" loading="lazy">` : ''}</span>` : ''}${esc(run.message || '')}${run.cost ? `<small class="vkt-muted">Списано кредитов: ${decimal(run.cost, 3)}</small>` : ''}</td></tr>`;
+    const fluxRunRow = run => `<tr><td>${date(run.at)}<small class="vkt-muted">${esc(run.model || '')}</small></td><td>${badge(...(fluxStatuses[run.status] || [esc(run.status), '']))}</td><td>${run.media ? `<span class="vkt-media-mini">${safeUrl(run.media.thumbnail || run.media.url) ? `<img src="${safeUrl(run.media.thumbnail || run.media.url)}" alt="" loading="lazy">` : ''}</span>` : ''}${esc(run.message || '')}${run.cost ? `<small class="vkt-muted">Списано кредитов: ${decimal(run.cost, 3)}</small>` : ''}${run.usd ? `<small class="vkt-muted">Списано с баланса Wiro: $${decimal(run.usd, 3)}</small>` : ''}</td></tr>`;
+    // Модели стенда: BFL — своими ID, Wiro — с приставкой «wiro:». Поля формы у поставщиков разные.
+    function fluxOptions() {
+        const s = state.settings, cfg = s.flux || {}, wiro = s.wiro || {};
+        return [
+            // Без ключа BFL его модели видны, только если подключать больше нечего: стенд не должен быть пустым.
+            ...(cfg.configured || !wiro.configured ? Object.entries(cfg.models || {}).map(([id, model]) => ({id, title: model.title, hint: model.hint, group: 'BFL'})) : []),
+            ...(wiro.configured ? Object.entries(wiro.models || {}).map(([id, model]) => ({id: `wiro:${id}`, title: model.title, hint: model.hint, group: 'Wiro', refs: Number(model.refs) || 0, seed: !!model.seed})) : []),
+        ];
+    }
+    // Выбранная модель живёт в черновике формы: переживает перерисовку и перезагрузку.
+    const fluxCurrent = () => { const list = fluxOptions(); return list.find(option => option.id === fieldDrafts.flux?.model) || list[0] || {}; };
+    const fluxLimit = () => { const pick = fluxCurrent(); return pick.group === 'Wiro' ? pick.refs : (Number(state.settings.flux?.max_references) || 4); };
     function flux() {
         const s = state.settings;
         const cfg = s.flux || {};
-        const models = cfg.models || {};
+        const options = fluxOptions(), pick = fluxCurrent(), wiroPick = pick.group === 'Wiro';
+        const ready = !!cfg.configured || !!s.wiro?.configured;
+        const limit = fluxLimit();
+        const optgroup = group => { const list = options.filter(option => option.group === group); return list.length ? `<optgroup label="${esc(group)}">${list.map(option => `<option value="${esc(option.id)}" ${option.id === pick.id ? 'selected' : ''}>${esc(option.title)}</option>`).join('')}</optgroup>` : ''; };
         // Варианты одного запроса показываем вместе: это последняя пачка прогонов.
         const last = fluxRuns.length ? fluxRuns.filter(run => run.batch === fluxRuns[0].batch && run.media) : [];
         // Ключ сервиса общий для сайта: участнику он ни к чему, как и баланс кредитов.
-        return heading('Генерация фото', 'Стенд FLUX через api.bfl.ai: правка своей фотографии по образцу товара и генерация с нуля. Ответ сервиса показывается дословно.', isAdmin() ? button(`${icon('refresh')} Баланс кредитов`, 'flux-credits') : '') +
+        return heading('Генерация фото', 'Стенд картинок: FLUX через api.bfl.ai и модели Wiro. Правка своей фотографии по образцу и генерация с нуля. Ответ сервиса показывается дословно.', isAdmin() ? button(`${icon('refresh')} Баланс кредитов`, 'flux-credits') : '') +
             `<div class="vkt-settings-grid"><section class="vkt-panel">
                 ${isAdmin() ? `<h2>Ключ BFL</h2>
                 <div class="vkt-token-cards">${slotCard(s.tokens, 'bfl')}</div>
                 <hr class="vkt-settings-sep">` : ''}
                 <h2>Запрос</h2>
-                ${cfg.configured ? '' : `<div class="vkt-info vkt-info-warning">${isAdmin() ? 'Сохраните ключ BFL выше — без него стенд ничего не отправит.' : 'Генерация фото пока не подключена: ключ сервиса сохраняет администратор.'}</div>`}
+                ${ready ? '' : `<div class="vkt-info vkt-info-warning">${isAdmin() ? 'Сохраните ключ BFL выше или подключите Wiro в «Нейросетях» — без ключа стенд ничего не отправит.' : 'Генерация фото пока не подключена: ключ сервиса сохраняет администратор.'}</div>`}
                 <form data-form="flux" class="vkt-form">
-                    <label>Модель<select name="model">${Object.entries(models).map(([id, model]) => `<option value="${esc(id)}">${esc(model.title)}</option>`).join('')}</select><small class="vkt-help">${Object.values(models).map(model => `<strong>${esc(model.title)}</strong> — ${esc(model.hint)}`).join('<br>')}</small></label>
-                    <label>Что сделать<textarea name="prompt" rows="6" required minlength="3" maxlength="5000" placeholder="Например: replace the swimsuit with the design from image 2, keep the person, pose, lighting and background unchanged, catalog product photo"></textarea></label>
-                    <fieldset class="vkt-media"><legend>Исходное фото и образцы · до ${Number(cfg.max_references) || 4}</legend>
+                    <label>Модель<select name="model" data-flux-model>${optgroup('BFL')}${optgroup('Wiro')}</select><small class="vkt-help">${options.filter(option => option.group === pick.group).map(option => `<strong>${esc(option.title)}</strong> — ${esc(option.hint)}`).join('<br>')}</small></label>
+                    <label>Что сделать<textarea name="prompt" rows="6" required minlength="3" maxlength="5000" placeholder="${wiroPick ? 'Например: девушка в бирюзовом купальнике на камнях у моря, закатный свет, фото на телефон' : 'Например: replace the swimsuit with the design from image 2, keep the person, pose, lighting and background unchanged, catalog product photo'}"></textarea></label>
+                    <fieldset class="vkt-media"><legend>${wiroPick ? (limit ? `Образец · до ${limit}` : 'Образцы · модель рисует только по тексту') : `Исходное фото и образцы · до ${limit}`}</legend>
                         <div id="vkt-flux-media" class="vkt-media-chips">${fluxMediaHtml()}</div>
-                        <div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*" data-flux-upload hidden>${icon('plus')} Загрузить файл</label>${button(`${icon('layers')} Из медиатеки`, 'flux-media')}</div>
-                        <small class="vkt-help">Первое изображение — исходное фото, остальные идут образцами (<code>input_image_2</code> и далее). Порядок важен: на него ссылаются словами «image 1», «image 2». Без изображений запрос рисует картинку с нуля.</small>
+                        ${limit ? `<div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*" data-flux-upload hidden>${icon('plus')} Загрузить файл</label>${button(`${icon('layers')} Из медиатеки`, 'flux-media')}</div>` : ''}
+                        <small class="vkt-help">${wiroPick ? (limit ? 'Изображения уходят образцами: человек, вещь или место, на них можно сослаться словами «image 1», «image 2». Без них картинка рисуется с нуля.' : 'Эта модель изображений не принимает. Выбранные для BFL файлы уберите, иначе стенд не отправит запрос.') : 'Первое изображение — исходное фото, остальные идут образцами (<code>input_image_2</code> и далее). Порядок важен: на него ссылаются словами «image 1», «image 2». Без изображений запрос рисует картинку с нуля.'}</small>
                     </fieldset>
-                    <div class="vkt-form-row">
+                    ${wiroPick ? `<div class="vkt-form-row">
+                        <label>Формат кадра<select name="ratio">${ratioOptions(['portrait', 'square', 'landscape', 'story'])}</select><small class="vkt-help">Wiro рисует в 2K. С образцом Seedream может взять пропорции у него.</small></label>
+                        ${pick.seed ? '<label>Seed · необязательно<input type="number" name="seed" min="0" max="2147483647" placeholder="Повторяемость"></label>' : ''}
+                        <label>Сколько вариантов<select name="count">${variantOptions()}</select></label>
+                    </div>` : `<div class="vkt-form-row">
                         <label>Строгость фильтра<select name="safety_tolerance">${[0,1,2,3,4,5].map(value => `<option value="${value}" ${2 === value ? 'selected' : ''}>${value}${0 === value ? ' — строже всего' : value === (Number(cfg.max_tolerance) || 5) ? ' — мягче всего' : ''}</option>`).join('')}</select><small class="vkt-help">Выше 5 сервис не принимает.</small></label>
                         <label>Seed · необязательно<input type="number" name="seed" min="0" max="4294967295" placeholder="Повторяемость"></label>
                     </div>
@@ -1390,12 +1487,12 @@
                         <label>Высота<input type="number" name="height" min="0" max="2048" step="32" placeholder="как у исходного"></label>
                         <label>Формат<select name="output_format"><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option></select></label>
                         <label>Сколько вариантов<select name="count">${variantOptions()}</select></label>
-                    </div>
+                    </div>`}
                     <small class="vkt-help">Каждый вариант — отдельная задача сервиса. Со своим seed варианты получают seed, seed + 1 и так далее, иначе они вышли бы одинаковыми.</small>
                     ${quotaNote(s.ai)}
-                    <label class="vkt-check"><input type="checkbox" name="disable_pup">Не расширять промпт автоматически</label>
+                    ${wiroPick ? '' : '<label class="vkt-check"><input type="checkbox" name="disable_pup">Не расширять промпт автоматически</label>'}
                     <div id="vkt-flux-progress" class="vkt-help" hidden></div>
-                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary" ${cfg.configured ? '' : 'disabled'}>${icon('fire')} Отправить</button></div>
+                    <div class="vkt-form-actions"><button class="vkt-button vkt-primary" ${ready ? '' : 'disabled'}>${icon('fire')} Отправить</button></div>
                 </form>
                 ${last.length ? `<hr class="vkt-settings-sep"><h2>Последний результат</h2><figure class="vkt-flux-result"><div class="vkt-flux-gallery ${last.length > 1 ? 'is-many' : ''}">${last.map(run => `<a href="${safeUrl(run.media.url)}" target="_blank" rel="noopener noreferrer"><img src="${safeUrl(run.media.url)}" alt="" loading="lazy"></a>`).join('')}</div><figcaption>${last.length > 1 ? `Файлы сохранены в медиатеку сайта: ${last.length} шт.` : `Файл сохранён в медиатеку сайта: <strong>${esc(last[0].media.name)}</strong>.`} Приложить к записи можно в «Автопостинге» — кнопка «Из медиатеки».</figcaption></figure>` : ''}
                 ${fluxRuns.length ? `<hr class="vkt-settings-sep"><h2>Прогоны в этой вкладке</h2><div class="vkt-table-wrap"><table><thead><tr><th>Когда</th><th>Итог</th><th>Ответ сервиса</th></tr></thead><tbody>${fluxRuns.map(fluxRunRow).join('')}</tbody></table></div>` : ''}
@@ -1896,7 +1993,7 @@
         const n = Number(bytes) || 0;
         return n >= 1048576 ? decimal(n / 1048576, 1) + ' МБ' : Math.max(1, Math.round(n / 1024)) + ' КБ';
     };
-    const mediaChip = item => `<figure class="vkt-media-chip">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<figcaption><strong>${esc(item.title || item.name)}</strong><small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></figcaption><button type="button" class="vkt-media-remove" data-command="media-remove" data-id="${Number(item.id)}" aria-label="Убрать файл">×</button></figure>`;
+    const mediaChip = item => `<figure class="vkt-media-chip">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<figcaption><strong>${esc(item.title || item.name)}</strong><small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></figcaption><button type="button" class="vkt-media-remove" data-command="media-remove" data-id="${Number(item.id)}" aria-label="Убрать файл">×</button>${item.prompt ? `<details class="vkt-media-prompt"><summary>Что ушло в модель</summary>${item.prompt_model ? `<small>${esc(item.prompt_model)}</small>` : ''}<p>${esc(item.prompt)}</p></details>` : ''}</figure>`;
     const fluxMediaHtml = () => fluxMedia.length
         ? fluxMedia.map((item, index) => mediaChip(item).replace('<figcaption>', `<figcaption><em class="vkt-flux-index">image ${index + 1}</em>`)).join('')
         : '<p class="vkt-muted">Изображений нет: запрос нарисует картинку с нуля.</p>';
@@ -1931,13 +2028,14 @@
         const slots = seriesFilled();
         if (!slots.length) { toast('Заполните хотя бы один слот: текст, файл или вложение.', true); return; }
         if (!confirm(seriesTarget ? `Добавить ${slots.length} записей в серию «${seriesTitle(seriesTarget)}»?` : `Поставить в очередь ${slots.length} записей?`)) return;
+        const group = Number(seriesGroup), series = seriesTarget;
         trigger.disabled = true;
         try {
             const result = await act('series_queue', {
                 // Название серии — начало темы промпта: по нему серию узнают в списке запущенных.
                 title: seriesPrompt.trim().slice(0, 120),
-                groups: [Number(seriesGroup)],
-                series_id: seriesTarget,
+                groups: [group],
+                series_id: series,
                 signed: !!form?.querySelector('input[name="signed"]')?.checked,
                 close_comments: !!form?.querySelector('input[name="close_comments"]')?.checked,
                 slots: slots.map(slot => ({scheduled_at: new Date(slot.at).toISOString(), message: slot.message, attachments: slot.attachments, media: slot.media.map(item => Number(item.id))})),
@@ -1946,9 +2044,9 @@
             // Поставленные слоты убираем из сетки, отклонённые оставляем вместе
             // с текстами: иначе работа пропадёт, а причину уже не увидеть.
             const queued = new Set((result.posts || []).map(post => String(post.scheduled_at)));
-            seriesSlots = seriesSlots.filter(slot => !queued.has(new Date(slot.at).toISOString()));
+            seriesSlotsPut(group, seriesSlotsOf(group).filter(slot => !queued.has(new Date(slot.at).toISOString())));
             // Следующие слоты дополняют эту же серию, а не заводят новую.
-            if (result.series_id) seriesTarget = result.series_id;
+            if (result.series_id && group === Number(seriesGroup)) seriesTarget = result.series_id;
             toast(failed.length
                 ? `В очередь встало ${result.created}, отклонено ${failed.length}. Первая причина: ${failed[0].error}`
                 : `Серия в очереди: ${result.created} записей.`, failed.length > 0);
@@ -1961,11 +2059,11 @@
         if (box) box.innerHTML = fluxMediaHtml();
     }
     function addFluxMedia(item) {
-        const limit = Number(state.settings.flux?.max_references) || 4;
+        const limit = fluxLimit();
         if (!item || !item.id) return false;
         if (item.type !== 'image') { toast('Стенд принимает только изображения.', true); return false; }
         if (fluxMedia.some(media => Number(media.id) === Number(item.id))) { toast('Этот файл уже выбран.'); return false; }
-        if (fluxMedia.length >= limit) { toast(`Больше ${limit} изображений стенд не отправляет.`, true); return false; }
+        if (fluxMedia.length >= limit) { toast(limit ? `Эта модель берёт не больше ${limit} изображений.` : 'Эта модель рисует только по тексту — образец ей не отправить.', true); return false; }
         fluxMedia.push(item);
         renderFluxMedia();
         return true;
@@ -2775,7 +2873,7 @@
             return;
         }
         if (command==='series-open') {
-            seriesGroup = seriesGroupOf(el.dataset.id) || seriesGroup;
+            seriesSwitch(seriesGroupOf(el.dataset.id) || seriesGroup);
             seriesTarget = el.dataset.id;
             render();
             content.querySelector('.vkt-series-layout')?.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -2859,7 +2957,7 @@
             if (!posts.length) return;
             // Раскладывать недописанное нельзя: в сетку ушли бы тексты по анонсам.
             if (newsWork) { toast('Дожидаемся рерайта — записи разложатся сразу после него…'); await newsWork; }
-            seriesGroup = groupNewsResult.groupId; seriesTarget = '';
+            seriesSwitch(groupNewsResult.groupId); seriesTarget = '';
             // Сетки ещё нет — строим по текущим настройкам серии, как кнопкой «Построить сетку».
             if (!seriesSlots.length) seriesSlots = seriesPlan(seriesSetup);
             const free = seriesSlots.filter(slot => !slot.message.trim());
@@ -2889,7 +2987,7 @@
             return;
         }
         if (command==='groups-hidden-toggle') { groupShowHidden = !groupShowHidden; return; }
-        if (command==='group-series') { seriesGroup = Number(el.dataset.id); seriesTarget = ''; location.hash = '#series'; return; }
+        if (command==='group-series') { seriesSwitch(el.dataset.id); seriesTarget = ''; location.hash = '#series'; return; }
         if (command==='series-best-times') {
             // Время подставляет кнопка — набранное в форме сетки ей уступает.
             delete fieldDrafts['series-setup'];
@@ -3034,6 +3132,16 @@
                 const checked = await act('ai_key_check', {preset: el.dataset.id});
                 toast(`${checked.title}: ${checked.probe.text.ok ? `текст отвечает («${checked.probe.text.message}»)` : `текст не отвечает — ${checked.probe.text.message}`}.`, !checked.probe.text.ok);
             }
+            if (command==='wiro-check') {
+                toast('Проверяем ключ Wiro…');
+                const checked = await act('wiro_check');
+                toast(`Wiro: ${checked.probe.message}`, !checked.probe.ok);
+            }
+            if (command==='wiro-delete') {
+                if (!confirm('Удалить ключ Wiro? Модели Wiro пропадут из «Чем рисуем».')) return;
+                await act('wiro_delete');
+                toast('Ключ Wiro удалён.');
+            }
             if (command==='ai-reach') {
                 toast('Проверяем связь — до полуминуты…');
                 reachResult = await act('ai_reach');
@@ -3126,6 +3234,12 @@
                     toast('Проверяем ключ: список моделей и пробный текст…');
                     const connected = await act('ai_key_save', {preset: values.preset, key: values.key, base: values.base});
                     toast(`${connected.title}: ключ сохранён. ${connected.probe.text.ok ? `Текст отвечает: «${connected.probe.text.message}».` : `Текст не отвечает: ${connected.probe.text.message}`}`, !connected.probe.text.ok);
+                    break;
+                }
+                case 'wiro-key': {
+                    toast('Проверяем ключ Wiro…');
+                    const saved = await act('wiro_save', {key: values.key, secret: values.secret});
+                    toast(`Wiro: ${saved.probe.message} Модели появились в «Чем рисуем».`);
                     break;
                 }
                 case 'ai-model': {
@@ -3222,6 +3336,7 @@
                 case 'series-prompt': {
                     if (!seriesSlots.length) throw new Error('Сначала постройте сетку: модели нужно знать количество текстов.');
                     seriesPrompt = values.prompt || '';
+                    const group = Number(seriesGroup);
                     const empties = seriesSlots.filter(slot => !slot.message.trim());
                     const targets = empties.length ? empties : seriesSlots;
                     // Длинные посты — пачками: следующая получает начала уже написанных, чтобы темы не повторялись.
@@ -3233,7 +3348,7 @@
                         if (targets.length > batch && progress) progress.textContent = `Пишем тексты ${from + 1}–${Math.min(from + batch, targets.length)} из ${targets.length}… Не закрывайте вкладку.`;
                         let posts = [];
                         try {
-                            posts = (await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: Math.min(batch, targets.length - from), group_id: Number(seriesGroup), length: seriesLength, written: texts.map(text => text.slice(0, 150))})).posts || [];
+                            posts = (await act('series_generate', {model: aiModel, prompt: seriesPrompt, count: Math.min(batch, targets.length - from), group_id: group, length: seriesLength, written: texts.map(text => text.slice(0, 150))})).posts || [];
                         } catch (error) {
                             // Написанное пачками раньше не теряем: оно уже в слотах.
                             if (!texts.length) throw error;
@@ -3378,14 +3493,14 @@
                     const result = await drawVariants(count, async index => {
                         const run = {batch, at: new Date().toISOString(), model: values.model, status: 'pending', message: 'Задача поставлена…'};
                         try {
-                            const started = await act('flux_start', {
+                            const started = await startWhenFree('flux_start', {
                                 model: values.model, prompt: values.prompt, safety_tolerance: Number(values.safety_tolerance),
                                 seed: values.seed ? Number(values.seed) + index : 0, width: Number(values.width) || 0, height: Number(values.height) || 0,
-                                output_format: values.output_format, disable_pup: !!values.disable_pup, images: fluxMedia.map(item => Number(item.id)),
-                            });
+                                output_format: values.output_format, disable_pup: !!values.disable_pup, images: fluxMedia.map(item => Number(item.id)), ratio: values.ratio,
+                            }, count > 1 ? null : text => { if (progress) { progress.hidden = false; progress.textContent = text; } });
                             // Ход отдельной задачи виден только когда она одна: у пачки общий счёт готовых.
                             const done = await fluxAwait(started.id, count > 1 ? () => {} : null);
-                            Object.assign(run, {status: 'done', message: 'Файл сохранён в медиатеку.', media: done.media, cost: done.cost});
+                            Object.assign(run, {status: 'done', message: 'Файл сохранён в медиатеку.', media: done.media, cost: done.cost, usd: done.cost_usd});
                             return done.media;
                         } catch (error) {
                             // Дословный ответ сервиса и есть смысл стенда: по нему видно,
@@ -3580,8 +3695,9 @@
             return;
         }
         if (event.target.matches('[data-ai-model]')) { aiModel = event.target.value; return; }
-        if (event.target.matches('[data-series-group]')) { seriesGroup = Number(event.target.value) || 0; seriesTarget = ''; render(); return; }
+        if (event.target.matches('[data-series-group]')) { seriesSwitch(event.target.value); seriesTarget = ''; scheduleDrafts(); render(); return; }
         if (event.target.matches('[data-series-target]')) { seriesTarget = event.target.value; render(); return; }
+        if (event.target.matches('[data-flux-model]')) { draftInput(event.target); scheduleDrafts(); render(); return; }
         if (event.target.matches('[data-series-length]')) { seriesLength = Object.hasOwn(SERIES_LENGTHS, event.target.value) ? event.target.value : ''; scheduleDrafts(); render(); return; }
         if (event.target.matches('[data-series-image]')) {
             const key = event.target.dataset.seriesImage;

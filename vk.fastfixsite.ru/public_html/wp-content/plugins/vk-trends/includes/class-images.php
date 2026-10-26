@@ -45,6 +45,15 @@ final class VKT_Images {
                 },
                 'status' => null,
             ),
+            'wiro' => array(
+                'title' => 'Wiro',
+                'ready' => static fn() => VKT_Wiro::configured(),
+                'models' => static fn() => VKT_Wiro::models(),
+                // Z Image — только по тексту, Seedream — до четырёх образцов (см. VKT_Wiro::MODELS).
+                'refs' => static fn( $model ) => VKT_Wiro::refs( $model ),
+                'start' => static fn( $model, $prompt, $ratio, $refs ) => VKT_Wiro::start( $model, $prompt, $ratio, $refs ),
+                'status' => static fn( $id ) => VKT_Wiro::status( $id ),
+            ),
             'bfl' => array(
                 'title' => 'BFL',
                 'ready' => static fn() => VKT_Flux::configured(),
@@ -79,8 +88,10 @@ final class VKT_Images {
      * Ставит картинку в работу. Ответ — либо готовый файл, либо ID задачи для status().
      * $persona — персонаж группы из VKT_Groups::image_brief(): его фото уходят
      * образцом тем, кто их принимает, описание и стиль — в промпт всем.
+     * $match — текст записи по-русски: по нему отбираются предметы мира
+     * персонажа, ведь сам промпт — уже английская сцена.
      */
-    public static function start( $id, $prompt, $ratio, $persona = null ) {
+    public static function start( $id, $prompt, $ratio, $persona = null, $match = '' ) {
         $id = is_string( $id ) ? $id : '';
         if ( ! in_array( $id, array_column( self::providers(), 'id' ), true ) ) {
             return self::error( 'Эта модель для картинок не подключена. Выберите другую из списка.' );
@@ -91,15 +102,26 @@ final class VKT_Images {
         $model = '' !== $model ? $model : (string) array_key_first( $provider['models']() );
         $refs = array();
         if ( $persona ) {
-            $plan = self::persona_plan( is_string( $prompt ) ? trim( $prompt ) : '', $persona, $provider['refs']( $model ) );
+            $plan = self::persona_plan( is_string( $prompt ) ? trim( $prompt ) : '', $persona, $provider['refs']( $model ), is_string( $match ) ? $match : '' );
             $prompt = $plan['prompt'];
             $refs = $plan['refs'];
         }
         $result = $provider['start']( $model, $prompt, $ratio, $refs );
-        if ( is_wp_error( $result ) || 'done' === ( $result['status'] ?? '' ) ) {
+        if ( is_wp_error( $result ) ) {
             return $result;
         }
+        // Что именно ушло в модель, остаётся при картинке: без этого не понять, почему вышел не тот кадр.
+        $note = array( 'prompt' => (string) $prompt, 'model' => $key . ':' . $model, 'refs' => count( $refs ) );
+        if ( 'done' === ( $result['status'] ?? '' ) ) {
+            $result['media'] = VKT_Media::describe( $result['media'], $note );
+            return $result;
+        }
+        set_transient( self::note_key( $key . ':' . $result['id'] ), $note, DAY_IN_SECONDS );
         return array( 'status' => 'pending', 'id' => $key . ':' . $result['id'] );
+    }
+
+    private static function note_key( $id ) {
+        return 'vkt_image_note_' . hash( 'sha256', (string) $id );
     }
 
     /**
@@ -108,8 +130,9 @@ final class VKT_Images {
      * всегда. Лицо идёт первым, затем по фото на предмет, вторые фото — если
      * осталось место у модели.
      */
-    public static function persona_plan( $prompt, $persona, $limit ) {
-        $items = array_values( array_filter( (array) ( $persona['items'] ?? array() ), static fn( $item ) => self::wanted( $item, $prompt ) ) );
+    public static function persona_plan( $prompt, $persona, $limit, $match = '' ) {
+        $source = trim( $prompt . "\n" . $match );
+        $items = array_values( array_filter( (array) ( $persona['items'] ?? array() ), static fn( $item ) => self::wanted( $item, $source ) ) );
         $refs = array();
         $owners = array();
         foreach ( array_slice( (array) $persona['photos'], 0, $limit ) as $photo ) {
@@ -141,6 +164,10 @@ final class VKT_Images {
      * Персонаж и его мир — в начале промпта: модели держат внешность лучше,
      * когда она задана до сюжета. Хвост сюжета при нехватке места режется,
      * персонаж — нет. $owners — чьё каждое опорное фото: 'person' или номер предмета.
+     * Служебные фразы — по-английски: модели картинок понимают его надёжнее
+     * (27.10.2026 Seedream пропустил русскую оговорку «кадр не копируй» и
+     * вернул четырём постам одну кухню). Описания из карточки и паспорта
+     * идут как их вписали.
      */
     public static function persona_prompt( $prompt, $persona, $items = array(), $owners = array() ) {
         // Номера фото одного владельца: «1–3», «4» или «4, 6».
@@ -152,31 +179,33 @@ final class VKT_Images {
         $lines = array();
         $person = $numbers( 'person' );
         if ( $owners ) {
-            $map = '' !== $person ? array( 'фото ' . $person . ' — главный человек кадра' ) : array();
+            $map = '' !== $person ? array( ( str_contains( $person, '–' ) || str_contains( $person, ',' ) ? 'images ' : 'image ' ) . $person . ' — the main person (face from different angles)' ) : array();
             foreach ( $items as $index => $item ) {
                 if ( '' !== $numbers( $index ) ) {
-                    $map[] = 'фото ' . $numbers( $index ) . ' — ' . $item['title'];
+                    $map[] = 'image ' . $numbers( $index ) . ' — ' . $item['title'];
                 }
             }
-            $lines[] = 'Опорные фото по порядку: ' . implode( '; ', $map ) . '. Это образцы того, как выглядят человек, места, вещи и питомцы. Позу, одежду, ракурс и свет бери из сюжета ниже, кадры с опорных фото целиком не копируй.';
+            // Первой строкой: одно фото Seedream считал картинкой для правки и возвращал тот же кадр.
+            $lines[] = 'The reference images are identity references only. Create a completely new photograph: the place, action, pose, clothing, framing and light come from the scene below. Do not reproduce the background, room, clothing or composition of the reference images.';
+            $lines[] = 'Reference images in order: ' . implode( '; ', $map ) . '.';
         }
         if ( '' !== $person ) {
-            $lines[] = 'Главный человек в кадре — тот же, что на опорных фото ' . $person . ': то же лицо и черты лица, цвет и длина волос, телосложение, возраст.';
+            $lines[] = 'The main person is the same as in reference images ' . $person . ': same face and facial features, hair colour and length, body type and age.';
         }
         if ( '' !== $persona['look'] ) {
-            $lines[] = ( '' !== $person ? 'Внешность героя: ' : 'Главный человек в кадре всегда один и тот же. Его внешность: ' ) . $persona['look'];
+            $lines[] = ( '' !== $person ? 'Main person appearance: ' : 'The main person is always the same. Appearance: ' ) . $persona['look'];
         }
         if ( $items ) {
-            $lines[] = "Постоянные места, вещи и питомцы блога — в кадре они точно такие, как на опорных фото и в описании, других вместо них не придумывай:\n" . implode( "\n", array_map( static fn( $item ) => '- ' . $item['title'] . ( '' !== $item['look'] ? ': ' . $item['look'] : '' ), $items ) );
+            $lines[] = "Recurring places, things and pets of the blog — show them exactly as in the references and descriptions, do not replace them with others:\n" . implode( "\n", array_map( static fn( $item ) => '- ' . $item['title'] . ( '' !== $item['look'] ? ': ' . $item['look'] : '' ), $items ) );
         }
         if ( '' !== $persona['look'] || $persona['photos'] || ! empty( $persona['items'] ) ) {
             // Модели любят дорисовать уюта — котика или подругу; у блога они свои, чужие ломают узнаваемость.
-            $lines[] = 'Не добавляй в кадр других людей и животных, если их нет в сюжете.';
+            $lines[] = 'Do not add other people or animals unless the scene mentions them.';
         }
         if ( '' !== ( $persona['visual'] ?? '' ) ) {
-            $lines[] = 'Как снимает блог: ' . $persona['visual'];
+            $lines[] = 'Blog photo style: ' . $persona['visual'];
         }
-        return $lines ? mb_substr( implode( "\n\n", $lines ) . "\n\nСюжет:\n" . $prompt, 0, 5000 ) : $prompt;
+        return $lines ? mb_substr( implode( "\n\n", $lines ) . "\n\nScene:\n" . $prompt, 0, 5000 ) : $prompt;
     }
 
     public static function status( $id ) {
@@ -185,6 +214,12 @@ final class VKT_Images {
         if ( ! $provider || ! $provider['status'] || '' === $task ) {
             return self::error( 'Задача генерации не найдена.', 404 );
         }
-        return $provider['status']( $task );
+        $result = $provider['status']( $task );
+        $note = ! is_wp_error( $result ) && 'done' === ( $result['status'] ?? '' ) ? get_transient( self::note_key( $id ) ) : false;
+        if ( is_array( $note ) ) {
+            $result['media'] = VKT_Media::describe( $result['media'], $note );
+            delete_transient( self::note_key( $id ) );
+        }
+        return $result;
     }
 }

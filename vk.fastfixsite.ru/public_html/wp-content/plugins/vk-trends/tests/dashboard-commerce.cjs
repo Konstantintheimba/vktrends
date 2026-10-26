@@ -627,5 +627,27 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(html.includes('VKT_XAI_API_KEY') && html.includes('data-command="ai-key-check" data-id="xai"') && !html.includes('data-command="ai-key-delete" data-id="xai"') && (html.match(/data-form="ai-key"/g) || []).length === 2, 'Ключ из wp-config.php только проверяется');
     check(html.includes('ключ поставщика') && html.includes('пусто — ключ поставщика') && html.includes('<option value="gpt-5.5">') && html.includes('data-form="ai-model"'), 'Модели для текстов переехали сюда: ключ поставщика общий, названия подсказываются из проверки');
     check(!api.settings().includes('data-form="ai-model"') && api.settings().includes('Раздел «Нейросети»'), 'В «Настройках» моделей больше нет — осталась ссылка на новый раздел');
+    // Стенд «Генерация фото»: модели Wiro рядом с BFL, поля формы — под выбранного поставщика.
+    {
+        const keep = {flux: state.settings.flux, wiro: state.settings.wiro, tokens: state.settings.tokens};
+        state.settings.flux = {configured: true, max_references: 4, max_tolerance: 5, models: {'flux-2-pro': {title: 'FLUX.2 [pro]', hint: 'Рабочая лошадка'}}};
+        state.settings.wiro = {configured: true, preview: 'abc…1234', signed: true, models: {'z-image-pro': {title: 'Z Image Pro Uncensored', hint: '$0,02', refs: 0, seed: true}, 'seedream-4-5': {title: 'Seedream 4.5 Uncensored', hint: '$0,04', refs: 1, seed: false}}};
+        state.settings.tokens = [];
+        delete api.drafts.fields().flux;
+        let html = api.flux();
+        check(html.includes('<optgroup label="BFL">') && html.includes('<option value="wiro:seedream-4-5" ') && html.includes('name="safety_tolerance"') && !html.includes('name="ratio"'), 'Стенд: модели Wiro в списке, по умолчанию BFL со своими полями');
+        api.drafts.input(fieldOf('flux', {name: 'model', type: 'select-one', value: 'wiro:z-image-pro'}));
+        html = api.flux();
+        check(html.includes('name="ratio"') && html.includes('name="seed"') && !html.includes('name="safety_tolerance"') && !html.includes('name="disable_pup"') && !html.includes('data-flux-upload') && html.includes('только по тексту'), 'Z Image: формат кадра и seed, без полей BFL и без загрузки образцов');
+        api.drafts.input(fieldOf('flux', {name: 'model', type: 'select-one', value: 'wiro:seedream-4-5'}));
+        html = api.flux();
+        check(html.includes('Образец · до 1') && html.includes('data-flux-upload') && !html.includes('name="seed"'), 'Seedream: один образец, seed не предлагается');
+        state.settings.flux = {...state.settings.flux, configured: false};
+        api.drafts.input(fieldOf('flux', {name: 'model', type: 'select-one', value: 'flux-2-pro'}));
+        html = api.flux();
+        check(!html.includes('<optgroup label="BFL">') && html.includes('<option value="wiro:z-image-pro" selected') && !html.includes('disabled>'), 'Без ключа BFL стенд работает на Wiro');
+        delete api.drafts.fields().flux;
+        Object.assign(state.settings, keep);
+    }
     console.log(`All ${checks} offline dashboard checks passed.`);
 })().catch(error => {console.error(error); process.exitCode = 1;});

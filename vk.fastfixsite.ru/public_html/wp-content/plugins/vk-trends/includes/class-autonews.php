@@ -279,8 +279,14 @@ final class VKT_Autonews {
         }
         $prompt = ( '' !== $scene ? $scene : 'Illustration for a news story: ' . $title )
             . '. Realistic editorial news photograph, natural light, detailed. No text, no letters, no captions, no logos, no watermarks.';
-        $result = VKT_Images::start( in_array( $provider, $list, true ) ? $provider : $list[0], $prompt, $ratio );
+        $provider = in_array( $provider, $list, true ) ? $provider : $list[0];
         $until = time() + self::DRAW_WAIT;
+        $result = VKT_Images::start( $provider, $prompt, $ratio );
+        // Поставщик занят задачей из открытой вкладки (у Wiro на малом балансе — одна за раз): ждём очереди в том же сроке.
+        while ( is_wp_error( $result ) && ! empty( $result->get_error_data()['busy'] ) && time() < $until ) {
+            sleep( 5 );
+            $result = VKT_Images::start( $provider, $prompt, $ratio );
+        }
         while ( ! is_wp_error( $result ) && 'pending' === ( $result['status'] ?? '' ) && time() < $until ) {
             sleep( 4 );
             $polled = VKT_Images::status( $result['id'] );

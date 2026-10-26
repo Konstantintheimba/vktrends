@@ -36,7 +36,10 @@ class VKT_Store {
     public static array $entries = array();
     public static function log( $method, $context, $status, $code, $message, $ms = 0 ) { self::$entries[] = compact( 'method', 'status', 'message' ); }
 }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) { define( 'DAY_IN_SECONDS', 86400 ); }
+if ( ! function_exists( 'set_transient' ) ) { function set_transient( $key, $value, $ttl = 0 ) { return true; } }
 class VKT_Media {
+    public static function describe( $media, $note ) { return array_merge( (array) $media, array( 'prompt' => $note['prompt'] ) ); }
     public static $stored = '';
     public static function store_image( $bytes ) { self::$stored = $bytes; return array( 'id' => 77 ); }
     public static $files = array();
@@ -44,7 +47,9 @@ class VKT_Media {
     public static function item( $id ) { return isset( self::$files[ $id ] ) ? array( 'id' => $id, 'type' => 'image', 'mime' => 'image/jpeg', 'name' => 'masha-' . $id . '.jpg', 'path' => self::$files[ $id ] ) : new WP_Error( 'gone', 'нет файла' ); }
 }
 class VKT_Publisher { const MAX_SERIES_SLOTS = 60; }
-class VKT_Flux { const MAX_REFERENCES = 4; const MAX_INPUTS = 8; public static function configured() { return false; } }
+class VKT_Flux { const HOST = 'https://api.bfl.ai'; const MAX_REFERENCES = 4; const MAX_INPUTS = 8; public static function configured() { return false; } }
+// Wiro не подключён: его модели в реестр картинок не попадают.
+class VKT_Wiro { const HOST = 'https://api.wiro.ai/v1'; public static function configured() { return false; } }
 
 require dirname( __DIR__ ) . '/includes/class-ai.php';
 require dirname( __DIR__ ) . '/includes/class-images.php';
@@ -105,7 +110,7 @@ $GLOBALS['vkt_net'] = array( array( 'body' => json_encode( array( 'data' => arra
 $result = VKT_Images::start( 'openai:gpt-image-1', 'Маша у окна', 'story', array( 'look' => 'русые волосы', 'photos' => array( 5 ), 'visual' => '' ) );
 $call = $GLOBALS['vkt_calls'][0];
 $assert( 'done' === $result['status'] && 'https://api.openai.com/v1/images/edits' === $call['url'] && str_starts_with( $call['headers']['Content-Type'], 'multipart/form-data; boundary=' ), 'С фото персонажа запрос идёт в /images/edits' );
-$assert( str_contains( $call['raw'], 'name="image[]"; filename="masha-5.jpg"' ) && str_contains( $call['raw'], 'FACEBYTES' ) && str_contains( $call['raw'], "name=\"input_fidelity\"\r\n\r\nhigh" ) && str_contains( $call['raw'], 'Внешность героя: русые волосы' ), 'Фото, точность и персонаж в теле запроса' );
+$assert( str_contains( $call['raw'], 'name="image[]"; filename="masha-5.jpg"' ) && str_contains( $call['raw'], 'FACEBYTES' ) && str_contains( $call['raw'], "name=\"input_fidelity\"\r\n\r\nhigh" ) && str_contains( $call['raw'], 'Main person appearance: русые волосы' ), 'Фото, точность и персонаж в теле запроса' );
 // Модель не знает input_fidelity — второй заход без него.
 $GLOBALS['vkt_calls'] = array();
 $GLOBALS['vkt_net'] = array( array( 'code' => 400, 'body' => json_encode( array( 'error' => array( 'message' => "Unknown parameter: 'input_fidelity'." ) ) ) ), array( 'body' => json_encode( array( 'data' => array( array( 'b64_json' => base64_encode( 'JPEGDATA' ) ) ) ) ) ) );

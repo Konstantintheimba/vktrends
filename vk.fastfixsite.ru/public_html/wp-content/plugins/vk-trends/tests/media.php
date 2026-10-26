@@ -232,6 +232,14 @@ $assert( isset( $GLOBALS['options']['vkt_text_models']['models'][ $second['id'] 
 
 
 // Удалённый в кабинете ключ xAI константа из wp-config.php обратно не подключает.
+// Сцена к картинке: модель для текста пишет кадр по самой записи, внешность героя не описывает.
+$assert( is_wp_error( VKT_AI::image_scene( 'Кот' ) ), 'Без текста записи сцену не просим' );
+$sent = count( $GLOBALS['vkt_http'] );
+$scene = VKT_AI::image_scene( "Крем для тела у меня — ещё одно дело.\nА хочется помедленнее.", 'вечер, ванная', '', 'Кухня (бежевые шкафы); как снимает блог: фото на телефон' );
+$asked = (string) $GLOBALS['vkt_http'][ $sent ]['args']['body'];
+$assert( str_contains( $asked, 'на английском' ) && str_contains( $asked, 'Не описывай лицо' ) && str_contains( $asked, 'Крем для тела у меня — ещё одно дело. А хочется помедленнее.' ), 'Сцену просят по тексту записи, на английском и без внешности героя' );
+$assert( str_contains( $asked, 'вечер, ванная' ) && str_contains( $asked, 'Кухня (бежевые шкафы)' ), 'Пожелание автора и мир блога уходят в запрос сцены' );
+$assert( is_wp_error( $scene ), 'Ответ короче 20 знаков сценой не считается' );
 $deleted = VKT_AI::delete_key( 'xai' );
 $assert( ! is_wp_error( $deleted ) && ! VKT_AI::configured(), 'После удаления в кабинете константа ключ не возвращает' );
 $assert( ! VKT_AI::public_status()['media_configured'] && '' === $GLOBALS['options']['vkt_ai_keys']['xai']['key'], 'Повторный заход администратора ключ не переносит заново' );

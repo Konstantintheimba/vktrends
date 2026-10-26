@@ -360,6 +360,10 @@ body.toplevel_page_vk-trends #wpcontent { padding-left: 0; }body.toplevel_page_v
 .vkt-media-chip figcaption { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .vkt-media-chip strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vkt-media-chip small { font-size: 9px; color: var(--vkt-muted); }
+/* Промпт нарисованной картинки: раскрывается под чипом на всю его ширину. */
+.vkt-media-prompt { grid-column: 1 / -1; font-size: 10px; }
+.vkt-media-prompt summary { cursor: pointer; color: var(--vkt-muted); }
+.vkt-media-prompt p { margin: 4px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; line-height: 1.35; }
 .vkt-media-remove { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--vkt-line); border-radius: 50%; background: #fff; color: #96a1b1; line-height: 1; cursor: pointer; }
 .vkt-media-remove:hover { color: #c0392b; border-color: #f0c4bd; }
 .vkt-media-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 9px; }
