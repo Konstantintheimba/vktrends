@@ -358,7 +358,7 @@
     }
     function logs() {
         return heading('Журнал', 'Последние 100 запросов. Журнал хранится 30 дней.', button(`${icon('refresh')} Обновить`, 'reload')) +
-            (state.logs.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Время</th><th>Метод</th><th>Откуда</th><th>Статус</th><th>Время ответа</th><th>Сообщение</th></tr></thead><tbody>${state.logs.map(l=>`<tr><td>${date(l.created_at)}</td><td><code>${esc(l.method)}</code></td><td>${({test:'Тест API',collector:'Сборщик',manual:'Вручную',search:'Поиск',publisher:'Автопостинг',auth:'Вход'})[l.context] || esc(l.context)}</td><td>${badge(l.status==='ok'?'Успешно':`Ошибка ${Number(l.code)||''}`,l.status==='ok'?'green':'red')}</td><td>${num(l.duration_ms)} мс</td><td>${esc(l.message)}</td></tr>`).join('')}</tbody></table></section>` : empty('Запросов ещё не было', 'Выполните тест API или найдите первое видео.', 'api','Открыть тест API'));
+            (state.logs.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Время</th><th>Метод</th><th>Откуда</th><th>Статус</th><th>Время ответа</th><th>Сообщение</th></tr></thead><tbody>${state.logs.map(l=>`<tr><td>${date(l.created_at)}</td><td><code>${esc(l.method)}</code></td><td>${({test:'Тест API',collector:'Сборщик',manual:'Вручную',search:'Поиск',publisher:'Автопостинг',auth:'Вход'})[l.context] || esc(l.context)}</td><td>${badge(l.status==='ok'?'Успешно':`Ошибка ${Number(l.code)||''}`,l.status==='ok'?'green':'red')}</td><td>${num(l.duration_ms)} мс</td><td>${esc(l.message)}${Number(l.has_detail) ? ` ${button('Запрос и ответ', 'log-detail', `data-id="${Number(l.id)}"`)}` : ''}</td></tr>`).join('')}</tbody></table></section>` : empty('Запросов ещё не было', 'Выполните тест API или найдите первое видео.', 'api','Открыть тест API'));
     }
     const slotExtras = {
         user: '<div class="vkt-form-row"><label>refresh_token · необязательно<input name="refresh_token" autocomplete="off" maxlength="2048"></label><label>device_id · необязательно<input name="device_id" autocomplete="off" maxlength="2048"></label><label>client_id · необязательно<input name="client_id" autocomplete="off" maxlength="2048"></label><label>Срок жизни, сек.<input type="number" name="expires_in" min="60" max="31536000" placeholder="86400"></label></div>',
@@ -555,8 +555,9 @@
             const style = seriesImage.style.trim();
             try {
                 if (report) report('Пишем сцену для картинки по тексту записи…');
-                const {scene} = await act('image_scene', {text: body, own: [String(own || '').trim(), style ? `Стиль фото: ${style}` : ''].filter(Boolean).join('. '), group_id: Number(group) || 0, model: aiModel});
-                return {prompt: `${scene}\n\nNo text, captions, letters or logos in the image.`, source};
+                // Пилюли действуют и на сцену: выключенная карточка или «Визуал» в неё не идут.
+                const {scene, look} = await act('image_scene', {text: body, own: [String(own || '').trim(), style ? `Стиль фото: ${style}` : ''].filter(Boolean).join('. '), group_id: Number(group) || 0, model: aiModel, card: !!seriesImage.persona, visual: !!seriesImage.visual});
+                return {prompt: `${scene}\n\nNo text, captions, letters or logos in the image.`, source, scene: true, look: look || ''};
             } catch (error) {
                 if (report) report(`Сцену написать не вышло (${error.message}) — рисуем по тексту записи.`);
             }
@@ -604,8 +605,8 @@
     }
     // prompt — строка или {prompt, source} из postImagePrompt.
     async function drawImage(prompt, report = null, group = seriesGroup) {
-        const {prompt: text, source = ''} = typeof prompt === 'string' ? {prompt} : prompt;
-        const started = await startWhenFree('image_start', {provider: seriesImage.provider, prompt: text, source, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona, visual: !!seriesImage.visual}, report);
+        const {prompt: text, source = '', scene = false, look = ''} = typeof prompt === 'string' ? {prompt} : prompt;
+        const started = await startWhenFree('image_start', {provider: seriesImage.provider, prompt: text, source, scene, look_en: look, ratio: seriesImage.ratio, group_id: Number(group) || 0, persona: !!seriesImage.persona, visual: !!seriesImage.visual}, report);
         // Одни поставщики отдают картинку сразу, другие — задачу, которую надо дождаться.
         return started.status === 'done' ? started.media : (await fluxAwait(started.id, report, 'image_status')).media;
     }
@@ -1893,7 +1894,7 @@
     // ——— Персонаж для фото: опорные снимки и внешность, чтобы к записям рисовался один и тот же человек ———
     // Вокруг него — постоянный мир: места, вещи, питомцы. Без них лицо одно, а кошка и квартира каждый раз новые.
     const PERSONA_PHOTOS = 4, PERSONA_ITEMS = 6, PERSONA_ITEM_PHOTOS = 2;
-    const personaEmpty = () => ({look: '', photos: [], items: []});
+    const personaEmpty = () => ({look: '', rules: '', photos: [], items: []});
     const personaCurrent = () => groupPersonaDraft || {...personaEmpty(), ...(groupDetail?.persona || {})};
     // Правка идёт в копию: сохранённый персонаж остаётся нетронутым до «Сохранить персонажа».
     function personaDraft() {
@@ -1920,11 +1921,12 @@
     function groupPersonaPanel(group) {
         const persona = groupPersonaDraft || {...personaEmpty(), ...(group.persona || {})};
         const items = persona.items || [];
-        return `<section class="vkt-panel vkt-group-persona"><div class="vkt-panel-heading"><div><h2>Персонаж для фото</h2><p>Кто в кадре, когда нейросеть рисует к записям этой группы. Фото уходят образцом в FLUX.2 и OpenAI gpt-image — они рисуют того же человека; xAI фото не принимает и рисует только по описанию. В каждую картинку идёт и строка «Визуал» из паспорта.</p></div></div>
+        return `<section class="vkt-panel vkt-group-persona"><div class="vkt-panel-heading"><div><h2>Персонаж для фото</h2><p>Кто в кадре, когда нейросеть рисует к записям этой группы. Фото уходят образцом в FLUX.2, OpenAI gpt-image и Seedream (Wiro) — они рисуют того же человека; xAI и Z Image фото не принимают и рисуют только по описанию. Внешность, правила кадра и строку «Визуал» из паспорта перед рисованием модель для текста переводит на английский и вписывает в сцену к записи.</p></div></div>
             <form data-form="group-persona" class="vkt-form">
                 ${personaPhotos(persona.photos || [], 'face', PERSONA_PHOTOS, 'Загрузить')}
                 <small class="vkt-help">До ${PERSONA_PHOTOS} фото: лицо крупно и при хорошем свете, лучше с разных сторон и без очков. JPEG, PNG или WebP до 8 МБ.</small>
                 <label>Внешность словами<textarea name="look" data-persona-look rows="3" maxlength="1500" placeholder="Например: женщина 34 лет, русые волосы до плеч, карие глаза, веснушки, стройная, рост средний">${esc(persona.look || '')}</textarea><small class="vkt-help">Возраст, волосы, глаза, приметы, телосложение. Одежду и место не пишите — их берёт сюжет записи.</small></label>
+                <label>Правила кадра<textarea name="rules" data-persona-rules rows="3" maxlength="1500" placeholder="Например: полный рост; телефон в кадре только экраном вниз или с выключенным экраном; максимальный реализм, естественная кожа, без глянца">${esc(persona.rules || '')}</textarea><small class="vkt-help">Что соблюдать в каждом кадре: ракурс, реализм, чего не показывать. Сюда, а не в паспорт: паспорт пишет тексты, и правила для фото ему мешают.</small></label>
                 <h3>Постоянные места, вещи и питомцы</h3>
                 <p class="vkt-help">Квартира, рабочее место, питомец, машина — всё, что повторяется в блоге и должно выглядеть одинаково. Предмет попадает в кадр, когда в тексте записи есть одно из слов «Когда в кадре» — пишите начала слов через запятую: «кошк, Мус» найдёт и «кошка», и «Мусей». Пустое поле — предмет в каждой картинке. Фото — до ${PERSONA_ITEM_PHOTOS} на предмет; удачный нарисованный кадр квартиры тоже годится, возьмите его из медиатеки. Других людей и животных модель не добавит.</p>
                 ${items.map(personaItem).join('')}
@@ -3132,6 +3134,15 @@
                 const checked = await act('ai_key_check', {preset: el.dataset.id});
                 toast(`${checked.title}: ${checked.probe.text.ok ? `текст отвечает («${checked.probe.text.message}»)` : `текст не отвечает — ${checked.probe.text.message}`}.`, !checked.probe.text.ok);
             }
+            if (command==='log-detail') {
+                // Что ушло нейросети и что она вернула — дословно, как записал сервер.
+                const row = await act('log_detail', {id: Number(el.dataset.id)});
+                let detail = {};
+                try { detail = JSON.parse(row.detail); } catch { detail = {response: row.detail}; }
+                const block = (title, value) => value === undefined || value === null ? '' : `<h3>${title}</h3><pre class="vkt-log-detail">${esc(typeof value === 'string' ? value : JSON.stringify(value, null, 2))}</pre>`;
+                modal(`<h2><code>${esc(row.method)}</code></h2><p class="vkt-muted">${date(row.created_at)} · ${esc(row.message)}</p>${block('Отправили', detail.request)}${block('Получили', detail.response)}<p class="vkt-help">Ключи и заголовки в журнал не пишутся, фото — только именами файлов. Подробности хранятся 7 дней.</p>`);
+                return;
+            }
             if (command==='wiro-check') {
                 toast('Проверяем ключ Wiro…');
                 const checked = await act('wiro_check');
@@ -3384,7 +3395,7 @@
                 case 'group-persona': {
                     const persona = personaCurrent();
                     const ids = photos => (photos || []).map(photo => Number(photo.id));
-                    const saved = await act('group_persona', {id: groupOpen, look: values.look || '', photos: ids(persona.photos), items: (persona.items || []).map(item => ({title: item.title || '', look: item.look || '', words: item.words || '', photos: ids(item.photos)}))});
+                    const saved = await act('group_persona', {id: groupOpen, look: values.look || '', rules: values.rules || '', photos: ids(persona.photos), items: (persona.items || []).map(item => ({title: item.title || '', look: item.look || '', words: item.words || '', photos: ids(item.photos)}))});
                     groupPersonaDraft = null;
                     if (groupDetail) groupDetail.persona = saved.persona;
                     toast('Персонаж сохранён: картинки к записям группы будут рисовать его.');
@@ -3802,6 +3813,7 @@
         // Паспорт переживает перерисовку после обновления охватов и других действий.
         if(event.target.matches('[data-group-passport]')) groupPassportDraft=event.target.value;
         if(event.target.matches('[data-persona-look]')) personaDraft().look = event.target.value;
+        if(event.target.matches('[data-persona-rules]')) personaDraft().rules = event.target.value;
         if(event.target.dataset.personaItem) { const item = personaDraft().items[Number(event.target.dataset.index)]; if (item) item[event.target.dataset.personaItem] = event.target.value; }
         if(event.target.matches('textarea[data-news]')) groupNewsDraft={...(groupNewsDraft||{}), [event.target.dataset.news]: event.target.value};
         if(event.target.dataset.materialDraft && groupMaterialDraft) groupMaterialDraft[event.target.dataset.materialDraft]=event.target.value;

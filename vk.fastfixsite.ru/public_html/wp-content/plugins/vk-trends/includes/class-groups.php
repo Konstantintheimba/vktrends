@@ -22,6 +22,8 @@ final class VKT_Groups {
     // Персонаж для фото: столько опорных снимков берут FLUX.2 и gpt-image, больше лицо не уточняет.
     const PERSONA_PHOTOS = 4;
     const PERSONA_LOOK_MAX = 1500;
+    // Правила кадра: ракурс, реализм, что нельзя показывать. Своё поле, а не паспорт — там тексты.
+    const PERSONA_RULES_MAX = 1500;
     // Опорные фото уходят в API целиком: 8 МБ — потолок BFL на один образец.
     const PERSONA_BYTES = 8388608;
     const PERSONA_MIMES = array( 'image/jpeg', 'image/png', 'image/webp' );
@@ -214,6 +216,7 @@ final class VKT_Groups {
         }
         return array(
             'look' => mb_substr( trim( (string) ( $raw['look'] ?? '' ) ), 0, self::PERSONA_LOOK_MAX ),
+            'rules' => mb_substr( trim( (string) ( $raw['rules'] ?? '' ) ), 0, self::PERSONA_RULES_MAX ),
             'photos' => array_slice( self::ids( $raw['photos'] ?? array() ), 0, self::PERSONA_PHOTOS ),
             'items' => $items,
         );
@@ -225,7 +228,7 @@ final class VKT_Groups {
 
     public static function has_persona( $group ) {
         $persona = self::persona( $group );
-        return '' !== $persona['look'] || (bool) $persona['photos'] || (bool) $persona['items'];
+        return '' !== $persona['look'] || '' !== $persona['rules'] || (bool) $persona['photos'] || (bool) $persona['items'];
     }
 
     /** Для браузера: фото с превью. Удалённые из медиатеки молча выпадают — их место освобождается. */
@@ -274,6 +277,10 @@ final class VKT_Groups {
         if ( mb_strlen( $look ) > self::PERSONA_LOOK_MAX ) {
             return self::error( 'Описание внешности — не длиннее ' . self::PERSONA_LOOK_MAX . ' символов.' );
         }
+        $rules = trim( sanitize_textarea_field( (string) ( $data['rules'] ?? '' ) ) );
+        if ( mb_strlen( $rules ) > self::PERSONA_RULES_MAX ) {
+            return self::error( 'Правила кадра — не длиннее ' . self::PERSONA_RULES_MAX . ' символов.' );
+        }
         $photos = self::ids( $data['photos'] ?? array() );
         if ( count( $photos ) > self::PERSONA_PHOTOS ) {
             return self::error( 'Опорных фото — не больше ' . self::PERSONA_PHOTOS . '.' );
@@ -311,7 +318,7 @@ final class VKT_Groups {
                 return $error;
             }
         }
-        $persona = array( 'look' => $look, 'photos' => self::ids( $data['photos'] ?? array() ), 'items' => $items );
+        $persona = array( 'look' => $look, 'rules' => $rules, 'photos' => self::ids( $data['photos'] ?? array() ), 'items' => $items );
         $wpdb->update( VKT_Store::table( 'publishing_groups' ), array( 'persona' => wp_json_encode( $persona, JSON_UNESCAPED_UNICODE ) ), array( 'id' => (int) $group['id'] ) );
         return array( 'ok' => true, 'persona' => self::persona_public( self::group( $id ) ) );
     }
@@ -342,7 +349,7 @@ final class VKT_Groups {
         }
         unset( $item );
         $persona['visual'] = $visual ? self::passport_visual( (string) ( $group['passport'] ?? '' ) ) : '';
-        return '' === $persona['look'] && ! $persona['photos'] && ! $persona['items'] && '' === $persona['visual'] ? null : $persona;
+        return '' === $persona['look'] && '' === $persona['rules'] && ! $persona['photos'] && ! $persona['items'] && '' === $persona['visual'] ? null : $persona;
     }
 
     /** Строка «- Визуал: …» из паспорта. Пустой пункт шаблона не считается. */

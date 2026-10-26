@@ -79,17 +79,30 @@ final class VKT_Flux {
         $response = wp_remote_request( $url, $args );
         $ms = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( 'bfl.' . basename( wp_parse_url( $url, PHP_URL_PATH ) ), 'ai', 'error', 0, 'Нет связи с api.bfl.ai', $ms );
+            VKT_Store::log( 'bfl.' . basename( wp_parse_url( $url, PHP_URL_PATH ) ), 'ai', 'error', 0, 'Нет связи с api.bfl.ai', $ms, array( 'request' => self::shown( $payload ), 'response' => $response->get_error_message() ) );
             return self::error( 'Не удалось связаться с api.bfl.ai.', 502, array( 'retryable' => true ) );
         }
         $code = (int) wp_remote_retrieve_response_code( $response );
         $body = json_decode( wp_remote_retrieve_body( $response ), true );
         if ( 200 !== $code || ! is_array( $body ) ) {
             $detail = is_array( $body ) ? sanitize_text_field( (string) ( $body['detail'][0]['msg'] ?? $body['detail'] ?? $body['message'] ?? '' ) ) : '';
-            VKT_Store::log( 'bfl.' . basename( wp_parse_url( $url, PHP_URL_PATH ) ), 'ai', 'error', $code, 'BFL отклонил запрос', $ms );
+            VKT_Store::log( 'bfl.' . basename( wp_parse_url( $url, PHP_URL_PATH ) ), 'ai', 'error', $code, 'BFL отклонил запрос', $ms, array( 'request' => self::shown( $payload ), 'response' => is_array( $body ) ? $body : (string) wp_remote_retrieve_body( $response ) ) );
             return self::error( self::http_message( $code ) . ( '' !== $detail ? ' ' . mb_substr( $detail, 0, 180 ) : '' ), 402 === $code ? 402 : 422 );
         }
         return $body;
+    }
+
+    /** Тело запроса для журнала: образцы в base64 — мегабайты, вместо них пометка. */
+    private static function shown( $payload ) {
+        if ( ! is_array( $payload ) ) {
+            return $payload;
+        }
+        foreach ( $payload as $key => $value ) {
+            if ( str_starts_with( (string) $key, 'input_image' ) && is_string( $value ) ) {
+                $payload[ $key ] = '[фото, ' . strlen( $value ) . ' знаков base64]';
+            }
+        }
+        return $payload;
     }
 
     private static function http_message( $code ) {
@@ -223,7 +236,7 @@ final class VKT_Flux {
             'images' => count( $images ),
             'started' => time(),
         ), HOUR_IN_SECONDS );
-        VKT_Store::log( 'bfl.' . $model, 'ai', 'ok', 0, 'Задача генерации поставлена', 0 );
+        VKT_Store::log( 'bfl.' . $model, 'ai', 'ok', 0, 'Задача генерации поставлена', 0, array( 'request' => self::shown( $payload ), 'response' => $body ) );
         return array( 'id' => $id, 'status' => 'pending', 'model' => $model );
     }
 
@@ -260,7 +273,7 @@ final class VKT_Flux {
                 return $media;
             }
             delete_transient( self::key( $id ) );
-            VKT_Store::log( 'bfl.' . $task['model'], 'ai', 'ok', 0, 'Изображение получено и сохранено в медиатеку', ( time() - (int) $task['started'] ) * 1000 );
+            VKT_Store::log( 'bfl.' . $task['model'], 'ai', 'ok', 0, 'Изображение получено и сохранено в медиатеку', ( time() - (int) $task['started'] ) * 1000, array( 'response' => $body ) );
             return array( 'status' => 'done', 'media' => $media, 'cost' => isset( $body['cost'] ) ? round( (float) $body['cost'], 3 ) : null );
         }
         delete_transient( self::key( $id ) );
@@ -283,7 +296,7 @@ final class VKT_Flux {
             $reasons[] = sanitize_text_field( (string) $reason );
         }
         $tail = $reasons ? ' Причины BFL: ' . implode( ', ', $reasons ) . '.' : '';
-        VKT_Store::log( 'bfl.' . $task['model'], 'ai', 'error', 0, 'BFL: ' . $status . ( $reasons ? ' (' . implode( ',', $reasons ) . ')' : '' ), 0 );
+        VKT_Store::log( 'bfl.' . $task['model'], 'ai', 'error', 0, 'BFL: ' . $status . ( $reasons ? ' (' . implode( ',', $reasons ) . ')' : '' ), 0, array( 'response' => $body ) );
         if ( 'Request Moderated' === $status ) {
             return self::error( 'BFL отклонил сам запрос: промпт или исходная фотография не прошли проверку на входе, генерации не было.' . $tail, 422, array( 'moderation' => 'request', 'reasons' => $reasons ) );
         }

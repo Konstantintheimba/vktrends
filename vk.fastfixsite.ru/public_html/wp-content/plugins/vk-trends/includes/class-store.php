@@ -87,6 +87,7 @@ final class VKT_Store {
                 message varchar(255) NOT NULL,
                 duration_ms int unsigned NOT NULL DEFAULT 0,
                 created_at datetime NOT NULL,
+                detail mediumtext NULL,
                 PRIMARY KEY  (id),
                 KEY created (created_at)",
         );
@@ -197,19 +198,55 @@ final class VKT_Store {
         delete_option( 'vkt_lock_' . $name );
     }
 
-    public static function log( $method, $context, $status, $code, $message, $ms = 0 ) {
+    /**
+     * $detail — что отправили нейросети и что она ответила: array( 'request' => …, 'response' => … ).
+     * Только тела запросов: заголовков с ключами здесь не бывает. Для VK детали не пишутся —
+     * там в параметрах токены.
+     */
+    public static function log( $method, $context, $status, $code, $message, $ms = 0, $detail = null ) {
         global $wpdb;
-        // No parameters, request headers, tokens or raw VK errors are persisted.
         $wpdb->insert( self::table( 'logs' ), array(
             'method' => substr( $method, 0, 80 ), 'context' => $context,
             'status' => $status, 'code' => (int) $code,
             'message' => mb_substr( $message, 0, 255 ),
             'duration_ms' => max( 0, (int) $ms ), 'created_at' => gmdate( 'Y-m-d H:i:s' ),
+            'detail' => is_array( $detail ) ? self::detail_json( $detail ) : null,
         ) );
         // Отказ платного сервиса — повод написать администратору: в журнал он заглянет не скоро.
         if ( 'error' === $status && 'ai' === $context ) {
             VKT_Notify::funds( $method, $code, $message );
         }
+    }
+
+    /**
+     * Детали запроса для журнала. Длинные строки режутся: картинка в base64 —
+     * мегабайты, а смотреть в ней нечего. Байты, которые не текст, заменяются пометкой.
+     */
+    public static function detail_json( $detail ) {
+        $cut = static function ( $value ) use ( &$cut ) {
+            if ( is_array( $value ) ) {
+                return array_map( $cut, $value );
+            }
+            if ( ! is_string( $value ) ) {
+                return $value;
+            }
+            if ( ! mb_check_encoding( $value, 'UTF-8' ) ) {
+                return '[двоичные данные, ' . strlen( $value ) . ' байт]';
+            }
+            return mb_strlen( $value ) > 12000 ? mb_substr( $value, 0, 12000 ) . '… [обрезано, всего ' . mb_strlen( $value ) . ' знаков]' : $value;
+        };
+        $json = (string) wp_json_encode( $cut( $detail ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT );
+        return strlen( $json ) > 200000 ? mb_strcut( $json, 0, 200000 ) . "\n… [обрезано]" : $json;
+    }
+
+    /** Детали одной записи журнала — по клику, чтобы список из ста строк не тянул мегабайты. */
+    public static function log_detail( $id ) {
+        global $wpdb;
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT id,method,status,code,message,created_at,detail FROM ' . self::table( 'logs' ) . ' WHERE id=%d', absint( $id ) ), ARRAY_A );
+        if ( ! $row || '' === (string) $row['detail'] ) {
+            return new WP_Error( 'log_detail', 'Подробностей у этой записи нет: их пишут только запросы к нейросетям, и хранятся они 7 дней.', array( 'status' => 404 ) );
+        }
+        return $row;
     }
 
     public static function parse_video( $input ) {
@@ -378,7 +415,7 @@ final class VKT_Store {
                 ARRAY_A
             ) : array(),
             'queue' => $admin ? $wpdb->get_results( 'SELECT status,COUNT(*) AS count FROM ' . self::table( 'jobs' ) . ' GROUP BY status', ARRAY_A ) : array(),
-            'logs' => $admin ? $wpdb->get_results( 'SELECT * FROM ' . self::table( 'logs' ) . ' ORDER BY id DESC LIMIT 100', ARRAY_A ) : array(),
+            'logs' => $admin ? $wpdb->get_results( 'SELECT id,method,context,status,code,message,duration_ms,created_at,(detail IS NOT NULL AND detail<>\'\') AS has_detail FROM ' . self::table( 'logs' ) . ' ORDER BY id DESC LIMIT 100', ARRAY_A ) : array(),
             'cron' => $admin ? array( 'next' => wp_next_scheduled( 'vkt_collect' ), 'last' => get_option( 'vkt_last_run', null ) ) : array( 'next' => null, 'last' => null ),
         );
     }

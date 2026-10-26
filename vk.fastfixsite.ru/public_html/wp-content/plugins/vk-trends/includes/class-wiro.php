@@ -120,15 +120,16 @@ final class VKT_Wiro {
         ) );
         $ms = (int) round( ( microtime( true ) - $started ) * 1000 );
         $method = 'wiro.' . strtolower( trim( str_replace( '/', '.', $path ), '.' ) );
+        $shown = self::shown( $payload, $files );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи с api.wiro.ai', $ms );
+            VKT_Store::log( $method, 'ai', 'error', 0, 'Нет связи с api.wiro.ai', $ms, array( 'request' => $shown, 'response' => $response->get_error_message() ) );
             return self::error( 'Не удалось связаться с api.wiro.ai. Дорогу с сервера покажет «Проверить связь» в «Нейросетях».', 502, array( 'retryable' => true ) );
         }
         $code = (int) wp_remote_retrieve_response_code( $response );
         $body = json_decode( wp_remote_retrieve_body( $response ), true );
         $reason = is_array( $body ) ? self::reason( $body ) : '';
         if ( 200 !== $code || ! is_array( $body ) ) {
-            VKT_Store::log( $method, 'ai', 'error', $code, 'Wiro отклонил запрос', $ms );
+            VKT_Store::log( $method, 'ai', 'error', $code, 'Wiro отклонил запрос', $ms, array( 'request' => $shown, 'response' => is_array( $body ) ? $body : (string) wp_remote_retrieve_body( $response ) ) );
             return self::error( self::http_message( $code, '' !== $credentials['secret'] ) . ( '' !== $reason ? ' Ответ Wiro: ' . $reason : '' ), in_array( $code, array( 401, 403, 429 ), true ) ? $code : 422, array( 'http' => $code ) );
         }
         // Число задач одновременно Wiro привязывает к балансу (на $20 — одна). Это очередь,
@@ -140,10 +141,15 @@ final class VKT_Wiro {
         }
         // Wiro отвечает 200 и с отказом: признак — result=false и текст в errors.
         if ( false === ( $body['result'] ?? null ) ) {
-            VKT_Store::log( $method, 'ai', 'error', $code, 'Wiro: ' . mb_substr( $reason, 0, 120 ), $ms );
+            VKT_Store::log( $method, 'ai', 'error', $code, 'Wiro: ' . mb_substr( $reason, 0, 120 ), $ms, array( 'request' => $shown, 'response' => $body ) );
             return self::error( 'Wiro отказал' . ( '' !== $reason ? ': ' . $reason : '.' ), 422, array( 'http' => $code ) );
         }
         return $body;
+    }
+
+    /** Тело запроса для журнала: поля как есть, образцы — именами файлов, без байтов. */
+    private static function shown( $payload, $files = array() ) {
+        return array_merge( (array) $payload, $files ? array( 'inputImage' => array_map( static fn( $file ) => $file['name'] . ' (' . strlen( $file['bytes'] ) . ' байт)', $files ) ) : array() );
     }
 
     /** Текст отказа: errors бывает списком строк или объектов с message. */
@@ -292,7 +298,8 @@ final class VKT_Wiro {
         if ( ! isset( self::MODELS[ $model ] ) ) {
             return self::error( 'Такой модели Wiro в списке нет.' );
         }
-        $prompt = trim( wp_strip_all_tags( (string) $prompt ) );
+        // Переносы строк — пробелами: Wiro передаёт их модели буквальным «\n» (видно в parameters задачи 5054113).
+        $prompt = trim( (string) preg_replace( '/\s*\R\s*/u', ' ', wp_strip_all_tags( (string) $prompt ) ) );
         if ( mb_strlen( $prompt ) < 3 ) {
             return self::error( 'Опишите картинку — хотя бы несколько слов.' );
         }
@@ -304,7 +311,8 @@ final class VKT_Wiro {
             }
             $files[] = $file;
         }
-        $body = self::request( '/Run/' . self::MODELS[ $model ]['slug'], self::payload( $model, mb_substr( $prompt, 0, 5000 ), $ratio, $seed ), 90, null, $files );
+        $payload = self::payload( $model, mb_substr( $prompt, 0, 5000 ), $ratio, $seed );
+        $body = self::request( '/Run/' . self::MODELS[ $model ]['slug'], $payload, 90, null, $files );
         if ( is_wp_error( $body ) ) {
             return $body;
         }
@@ -313,7 +321,7 @@ final class VKT_Wiro {
             return self::error( 'Wiro не вернул задачу генерации.', 502 );
         }
         set_transient( self::key( $id ), array( 'user' => VKT_Account::id(), 'model' => $model, 'started' => time() ), HOUR_IN_SECONDS );
-        VKT_Store::log( 'wiro.' . $model, 'ai', 'ok', 0, 'Задача генерации поставлена', 0 );
+        VKT_Store::log( 'wiro.' . $model, 'ai', 'ok', 0, 'Задача генерации поставлена', 0, array( 'request' => array( 'model' => self::MODELS[ $model ]['slug'] ) + self::shown( $payload, $files ), 'response' => $body ) );
         return array( 'id' => $id, 'status' => 'pending' );
     }
 
@@ -336,7 +344,7 @@ final class VKT_Wiro {
         $status = (string) ( $item['status'] ?? '' );
         if ( 'task_cancel' === $status ) {
             delete_transient( self::key( $id ) );
-            VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'error', 0, 'Wiro: задача отменена', 0 );
+            VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'error', 0, 'Wiro: задача отменена', 0, array( 'response' => $item ) );
             return self::error( 'Wiro отменил задачу.' . self::debug( $item ), 422 );
         }
         if ( 'task_postprocess_end' !== $status ) {
@@ -351,14 +359,14 @@ final class VKT_Wiro {
             }
         }
         if ( '0' !== (string) ( $item['pexit'] ?? '' ) || '' === $url ) {
-            VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'error', 0, 'Wiro: генерация не удалась', 0 );
+            VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'error', 0, 'Wiro: генерация не удалась', 0, array( 'response' => $item ) );
             return self::error( 'Wiro не нарисовал картинку.' . self::debug( $item ), 422 );
         }
         $media = VKT_Media::sideload( $url, 'image' );
         if ( is_wp_error( $media ) ) {
             return $media;
         }
-        VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'ok', 0, 'Изображение получено и сохранено в медиатеку', ( time() - (int) $task['started'] ) * 1000 );
+        VKT_Store::log( 'wiro.' . $task['model'], 'ai', 'ok', 0, 'Изображение получено и сохранено в медиатеку', ( time() - (int) $task['started'] ) * 1000, array( 'response' => $item ) );
         // Сколько списано, Wiro пишет в долларах — на стенде это видно рядом с картинкой.
         return array( 'status' => 'done', 'media' => $media, 'cost_usd' => isset( $item['totalcost'] ) ? round( (float) $item['totalcost'], 4 ) : null );
     }

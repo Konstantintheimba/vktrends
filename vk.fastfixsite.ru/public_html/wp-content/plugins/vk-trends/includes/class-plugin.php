@@ -93,7 +93,7 @@ final class VKT_Plugin {
     // Действия, которые трогают общий сбор, журнал или ключи сайта.
     // Модели для текстов общие для сайта: подключает и меняет их администратор, выбирают все.
     // Стенд фото открыт всем кабинетам в пределах суточного лимита; баланс кредитов BFL — дело хозяина ключа.
-    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'ai_reach', 'wiro_save', 'wiro_check', 'wiro_delete', 'notify_site' );
+    const ADMIN_ACTIONS = array( 'api', 'token_check', 'collect', 'retry', 'vkid_start', 'user_status', 'user_limits', 'flux_credits', 'ai_model_save', 'ai_model_delete', 'ai_model_default', 'ai_model_check', 'ai_key_save', 'ai_key_check', 'ai_key_delete', 'ai_reach', 'wiro_save', 'wiro_check', 'wiro_delete', 'log_detail', 'notify_site' );
 
     // Допустимые интервалы сбора. Промежуточные значения приводятся к ближайшему.
     const HOURS = array( 1, 2, 3, 4, 6, 12, 24 );
@@ -529,6 +529,8 @@ final class VKT_Plugin {
                 return VKT_AI::check_key( sanitize_key( (string) ( $data['preset'] ?? '' ) ) );
             case 'ai_reach':
                 return VKT_AI::reach();
+            case 'log_detail':
+                return VKT_Store::log_detail( $data['id'] ?? 0 );
             case 'wiro_save':
                 return VKT_Wiro::save( is_array( $data ) ? $data : array() );
             case 'wiro_check':
@@ -625,19 +627,32 @@ final class VKT_Plugin {
                 $visual = array_key_exists( 'visual', $data ) ? ! empty( $data['visual'] ) : $card;
                 $persona = ( $card || $visual ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'], $card, $visual ) : null;
                 if ( is_wp_error( $persona ) ) { return $persona; }
+                // Промпт — английская сцена из image_scene: правила кадра и «Визуал» в неё уже вошли,
+                // по-русски второй раз их не повторяем; внешность берём в переводе той же модели.
+                if ( is_array( $persona ) && ! empty( $data['scene'] ) ) {
+                    $persona['rules'] = '';
+                    $persona['visual'] = '';
+                    $look = is_string( $data['look_en'] ?? null ) ? trim( sanitize_textarea_field( $data['look_en'] ) ) : '';
+                    if ( '' !== $look && '' !== $persona['look'] ) { $persona['look'] = mb_substr( $look, 0, VKT_Groups::PERSONA_LOOK_MAX ); }
+                }
                 // source — текст записи по-русски: по нему отбираются предметы мира персонажа, промпт уже английский.
                 return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona, mb_substr( is_string( $data['source'] ?? null ) ? $data['source'] : '', 0, 4000 ) ) );
             }
             case 'image_status':
                 return VKT_Images::status( $data['id'] ?? '' );
             case 'image_scene': {
-                // Мир персонажа и «Визуал» паспорта — чтобы кадр шёл в знакомых местах блога, а не в случайной студии.
-                $brief = absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'] ) : null;
-                $world = is_array( $brief ) ? implode( '; ', array_filter( array_merge(
-                    array_map( static fn( $item ) => $item['title'] . ( '' !== $item['look'] ? ' (' . $item['look'] . ')' : '' ), $brief['items'] ),
-                    array( '' !== $brief['visual'] ? 'как снимает блог: ' . $brief['visual'] : '' )
-                ) ) ) : '';
-                return self::metered( 'text', static fn() => VKT_AI::image_scene( $data['text'] ?? '', $data['own'] ?? '', self::model_id( $data ), $world ) );
+                // Мир персонажа, правила кадра и «Визуал» — чтобы кадр шёл в знакомых местах блога и по его правилам.
+                // Пилюли окна записи действуют и здесь: выключенная часть в сцену не идёт.
+                $card = ! array_key_exists( 'card', $data ) || ! empty( $data['card'] );
+                $visual = ! array_key_exists( 'visual', $data ) || ! empty( $data['visual'] );
+                $brief = ( $card || $visual ) && absint( $data['group_id'] ?? 0 ) ? VKT_Groups::image_brief( $data['group_id'], $card, $visual ) : null;
+                $brief = is_array( $brief ) ? array(
+                    'world' => implode( '; ', array_map( static fn( $item ) => $item['title'] . ( '' !== $item['look'] ? ' (' . $item['look'] . ')' : '' ), $brief['items'] ) ),
+                    'visual' => $brief['visual'],
+                    'rules' => $brief['rules'],
+                    'look' => $brief['look'],
+                ) : array();
+                return self::metered( 'text', static fn() => VKT_AI::image_scene( $data['text'] ?? '', $data['own'] ?? '', self::model_id( $data ), $brief ) );
             }
             case 'ai_video_start': {
                 $started = self::metered( 'media', static fn() => VKT_AI::start_video( $data['prompt'] ?? '', $data['ratio'] ?? 'story' ) );

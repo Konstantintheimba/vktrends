@@ -205,6 +205,9 @@ final class VKT_Images {
         if ( '' !== ( $persona['visual'] ?? '' ) ) {
             $lines[] = 'Blog photo style: ' . $persona['visual'];
         }
+        if ( '' !== ( $persona['rules'] ?? '' ) ) {
+            $lines[] = 'Photo rules: ' . $persona['rules'];
+        }
         return $lines ? mb_substr( implode( "\n\n", $lines ) . "\n\nScene:\n" . $prompt, 0, 5000 ) : $prompt;
     }
 

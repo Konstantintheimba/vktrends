@@ -65,6 +65,8 @@ final class VKT_Collector {
         // Retention also runs while collection is paused or no token is configured.
         if ( ! get_transient( 'vkt_logs_pruned' ) ) {
             $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . VKT_Store::table( 'logs' ) . ' WHERE created_at<%s LIMIT 10000', gmdate( 'Y-m-d H:i:s', time() - 30 * DAY_IN_SECONDS ) ) );
+            // Промпты и ответы весят в сотни раз больше строки журнала — их держим неделю.
+            $wpdb->query( $wpdb->prepare( 'UPDATE ' . VKT_Store::table( 'logs' ) . ' SET detail=NULL WHERE detail IS NOT NULL AND created_at<%s LIMIT 10000', gmdate( 'Y-m-d H:i:s', time() - 7 * DAY_IN_SECONDS ) ) );
             // История постов прореживается по возрасту, иначе таблица замеров растёт линейно.
             VKT_Posts::prune();
             set_transient( 'vkt_logs_pruned', 1, HOUR_IN_SECONDS );

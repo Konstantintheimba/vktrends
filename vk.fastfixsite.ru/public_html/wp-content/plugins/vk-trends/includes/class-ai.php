@@ -534,6 +534,7 @@ final class VKT_AI {
         }
         $name = $model['title'];
         $method = 'llm.' . $model['preset'];
+        $request = array( 'model' => $model['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ) );
         $started = microtime( true );
         $response = self::send( $model['base'] . '/chat/completions', array(
             'timeout' => $timeout,
@@ -541,11 +542,11 @@ final class VKT_AI {
             'sslverify' => true,
             'limit_response_size' => 2097152,
             'headers' => array( 'Authorization' => 'Bearer ' . $model['key'], 'Content-Type' => 'application/json' ),
-            'body' => wp_json_encode( array( 'model' => $model['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ) ) ),
+            'body' => wp_json_encode( $request ),
         ) );
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $name . ' — ' . $response->get_error_message(), 0, 250 ), $duration );
+            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $name . ' — ' . $response->get_error_message(), 0, 250 ), $duration, array( 'request' => $request, 'response' => $response->get_error_message() ) );
             return self::unreachable( $name, $model['base'], $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
@@ -553,7 +554,7 @@ final class VKT_AI {
         $data = json_decode( $raw, true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $reason = self::reason( $data, $raw, $http, $model['key'] );
-            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $name . ': ' . $reason, 0, 250 ), $duration );
+            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $name . ': ' . $reason, 0, 250 ), $duration, array( 'request' => $request, 'response' => is_array( $data ) ? $data : $raw ) );
             return new WP_Error( 'vkt_ai', $name . ' отклонил запрос (HTTP ' . $http . '): ' . $reason, array(
                 'status' => 422,
                 'retryable' => 429 === $http || $http >= 500,
@@ -561,7 +562,7 @@ final class VKT_AI {
             ) );
         }
         $text = self::choice_text( $data );
-        VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration );
+        VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration, array( 'request' => $request, 'response' => array( 'text' => $text, 'usage' => $data['usage'] ?? null, 'finish_reason' => $data['choices'][0]['finish_reason'] ?? null ) ) );
         return '' === $text ? self::error( $name . ' не вернул текст.', 502, true ) : $text;
     }
 
@@ -736,17 +737,17 @@ final class VKT_AI {
         $response = wp_remote_request( 'https://api.x.ai' . $path, $args );
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', 0, 'Нет связи с xAI', $duration );
+            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', 0, 'Нет связи с xAI', $duration, array( 'request' => $body, 'response' => $response->get_error_message() ) );
             return self::error( 'Не удалось подключиться к xAI.', 502, true );
         }
         $http = wp_remote_retrieve_response_code( $response );
         $data = json_decode( wp_remote_retrieve_body( $response ), true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $message = self::reason( $data, (string) wp_remote_retrieve_body( $response ), $http, self::xai_key() );
-            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', $http, mb_substr( 'xAI: ' . $message, 0, 250 ), $duration );
+            VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'error', $http, mb_substr( 'xAI: ' . $message, 0, 250 ), $duration, array( 'request' => $body, 'response' => is_array( $data ) ? $data : (string) wp_remote_retrieve_body( $response ) ) );
             return self::error( 'xAI отклонил запрос (HTTP ' . $http . '): ' . mb_substr( $message, 0, 220 ), in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
         }
-        VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'ok', $http, 'Генерация xAI выполнена', $duration );
+        VKT_Store::log( 'xai.' . basename( $path ), 'ai', 'ok', $http, 'Генерация xAI выполнена', $duration, array( 'request' => $body, 'response' => $data ) );
         return $data;
     }
 
@@ -1039,7 +1040,7 @@ final class VKT_AI {
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         $method = 'search.' . $entry['kind'];
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $entry['title'] . ' — ' . $response->get_error_message(), 0, 250 ), $duration );
+            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $entry['title'] . ' — ' . $response->get_error_message(), 0, 250 ), $duration, array( 'request' => $body, 'response' => $response->get_error_message() ) );
             return self::unreachable( $entry['title'], $url, $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
@@ -1047,7 +1048,7 @@ final class VKT_AI {
         $data = json_decode( $raw, true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $reason = self::reason( $data, $raw, $http, $key );
-            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $entry['title'] . ': ' . $reason, 0, 250 ), $duration );
+            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $entry['title'] . ': ' . $reason, 0, 250 ), $duration, array( 'request' => $body, 'response' => is_array( $data ) ? $data : $raw ) );
             // Модель для текста поиск не меняет — подсказываем, где он выбирается на самом деле.
             $hint = in_array( $http, array( 403, 451 ), true ) ? ' Модель для текста поиск не меняет: в настройках новостей группы выберите в поле «Кто ищет» «Поиск плагина» — он работает с любой моделью.' : '';
             return self::error( $entry['title'] . ' отклонил поиск (HTTP ' . $http . '): ' . $reason . $hint, 422, 429 === $http || $http >= 500 );
@@ -1077,7 +1078,7 @@ final class VKT_AI {
                 $urls[] = (string) ( $note['url_citation']['url'] ?? $note['url'] ?? '' );
             }
         }
-        VKT_Store::log( $method, 'ai', 'ok', $http, 'Поиск выполнен: ' . $entry['title'] . ', источников ' . count( array_filter( $urls ) ), $duration );
+        VKT_Store::log( $method, 'ai', 'ok', $http, 'Поиск выполнен: ' . $entry['title'] . ', источников ' . count( array_filter( $urls ) ), $duration, array( 'request' => $body, 'response' => array( 'text' => $text, 'urls' => array_values( array_unique( array_filter( $urls ) ) ) ) ) );
         return '' === trim( $text ) ? self::error( $entry['title'] . ' не вернул результат поиска.', 502, true ) : array( 'text' => trim( $text ), 'urls' => array_values( array_unique( array_filter( $urls ) ) ), 'provider' => $entry['title'] );
     }
 
@@ -1191,30 +1192,52 @@ final class VKT_AI {
      * Кадр для картинки к посту. Модели картинок плохо превращают рассуждения
      * в сцену и скатываются к шаблону (27.10.2026 — четыре поста серии, одна
      * кухня), поэтому модель для текста пишет из поста один конкретный кадр на
-     * английском. Внешность героя сюда не идёт — её задают карточка персонажа
-     * и образцы. $world — места, вещи и манера съёмки блога.
+     * английском. $brief — что знает о фото группа: world (места и вещи),
+     * visual (строка паспорта), rules (правила кадра из карточки персонажа),
+     * look (внешность). Правила и «Визуал» модель сама сводит к тому, что
+     * касается одного снимка: в «Визуал» пишут и план серии, и параметры видео.
+     * Внешность в сцену не идёт — её задают образцы, — а возвращается
+     * переводом: русский текст модели картинок понимают хуже.
      */
-    public static function image_scene( $text, $own = '', $model = '', $world = '' ) {
-        $text = mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) $text ) ) ), 0, 3000 );
-        $own = mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) $own ) ) ), 0, 600 );
+    public static function image_scene( $text, $own = '', $model = '', $brief = array() ) {
+        $clean = static fn( $value, $max ) => mb_substr( trim( (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( is_string( $value ) ? $value : '' ) ) ), 0, $max );
+        $text = $clean( $text, 3000 );
+        $own = $clean( $own, 600 );
+        $world = $clean( $brief['world'] ?? '', 1500 );
+        $visual = $clean( $brief['visual'] ?? '', 800 );
+        $rules = $clean( $brief['rules'] ?? '', 1500 );
+        $look = $clean( $brief['look'] ?? '', 1500 );
         if ( mb_strlen( $text ) < 10 ) {
             return self::error( 'Для сцены нужен текст записи.' );
         }
-        $input = 'Ты фоторедактор блога в VK. По тексту поста ниже придумай один конкретный кадр для фотографии к нему и опиши его на английском, 40–80 слов.'
+        $input = 'Ты фоторедактор блога в VK. По тексту поста ниже придумай один конкретный кадр для фотографии к нему и опиши его на английском, 40–90 слов.'
             . ' Опиши: где это происходит, что человек делает в этот момент, позу, во что он одет, что вокруг, время суток и свет, ракурс и крупность плана.'
             . ' Кадр должен вытекать из темы и деталей именно этого поста, а не быть общим «человек дома». Если пост о чувствах или мыслях — найди бытовую сцену, которая их показывает.'
             . ' Не описывай лицо, волосы, возраст и телосложение героя — внешность задана отдельно. Без надписей и текста в кадре.'
-            . ( '' !== $world ? ' Места, вещи и манера съёмки блога — бери их, если подходят к сюжету: ' . $world : '' )
+            . ( '' !== $rules ? ' Правила кадра блога — соблюдай каждое, впиши их в описание кадра: ' . $rules : '' )
+            . ( '' !== $visual ? ' Как снимает блог (из паспорта; возьми только то, что касается одной фотографии, — планы серий, видео и технические требования к файлам пропусти): ' . $visual : '' )
+            . ( '' !== $world ? ' Места, вещи и питомцы блога — бери их, если подходят к сюжету: ' . $world : '' )
             . ( '' !== $own ? ' Пожелание автора к кадру, оно важнее текста поста: ' . $own : '' )
-            . ' Ответь только описанием кадра, без вступления и кавычек.'
+            . ( '' !== $look ? ' Отдельно переведи на английский описание внешности героя, близко к тексту, без оценок и без одежды: ' . $look : '' )
+            . ' Верни строго JSON вида {"scene":"описание кадра"' . ( '' !== $look ? ',"look":"appearance"' : '' ) . '} без пояснений.'
             . "\n\nПост:\n" . $text;
         $result = self::chat( $input, 60, $model );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
+        $raw = trim( (string) $result );
+        if ( false !== ( $from = strpos( $raw, '{' ) ) && false !== ( $to = strrpos( $raw, '}' ) ) && $to > $from ) {
+            $data = json_decode( substr( $raw, $from, $to - $from + 1 ), true );
+        }
+        // Модель ответила не JSON — значит, просто описанием кадра.
+        $data = isset( $data ) && is_array( $data ) ? $data : array( 'scene' => $raw );
         // Кавычки снимаем регуляркой: trim() побайтово отрезал бы и хвосты кириллицы.
-        $scene = (string) preg_replace( '/^["\'«»\s]+|["\'«»\s]+$/u', '', (string) preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) $result ) ) );
-        return mb_strlen( $scene ) >= 20 ? array( 'scene' => mb_substr( $scene, 0, 1200 ) ) : self::error( 'Модель не написала сцену для картинки.', 502 );
+        $strip = static fn( $value ) => (string) preg_replace( '/^["\'«»\s]+|["\'«»\s]+$/u', '', $clean( $value, 1500 ) );
+        $scene = $strip( $data['scene'] ?? '' );
+        if ( mb_strlen( $scene ) < 20 ) {
+            return self::error( 'Модель не написала сцену для картинки.', 502 );
+        }
+        return array( 'scene' => mb_substr( $scene, 0, 1200 ), 'look' => '' !== $look ? $strip( $data['look'] ?? '' ) : '' );
     }
 
     public static function news_headlines( $texts, $model = '', $context = '' ) {
@@ -1444,8 +1467,10 @@ final class VKT_AI {
             ) );
         }
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
+        // Образцы в журнале — именами файлов: байты там ни к чему.
+        $request = $fields + ( $files ? array( 'image[]' => array_map( static fn( $file ) => $file['name'] . ' (' . strlen( $file['bytes'] ) . ' байт)', $files ) ) : array() );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( 'openai.images', 'ai', 'error', 0, mb_substr( 'Нет связи: OpenAI — ' . $response->get_error_message(), 0, 250 ), $duration );
+            VKT_Store::log( 'openai.images', 'ai', 'error', 0, mb_substr( 'Нет связи: OpenAI — ' . $response->get_error_message(), 0, 250 ), $duration, array( 'request' => $request, 'response' => $response->get_error_message() ) );
             return self::unreachable( 'OpenAI', $entry['base'], $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
@@ -1453,10 +1478,10 @@ final class VKT_AI {
         $data = json_decode( $raw, true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $reason = mb_substr( self::reason( $data, $raw, $http, $entry['key'] ), 0, 220 );
-            VKT_Store::log( 'openai.images', 'ai', 'error', $http, mb_substr( 'OpenAI: ' . $reason, 0, 250 ), $duration );
+            VKT_Store::log( 'openai.images', 'ai', 'error', $http, mb_substr( 'OpenAI: ' . $reason, 0, 250 ), $duration, array( 'request' => $request, 'response' => is_array( $data ) ? $data : $raw ) );
             return self::error( 'OpenAI отклонил запрос (HTTP ' . $http . '): ' . $reason, in_array( $http, array( 401, 403 ), true ) ? 401 : 422, 429 === $http || $http >= 500 );
         }
-        VKT_Store::log( 'openai.images', 'ai', 'ok', $http, 'Картинка получена: ' . $model . ( $files ? ', опорных фото: ' . count( $files ) : '' ), $duration );
+        VKT_Store::log( 'openai.images', 'ai', 'ok', $http, 'Картинка получена: ' . $model . ( $files ? ', опорных фото: ' . count( $files ) : '' ), $duration, array( 'request' => $request, 'response' => array( 'usage' => $data['usage'] ?? null, 'revised_prompt' => $data['data'][0]['revised_prompt'] ?? null, 'image' => strlen( (string) ( $data['data'][0]['b64_json'] ?? '' ) ) . ' знаков base64' ) ) );
         $bytes = base64_decode( (string) ( $data['data'][0]['b64_json'] ?? '' ), true );
         unset( $data, $raw, $response );
         return $bytes ? VKT_Media::store_image( $bytes ) : self::error( 'OpenAI не вернул картинку.', 502, true );

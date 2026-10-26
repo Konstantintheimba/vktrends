@@ -28,7 +28,7 @@ function wp_get_attachment_image_url( $id, $size ) { return '1536x1536' === $siz
 
 class VKT_Store {
     public static array $logs = array();
-    public static function log( $method, $context, $status, $code, $message, $ms = 0 ) { self::$logs[] = compact( 'method', 'status', 'message' ); }
+    public static function log( $method, $context, $status, $code, $message, $ms = 0, $detail = null ) { self::$logs[] = compact( 'method', 'status', 'message', 'detail' ); }
 }
 // Шифрование подменено обратимой пометкой: проверяем, что в базу не уходит открытый ключ.
 class VKT_Tokens {
@@ -137,6 +137,10 @@ $assert( 'Девушка на пляже в купальнике' === $sent['pay
 $assert( $sent['multipart'] && array( 'face-1.jpg', 'face-2.jpg', 'face-3.jpg', 'face-4.jpg' ) === array_column( $sent['payload']['inputImage'], 'file' ) && 'FACEBYTES' === $sent['payload']['inputImage'][0]['bytes'], 'Образцы уходят файлами, повторяющимся полем inputImage, не больше четырёх' );
 $assert( '3:4' === $sent['payload']['aspectRatio'] && '1' === $sent['payload']['maxImages'] && isset( $sent['args']['headers']['x-signature'] ), 'Поля модели и подпись в multipart на месте' );
 $assert( is_wp_error( VKT_Wiro::start( 'seedream-4-5', 'кот на окне', 'portrait', array( 7 ) ) ), 'Образец больше 10 МБ не отправляется' );
+$logged = array_values( array_filter( VKT_Store::$logs, static fn( $row ) => 'Задача генерации поставлена' === $row['message'] ) );
+$detail = json_encode( end( $logged )['detail'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+$assert( str_contains( $detail, 'bytedance/seedream-v4-5-uncensored' ) && str_contains( $detail, 'Девушка на пляже в купальнике' ) && str_contains( $detail, 'face-1.jpg (9 байт)' ) && str_contains( $detail, '534574' ), 'В журнал уходят модель, промпт, имена образцов и ответ Wiro' );
+$assert( ! str_contains( $detail, 'FACEBYTES' ) && ! str_contains( $detail, 'wiro_key' ) && ! str_contains( $detail, 'wiro_secret' ), 'Байты фото, ключ и секрет в журнал не попадают' );
 $assert( ! str_contains( $sent['args']['body'], 'wiro_key' ), 'Ключ в тело запроса не попадает' );
 $assert( is_wp_error( VKT_Wiro::start( 'seedream-4-5', 'кот на окне', 'portrait', array( 6 ) ) ), 'Видео образцом не принимается' );
 queue( reply( array( 'result' => true, 'taskid' => '777' ) ) );

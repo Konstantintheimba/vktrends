@@ -113,6 +113,10 @@ $assert( array() === VKT_Flux::$started['images'] && 'Маша выбирает 
 $plain = VKT_Images::persona_prompt( 'Сюжет', array( 'look' => 'мужчина с бородой', 'photos' => array(), 'items' => array(), 'visual' => '' ) );
 $assert( str_contains( $plain, 'The main person is always the same. Appearance: мужчина с бородой' ) && ! str_contains( $plain, 'reference images' ), 'Без фото (xAI) — только описание, про образцы ни слова' );
 
+// Правила кадра без сцены от модели для текста идут отдельной строкой, как вписаны.
+$ruled = VKT_Images::persona_prompt( 'Маша у окна', array( 'look' => '', 'rules' => 'полный рост; телефон экраном вниз', 'photos' => array( 1 ), 'items' => array(), 'visual' => '' ), array(), array( 'person' ) );
+$assert( str_contains( $ruled, "Photo rules: полный рост; телефон экраном вниз\n\nScene:\nМаша у окна" ), 'Правила кадра — перед сценой' );
+
 // Мир персонажа: в кадр идёт то, о чём сюжет; фото нумеруются, лицо первым.
 $world = array( 'look' => '', 'photos' => array( 1, 2, 3 ), 'visual' => '', 'items' => array(
     array( 'title' => 'Кошка Муся', 'look' => 'серая британка с медными глазами', 'words' => 'кошк, Мус', 'photos' => array( 21, 22 ) ),
