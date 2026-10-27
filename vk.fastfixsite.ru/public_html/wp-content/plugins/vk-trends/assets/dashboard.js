@@ -553,17 +553,18 @@
     const imagesReady = () => !!publishingData?.status?.media_native && imageProviders().length > 0;
     // Стороны кратны 32 — иначе BFL отвечает 422.
     const fluxSizes = {portrait: [768, 1024], square: [1024, 1024], landscape: [1344, 768], story: [768, 1344]};
-    // Дополнение автора идёт к сюжету поста, а не вместо него: «вечер, крупный план» уточняет кадр,
-    // а карточку персонажа и «Визуал» паспорта к этому добавит сервер. Без текста поста дополнение и есть сюжет.
+    // Запасной промпт, когда сцену написать не вышло. Дополнение автора — первым: стояло после 1800 знаков
+    // поста, и модель его теряла (27.10.2026 — муж из дополнения в кадр не попал). Пост — короткой выжимкой
+    // для настроения: рассуждения модель картинок в кадр не превращает. Карточку персонажа и «Визуал» добавит сервер.
     function seriesImagePrompt(text, own = '', post = true) {
         const style = seriesImage.style.trim();
-        const body = post ? String(text || '').trim().slice(0, 1800) : '';
+        const body = post ? String(text || '').trim().replace(/\s+/g, ' ').slice(0, 500) : '';
         own = String(own || '').trim();
         return [
-            body ? `Иллюстрация к посту в соцсети. Содержание поста: ${body}` : '',
-            own ? (body ? `Дополнительно к сюжету — это важнее текста поста: ${own}` : own) : '',
-            style ? `Стиль: ${style}` : '',
-            'Без текста, надписей и логотипов на изображении.',
+            own ? (body ? `Main subject of the photo, follow it exactly: ${own}` : own) : '',
+            style ? `Style: ${style}` : '',
+            body ? `${own ? 'Mood' : 'Photo'} for a social media post (Russian text, context only — do not put it in the image): ${body}` : '',
+            'No text, captions, letters or logos in the image.',
         ].filter(Boolean).join('\n\n').slice(0, 5000);
     }
     // Сцена к картинке: модель для текста пишет из поста один кадр на английском. Сами модели картинок

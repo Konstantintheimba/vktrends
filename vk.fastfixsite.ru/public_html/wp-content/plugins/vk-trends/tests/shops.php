@@ -107,11 +107,12 @@ $persona = array( 'look' => 'женщина 34 лет, русые волосы �
 VKT_Images::start( 'bfl:flux-2-pro', 'Маша выбирает шторы', 'story', $persona );
 $prompt = VKT_Flux::$started['prompt'];
 $assert( array( 11, 12, 13, 14, 15 ) === VKT_Flux::$started['images'], 'FLUX.2 pro получает все фото персонажа' );
-$assert( str_starts_with( $prompt, 'The reference images are identity references only. Create a completely new photograph' ) && str_contains( $prompt, "\n\nReference images in order: images 1–5 — the main person" ) && str_contains( $prompt, 'same as in reference images 1–5' ) && str_contains( $prompt, 'Main person appearance: женщина 34 лет' ) && str_contains( $prompt, 'Blog photo style: фото на телефон' ) && str_contains( $prompt, 'other people or animals' ) && str_ends_with( $prompt, "Scene:\nМаша выбирает шторы" ), 'Персонаж и визуал — до сцены, служебные фразы по-английски, фото пронумерованы' );
+$assert( str_starts_with( $prompt, 'Create a completely new photograph, not an edit of the reference images. Reference images: images 1–5 show the main person.' ) && 1 === substr_count( $prompt, 'identity' ) && str_contains( $prompt, 'The main person: женщина 34 лет' ) && str_contains( $prompt, 'Photo style: фото на телефон' ), 'Образцы — одним абзацем первыми, внешность и визуал — до сцены, по-английски' );
+$assert( str_ends_with( $prompt, "Scene:\nМаша выбирает шторы\n\nOnly the people and animals named in the scene — nobody else." ), 'Запрет на посторонних — после сцены, а не перед ней' );
 VKT_Images::start( 'bfl:flux-2-pro', 'Маша выбирает шторы', 'story' );
 $assert( array() === VKT_Flux::$started['images'] && 'Маша выбирает шторы' === VKT_Flux::$started['prompt'], 'Без персонажа промпт и образцы не трогаются' );
 $plain = VKT_Images::persona_prompt( 'Сюжет', array( 'look' => 'мужчина с бородой', 'photos' => array(), 'items' => array(), 'visual' => '' ) );
-$assert( str_contains( $plain, 'The main person is always the same. Appearance: мужчина с бородой' ) && ! str_contains( $plain, 'reference images' ), 'Без фото (xAI) — только описание, про образцы ни слова' );
+$assert( str_contains( $plain, 'The main person is always the same: мужчина с бородой' ) && ! str_contains( $plain, 'reference images' ), 'Без фото (xAI) — только описание, про образцы ни слова' );
 
 // Правила кадра без сцены от модели для текста идут отдельной строкой, как вписаны.
 $ruled = VKT_Images::persona_prompt( 'Маша у окна', array( 'look' => '', 'rules' => 'полный рост; телефон экраном вниз', 'photos' => array( 1 ), 'items' => array(), 'visual' => '' ), array(), array( 'person' ) );
@@ -126,13 +127,15 @@ $world = array( 'look' => '', 'photos' => array( 1, 2, 3 ), 'visual' => '', 'ite
 ) );
 $plan = VKT_Images::persona_plan( 'Вечер дома, Муся спит на подоконнике', $world, 8 );
 $assert( array( 1, 2, 3, 21, 31, 22 ) === $plan['refs'], 'Лицо, по фото на предмет, вторые фото — если есть место' );
-$assert( str_contains( $plain = $plan['prompt'], 'images 1–3 — the main person (face from different angles); image 4, 6 — Кошка Муся; image 5 — Квартира' ) && str_contains( $plain, '- Кошка Муся: серая британка' ) && str_contains( $plain, '- Часы: золотые' ) && ! str_contains( $plain, 'Студия штор' ), 'Предметы по словам сюжета, без слов — всегда; студии в кадре нет' );
+$assert( str_contains( $plain = $plan['prompt'], 'images 1–3 show the main person; image 4, 6 — Кошка Муся; image 5 — Квартира' ) && str_contains( $plain, '- Кошка Муся: серая британка' ) && str_contains( $plain, '- Часы: золотые' ) && ! str_contains( $plain, 'Студия штор' ), 'Предметы по словам сюжета, без слов — всегда; студии в кадре нет' );
 $assert( array( 1, 2, 3, 41 ) === VKT_Images::persona_plan( 'Работа в студии', $world, 4 )['refs'], 'klein: четыре образца — лицо и студия' );
 // Промпт — английская сцена: предметы отбираются по русскому тексту записи.
 $assert( array( 1, 2, 3, 21, 22 ) === VKT_Images::persona_plan( 'A woman reads on the windowsill at night', $world, 8, 'Муся опять спит у меня на книге' )['refs'] && array( 1, 2, 3 ) === VKT_Images::persona_plan( 'A woman reads on the windowsill at night', $world, 8 )['refs'], 'Кошка из карточки находится по тексту записи, а не по английской сцене' );
 $assert( array() === VKT_Images::persona_plan( 'Вечер дома с Мусей', $world, 0 )['refs'] && str_contains( VKT_Images::persona_plan( 'Вечер дома с Мусей', $world, 0 )['prompt'], 'серая британка' ), 'xAI: без фото, но с описанием кошки' );
 $ids = array_column( VKT_Images::providers(), 'refs', 'id' );
 $assert( 0 === $ids['xai'] && 8 === $ids['bfl:flux-2-pro'], 'Реестр знает, сколько образцов берёт каждая модель' );
-$assert( mb_strlen( VKT_Images::persona_prompt( str_repeat( 'а', 6000 ), $world, $world['items'], array( 'person' ) ) ) <= 5000, 'Промпт с персонажем не длиннее 5000 знаков' );
+$long = VKT_Images::persona_prompt( str_repeat( 'а', 6000 ), $world, $world['items'], array( 'person' ) );
+$assert( mb_strlen( $long ) <= 5000 && str_ends_with( $long, 'nobody else.' ), 'Промпт с персонажем не длиннее 5000 знаков, режется сцена, а не запрет' );
+
 
 echo "PASS: $checks shops and images checks\n";

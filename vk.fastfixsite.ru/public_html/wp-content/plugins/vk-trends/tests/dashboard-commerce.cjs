@@ -419,7 +419,8 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     check(parts.includes('Карточка персонажа') && parts.includes('data-series-image="visual"') && parts.includes('data-series-image="post"') && parts.includes('is-active'), 'В окне записи: карточка, визуал паспорта и текст поста — пилюлями');
     check(!api.promptParts({has_visual: true}).includes('data-series-image="post"') && api.promptParts({has_visual: true}).includes('Визуал паспорта') && !api.promptParts({has_visual: true}).includes('data-persona-note'), 'Пачке серии «Текст поста» не выключить; без персонажа нет подсказки об образцах');
     const both = api.seriesImagePrompt('Маша варит какао', 'вечер, крупный план');
-    check(both.includes('Содержание поста: Маша варит какао') && both.includes('Дополнительно к сюжету — это важнее текста поста: вечер, крупный план'), 'Дополнение идёт к тексту поста, а не вместо него');
+    check(both.startsWith('Main subject of the photo, follow it exactly: вечер, крупный план') && both.includes('context only — do not put it in the image): Маша варит какао'), 'Дополнение — первым, текст поста — к нему для настроения, а не вместо него');
+    check(api.seriesImagePrompt('а'.repeat(3000), '').length < 700, 'Пост в запасном промпте — выжимкой, а не 1800 знаков');
     const alone = api.seriesImagePrompt('Маша варит какао', 'кошка на подоконнике', false);
     check(!alone.includes('какао') && alone.startsWith('кошка на подоконнике'), 'Без текста поста дополнение и есть сюжет');
     const personaHtml = api.groupPersonaPanel({persona: {look: 'русые <волосы>', photos: [{id: 5, type: 'image', thumbnail: 'https://site.test/5.jpg'}]}});

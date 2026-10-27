@@ -110,7 +110,7 @@ $GLOBALS['vkt_net'] = array( array( 'body' => json_encode( array( 'data' => arra
 $result = VKT_Images::start( 'openai:gpt-image-1', 'Маша у окна', 'story', array( 'look' => 'русые волосы', 'photos' => array( 5 ), 'visual' => '' ) );
 $call = $GLOBALS['vkt_calls'][0];
 $assert( 'done' === $result['status'] && 'https://api.openai.com/v1/images/edits' === $call['url'] && str_starts_with( $call['headers']['Content-Type'], 'multipart/form-data; boundary=' ), 'С фото персонажа запрос идёт в /images/edits' );
-$assert( str_contains( $call['raw'], 'name="image[]"; filename="masha-5.jpg"' ) && str_contains( $call['raw'], 'FACEBYTES' ) && str_contains( $call['raw'], "name=\"input_fidelity\"\r\n\r\nhigh" ) && str_contains( $call['raw'], 'Main person appearance: русые волосы' ), 'Фото, точность и персонаж в теле запроса' );
+$assert( str_contains( $call['raw'], 'name="image[]"; filename="masha-5.jpg"' ) && str_contains( $call['raw'], 'FACEBYTES' ) && str_contains( $call['raw'], "name=\"input_fidelity\"\r\n\r\nhigh" ) && str_contains( $call['raw'], 'The main person: русые волосы' ), 'Фото, точность и персонаж в теле запроса' );
 // Модель не знает input_fidelity — второй заход без него.
 $GLOBALS['vkt_calls'] = array();
 $GLOBALS['vkt_net'] = array( array( 'code' => 400, 'body' => json_encode( array( 'error' => array( 'message' => "Unknown parameter: 'input_fidelity'." ) ) ) ), array( 'body' => json_encode( array( 'data' => array( array( 'b64_json' => base64_encode( 'JPEGDATA' ) ) ) ) ) ) );

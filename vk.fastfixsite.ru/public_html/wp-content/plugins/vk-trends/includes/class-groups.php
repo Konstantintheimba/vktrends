@@ -348,13 +348,25 @@ final class VKT_Groups {
             $item['photos'] = $alive( $item['photos'] );
         }
         unset( $item );
-        $persona['visual'] = $visual ? self::passport_visual( (string) ( $group['passport'] ?? '' ) ) : '';
+        $persona['visual'] = $visual ? self::photo_visual( self::passport_visual( (string) ( $group['passport'] ?? '' ) ) ) : '';
         return '' === $persona['look'] && '' === $persona['rules'] && ! $persona['photos'] && ! $persona['items'] && '' === $persona['visual'] ? null : $persona;
     }
 
     /** Строка «- Визуал: …» из паспорта. Пустой пункт шаблона не считается. */
     public static function passport_visual( $passport ) {
         return preg_match( '/^[ \t]*[-*][ \t]*\**Визуал[^:\n]*:\**[ \t]*(\S[^\n]*)$/miu', $passport, $match ) ? mb_substr( trim( $match[1] ), 0, 600 ) : '';
+    }
+
+    /**
+     * Из «Визуала» — только то, что касается одного снимка. В строку пишут и
+     * план серии, и требования к видео и файлам (27.10.2026 в Wiro ушло
+     * «MP4, H.264/AAC, 15–60 кадров/с»): модели картинок это шум, а формат
+     * кадра задаёт выбор пропорций. Режем по предложениям и частям через «;».
+     */
+    public static function photo_visual( $visual ) {
+        $parts = preg_split( '/(?<=[.!?;])\s+/u', trim( (string) $visual ) );
+        $noise = '/видео|ролик|mp4|h\.?26[45]|aac|кадр(ов)?\s*\/\s*с|\bмб\b|\bmb\b|секунд|сери[яиюей]|публикаци|целевой размер|формат\s*\d|\d{3,4}\s*[×x]\s*\d{3,4}/iu';
+        return trim( implode( ' ', array_filter( (array) $parts, static fn( $part ) => '' !== trim( $part ) && ! preg_match( $noise, $part ) ) ) );
     }
 
     /** Добавить материал базы ведения или поправить существующий. Возвращает список целиком. */

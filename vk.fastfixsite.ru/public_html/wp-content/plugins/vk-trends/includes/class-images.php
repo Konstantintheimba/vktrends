@@ -161,13 +161,15 @@ final class VKT_Images {
     }
 
     /**
-     * Персонаж и его мир — в начале промпта: модели держат внешность лучше,
-     * когда она задана до сюжета. Хвост сюжета при нехватке места режется,
-     * персонаж — нет. $owners — чьё каждое опорное фото: 'person' или номер предмета.
+     * Персонаж и его мир — до сцены: модели держат внешность лучше, когда
+     * она задана до сюжета. Хвост сцены при нехватке места режется, персонаж
+     * и запреты — нет. $owners — чьё каждое опорное фото: 'person' или номер предмета.
      * Служебные фразы — по-английски: модели картинок понимают его надёжнее
      * (27.10.2026 Seedream пропустил русскую оговорку «кадр не копируй» и
-     * вернул четырём постам одну кухню). Описания из карточки и паспорта
-     * идут как их вписали.
+     * вернул четырём постам одну кухню). Про образцы — один абзац, а не три
+     * повтора: модель весит каждую фразу, и тройное «тот же человек» глушило
+     * сцену. Запрет на посторонних — после сцены и с оговоркой: стоял до неё —
+     * и мужа из пожелания автора модель выбрасывала.
      */
     public static function persona_prompt( $prompt, $persona, $items = array(), $owners = array() ) {
         // Номера фото одного владельца: «1–3», «4» или «4, 6».
@@ -176,39 +178,39 @@ final class VKT_Images {
             $range = $list && count( $list ) > 1 && end( $list ) - $list[0] === count( $list ) - 1;
             return $range ? $list[0] . '–' . end( $list ) : implode( ', ', $list );
         };
-        $lines = array();
+        $head = array();
         $person = $numbers( 'person' );
         if ( $owners ) {
-            $map = '' !== $person ? array( ( str_contains( $person, '–' ) || str_contains( $person, ',' ) ? 'images ' : 'image ' ) . $person . ' — the main person (face from different angles)' ) : array();
+            $map = '' !== $person ? array( ( str_contains( $person, '–' ) || str_contains( $person, ',' ) ? 'images ' : 'image ' ) . $person . ' show the main person' ) : array();
             foreach ( $items as $index => $item ) {
                 if ( '' !== $numbers( $index ) ) {
                     $map[] = 'image ' . $numbers( $index ) . ' — ' . $item['title'];
                 }
             }
             // Первой строкой: одно фото Seedream считал картинкой для правки и возвращал тот же кадр.
-            $lines[] = 'The reference images are identity references only. Create a completely new photograph: the place, action, pose, clothing, framing and light come from the scene below. Do not reproduce the background, room, clothing or composition of the reference images.';
-            $lines[] = 'Reference images in order: ' . implode( '; ', $map ) . '.';
-        }
-        if ( '' !== $person ) {
-            $lines[] = 'The main person is the same as in reference images ' . $person . ': same face and facial features, hair colour and length, body type and age.';
+            $head[] = 'Create a completely new photograph, not an edit of the reference images. Reference images: ' . implode( '; ', $map ) . '.'
+                . ( '' !== $person ? ' Keep the main person\'s identity — face, facial features, hair colour and length, body type and age.' : '' )
+                . ' Take nothing else from the references: the place, background, clothing, pose, framing and light come from the scene.';
         }
         if ( '' !== $persona['look'] ) {
-            $lines[] = ( '' !== $person ? 'Main person appearance: ' : 'The main person is always the same. Appearance: ' ) . $persona['look'];
+            $head[] = ( '' !== $person ? 'The main person: ' : 'The main person is always the same: ' ) . $persona['look'];
         }
         if ( $items ) {
-            $lines[] = "Recurring places, things and pets of the blog — show them exactly as in the references and descriptions, do not replace them with others:\n" . implode( "\n", array_map( static fn( $item ) => '- ' . $item['title'] . ( '' !== $item['look'] ? ': ' . $item['look'] : '' ), $items ) );
-        }
-        if ( '' !== $persona['look'] || $persona['photos'] || ! empty( $persona['items'] ) ) {
-            // Модели любят дорисовать уюта — котика или подругу; у блога они свои, чужие ломают узнаваемость.
-            $lines[] = 'Do not add other people or animals unless the scene mentions them.';
+            $head[] = "Recurring places, things and pets of the blog — show them as in the references and descriptions:\n" . implode( "\n", array_map( static fn( $item ) => '- ' . $item['title'] . ( '' !== $item['look'] ? ': ' . $item['look'] : '' ), $items ) );
         }
         if ( '' !== ( $persona['visual'] ?? '' ) ) {
-            $lines[] = 'Blog photo style: ' . $persona['visual'];
+            $head[] = 'Photo style: ' . $persona['visual'];
         }
         if ( '' !== ( $persona['rules'] ?? '' ) ) {
-            $lines[] = 'Photo rules: ' . $persona['rules'];
+            $head[] = 'Photo rules: ' . $persona['rules'];
         }
-        return $lines ? mb_substr( implode( "\n\n", $lines ) . "\n\nScene:\n" . $prompt, 0, 5000 ) : $prompt;
+        if ( ! $head ) {
+            return $prompt;
+        }
+        // Модели любят дорисовать уюта — котика или подругу; у блога они свои, чужие ломают узнаваемость.
+        $tail = '' !== $persona['look'] || $persona['photos'] || ! empty( $persona['items'] ) ? "\n\nOnly the people and animals named in the scene — nobody else." : '';
+        $head = implode( "\n\n", $head ) . "\n\nScene:\n";
+        return $head . mb_substr( $prompt, 0, max( 0, 5000 - mb_strlen( $head ) - mb_strlen( $tail ) ) ) . $tail;
     }
 
     public static function status( $id ) {
