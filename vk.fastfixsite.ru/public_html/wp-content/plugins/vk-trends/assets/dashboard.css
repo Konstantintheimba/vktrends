@@ -676,3 +676,23 @@ button.vkt-persona-add { font: inherit; font-size: 12px; }
 .vkt-prompt-part { position: relative; cursor: pointer; user-select: none; }
 .vkt-prompt-part input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
 .vkt-prompt-part:has(input:focus-visible) { outline: 2px solid #bcd3fb; outline-offset: 2px; }
+
+/* Отдельный шопс: слева исходные данные, справа — готовое для рекламного сервиса. */
+.vkt-shop-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 18px; align-items: start; }
+.vkt-shop-layout > div { display: grid; gap: 18px; min-width: 0; }
+.vkt-shop-ready { position: sticky; top: 20px; min-width: 0; }
+.vkt-shop-ready > label { display: grid; gap: 7px; font-size: 12px; font-weight: 600; }
+.vkt-shop-ready-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 10px 0 20px; color: var(--vkt-muted); font-size: 11px; }
+.vkt-shop-ready h3 { margin: 18px 0 10px; font-size: 14px; }
+.vkt-shop-gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.vkt-shop-gallery > .vkt-muted { grid-column: 1 / -1; line-height: 1.7; }
+.vkt-shop-photo { min-width: 0; margin: 0; overflow: hidden; border: 1px solid var(--vkt-line); border-radius: 10px; background: #fbfcfe; }
+.vkt-shop-photo > a { display: block; aspect-ratio: 4 / 3; background: #eef2f7; }
+.vkt-shop-photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.vkt-shop-photo figcaption { display: grid; gap: 7px; padding: 9px; font-size: 10px; }
+.vkt-shop-photo figcaption strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vkt-shop-photo figcaption span { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+.vkt-shop-photo figcaption a, .vkt-shop-photo figcaption button { color: #3973d5; font-size: 10px; }
+.vkt-shop-photo figcaption button { padding: 0; border: 0; background: none; cursor: pointer; }
+@media (max-width: 1100px) { .vkt-shop-layout { grid-template-columns: minmax(0, 1fr); } .vkt-shop-ready { position: static; } }
+@media (max-width: 480px) { .vkt-shop-gallery { grid-template-columns: minmax(0, 1fr); } .vkt-shop-photo > a { aspect-ratio: 16 / 10; } }

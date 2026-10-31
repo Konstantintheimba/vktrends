@@ -625,7 +625,7 @@ final class VKT_Plugin {
             case 'shop_post': {
                 $brief = VKT_Shops::brief( $data );
                 if ( is_wp_error( $brief ) ) { return $brief; }
-                return self::metered( 'text', static fn() => VKT_AI::generate_shop_post( $brief, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) );
+                return self::job( $data['job'] ?? '', static fn() => self::metered( 'text', static fn() => VKT_AI::generate_shop_post( $brief, self::model_id( $data ), self::group_context( $data['group_id'] ?? 0 ) ) ) );
             }
             case 'image_start': {
                 // Рисунок к записи группы: карточка персонажа и «Визуал» паспорта, если не выключены.

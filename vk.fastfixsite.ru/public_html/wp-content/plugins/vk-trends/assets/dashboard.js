@@ -6,7 +6,7 @@
     const $ = (selector, parent = root) => parent.querySelector(selector);
     const content = $('#vkt-content');
     const dialog = $('#vkt-dialog');
-    const names = {flux: 'Генерация фото', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', groups: 'Мои сообщества', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', models: 'Нейросети', settings: 'Настройки'};
+    const names = {flux: 'Генерация фото', shops: 'Генерировать шопс', overview: 'Обзор', discover: 'Поиск трендов', posts: 'Посты', communities: 'Сообщества', publishing: 'Автопостинг', groups: 'Мои сообщества', series: 'Серия постов', videos: 'Мои ролики', products: 'Товары', sources: 'Источники', reading: 'Чтение постов', comments: 'Комментарии', posting: 'Публикация', attachments: 'Что можно прикрепить', users: 'Пользователи', api: 'Тест API', collector: 'Сбор данных', logs: 'Журнал', models: 'Нейросети', settings: 'Настройки'};
     // Кабинет пользователя: общий сбор, журнал и ключи сайта видит только администратор.
     // Сервер эти разделы участнику всё равно не отдаст — здесь их просто не рисуем.
     let account = config.account || {};
@@ -119,6 +119,9 @@
     const SERIES_LENGTHS = {'': ['Как в паспорте группы', 30], short: ['Короткие · 300–600 знаков', 30], medium: ['Средние · 600–1200 знаков', 10], long: ['Длинные · 1200–2000 знаков', 5], longread: ['Лонгрид · 2000–3500 знаков', 3]};
     let seriesLength = '';
     let seriesImage = {style: '', provider: 'xai', ratio: 'portrait', slots: true, queued: true, extra: false, persona: true, visual: true, post: true}, seriesImageRun = null;
+    // Отдельный шопс остаётся черновиком для рекламного сервиса: в очередь VK он не попадает.
+    const shopEmpty = () => ({groupId: 0, productId: 0, title: '', url: '', facts: '', hook: '', format: '', model: '', text: '', imageProvider: '', imageRatio: 'portrait', imagePrompt: '', imageCount: 1, media: []});
+    let shopDraft = shopEmpty(), shopBusy = false;
     // Комментарии: выбранная группа, её записи, открытая запись и отмеченные комментарии.
     // Выбор и черновики живут в памяти до постановки в очередь; смена группы их сбрасывает.
     let commentsData = null, commentsGroup = 0, commentsPosts = null, commentsPost = null, commentsThread = null, commentsOnlyOpen = false, commentsReplyKey = '';
@@ -151,7 +154,7 @@
     function persistDrafts() {
         if (!draftStorage) return;
         groupDraftsSave();
-        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesSlotsBy, seriesPrompt, seriesLength, seriesGroup, seriesTarget, seriesImage, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
+        const snapshot = {v: 1, at: Date.now(), seriesSetup, seriesSlots, seriesSlotsBy, seriesPrompt, seriesLength, seriesGroup, seriesTarget, seriesImage, shopDraft, aiPrompt, aiModel, commentsBulk, commentsGroup, commentsDrafts: [...commentsDrafts], composerMedia, news: groupNewsResult, fields: fieldDrafts, groups: groupDraftStore};
         // Хранилище может быть переполнено или запрещено — тогда работаем как раньше, в памяти вкладки.
         try { draftStorage.setItem(draftKey, JSON.stringify(snapshot)); } catch {}
     }
@@ -175,6 +178,13 @@
         seriesGroup = Number(saved.seriesGroup) || 0;
         seriesTarget = text(saved.seriesTarget);
         seriesImage = {...seriesImage, ...plain(saved.seriesImage)};
+        const savedShop = plain(saved.shopDraft);
+        shopDraft = shopEmpty();
+        ['title', 'url', 'facts', 'hook', 'format', 'model', 'text', 'imageProvider', 'imageRatio', 'imagePrompt'].forEach(key => { shopDraft[key] = text(savedShop[key]); });
+        shopDraft.groupId = Number(savedShop.groupId) || 0;
+        shopDraft.productId = Number(savedShop.productId) || 0;
+        shopDraft.imageCount = Math.max(1, Math.min(10, Number(savedShop.imageCount) || 1));
+        shopDraft.media = list(savedShop.media).filter(item => item && item.id && item.type === 'image').slice(0, 10);
         aiPrompt = text(saved.aiPrompt);
         aiModel = text(saved.aiModel);
         commentsBulk = {...commentsBulk, ...plain(saved.commentsBulk)};
@@ -312,7 +322,8 @@
             }
             if (view === 'communities') communitiesData = (await request('communities')).communities || [];
             // Серия берёт группы и уже запущенные записи из тех же данных, что и автопостинг.
-            if (view === 'publishing' || view === 'series') publishingData = await request('publishing');
+            // Конструктору шопса из них нужны только группа, её паспорт и персонаж.
+            if (view === 'publishing' || view === 'series' || view === 'shops') publishingData = await request('publishing');
             // Серии нужны паспорт и лучшие часы групп — те же данные, что у «Моих сообществ».
             if (view === 'groups' || view === 'series') groupsData = await request('groups');
             if (view === 'groups' && groupOpen) groupDetail = await act('group_detail', {id: groupOpen});
@@ -356,6 +367,139 @@
         return heading('Товары', 'Объединяйте связанные видео и сравнивайте их суммарную динамику.', button(`${icon('plus')} Добавить товар`, 'add-product', '', true)) +
             `<div class="vkt-info">Это ваша подборка товаров. Связи с роликами задаются вручную в меню ролика. Просмотры отражают интерес к видео и не означают продажи.</div>` +
             (state.products.length ? `<section class="vkt-panel vkt-table-wrap"><table><thead><tr><th>Товар</th><th>Ролики</th><th>Просмотры</th><th>Прирост / час</th><th></th></tr></thead><tbody>${state.products.map(p=>`<tr><td><strong>${esc(p.title)}</strong>${p.url?`<small><a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Открыть товар ↗</a></small>`:''}</td><td>${num(p.videos)}</td><td>${num(p.views)}</td><td class="vkt-growth">${num(p.velocity)}</td><td>${button('Удалить','delete',`data-entity="products" data-id="${p.id}"`)}</td></tr>`).join('')}</tbody></table></section>` : empty('Соберите свою подборку товаров', 'Добавьте название и ссылку, затем привяжите сохранённые ролики через их меню.'));
+    }
+    // ——— Отдельный шопс: готовим текст и фото для внешнего рекламного сервиса, ничего не публикуем ———
+    const shopGroup = () => (publishingData?.groups || []).find(group => Number(group.id) === Number(shopDraft.groupId));
+    function shopProviders() {
+        const list = state.settings.images || [];
+        if (list.length && !list.some(item => item.id === shopDraft.imageProvider)) shopDraft.imageProvider = list[0].id;
+        return list;
+    }
+    function shopMediaHtml() {
+        if (!shopDraft.media.length) return '<p class="vkt-muted">Фотографий пока нет. Нарисуйте их или добавьте готовые.</p>';
+        return shopDraft.media.map((item, index) => {
+            const url = safeUrl(item.url || item.thumbnail || '');
+            const thumb = safeUrl(item.thumbnail || item.url || '');
+            return `<figure class="vkt-shop-photo">${thumb ? `<a href="${url}" target="_blank" rel="noopener noreferrer"><img src="${thumb}" alt="${esc(item.title || item.name || `Фото ${index + 1}`)}" loading="lazy"></a>` : ''}<figcaption><strong>${esc(item.title || item.name || `Фото ${index + 1}`)}</strong><span>${url ? `<a href="${url}" download="${esc(item.name || `shop-${index + 1}.jpg`)}" target="_blank" rel="noopener noreferrer">Скачать</a>` : ''}<button type="button" data-command="shop-media-remove" data-id="${Number(item.id)}" aria-label="Убрать фото">Убрать</button></span></figcaption></figure>`;
+        }).join('');
+    }
+    function shops() {
+        if (!publishingData) return heading('Генерировать шопс', 'Загружаем ваши сообщества…') + '<div class="vkt-loading">Загружаем…</div>';
+        const groups = publishingData.groups || [];
+        if (!groups.some(group => Number(group.id) === Number(shopDraft.groupId))) shopDraft.groupId = Number(groups[0]?.id || 0);
+        const ai = state.settings.ai || {}, options = state.settings.shops || {hooks: {}, formats: {}}, providers = shopProviders();
+        const products = state.products || [], selected = products.find(product => Number(product.id) === Number(shopDraft.productId));
+        if (selected && !shopDraft.title) shopDraft.title = selected.title || '';
+        if (selected && !shopDraft.url) shopDraft.url = selected.url || '';
+        const pick = (field, map, emptyLabel) => `<select data-shop-field="${field}"><option value="">${emptyLabel}</option>${Object.entries(map).map(([key, label]) => `<option value="${esc(key)}" ${key === shopDraft[field] ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+        const group = shopGroup();
+        const models = (ai.models || []).map(model => `<option value="${esc(model.id)}" ${model.id === (shopDraft.model || ai.default_model) ? 'selected' : ''}>${esc(model.title)}</option>`).join('');
+        const readyText = shopDraft.text.trim(), readyPhotos = shopDraft.media.length;
+        return heading('Генерировать шопс', 'Товарный пост для одной группы: текст и фотографии остаются здесь подготовленным вариантом для сервиса адблогеров.', button('Очистить черновик', 'shop-clear')) +
+            `<div class="vkt-info">Публикации в VK отсюда нет. Скопируйте готовый текст и скачайте фотографии — их вы передадите в рекламный сервис сами.</div>
+            <div class="vkt-shop-layout"><div>
+                <section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Товар и текст</h2><p>Методика VK Shops, факты только из карточки, паспорт выбранной группы.</p></div></div>
+                    ${groups.length ? `<div class="vkt-form">
+                        <label>Для какой группы<select data-shop-field="groupId">${groups.map(item => `<option value="${Number(item.id)}" ${Number(item.id) === Number(shopDraft.groupId) ? 'selected' : ''}>${esc(item.name || `club${item.group_id}`)}</option>`).join('')}</select><small class="vkt-help">${group?.has_passport ? 'Паспорт и материалы группы уйдут в генерацию текста.' : 'У группы пока нет паспорта — текст получится более общим.'}</small></label>
+                        <label>Товар из вашего списка<select data-shop-field="productId"><option value="">— вписать вручную —</option>${products.map(product => `<option value="${Number(product.id)}" ${Number(product.id) === Number(shopDraft.productId) ? 'selected' : ''}>${esc(product.title)}</option>`).join('')}</select></label>
+                        <div class="vkt-form-row"><label>Название товара<input data-shop-field="title" maxlength="255" value="${esc(shopDraft.title)}" placeholder="Например: беспроводной пылесос"></label><label>Ссылка на товар<input data-shop-field="url" type="url" value="${esc(shopDraft.url)}" placeholder="https://…"></label></div>
+                        <div class="vkt-form-row"><label>Хук${pick('hook', options.hooks, 'На выбор модели')}</label><label>Подача${pick('format', options.formats, 'На выбор модели')}</label></div>
+                        <label>Факты о товаре<textarea data-shop-field="facts" rows="5" maxlength="3000" placeholder="Цена, характеристики, реальный опыт и результат. Модель не будет выдумывать то, чего здесь нет.">${esc(shopDraft.facts)}</textarea></label>
+                        ${ai.configured ? `<label>Нейросеть для текста<select data-shop-field="model">${models}</select></label><div class="vkt-form-actions">${button(`${icon('fire')} ${readyText ? 'Переписать текст' : 'Сгенерировать текст'}`, 'shop-generate-text', shopBusy ? 'disabled' : '', true)}</div>${quotaNote(ai)}` : `<div class="vkt-info">Модель для текста не подключена. Текст можно написать вручную в подготовленном варианте.${isAdmin() ? ' <a href="#models">Подключить — «Нейросети» →</a>' : ''}</div>`}
+                    </div>` : empty('Нет своих сообществ', 'Сначала обновите список групп в «Автопостинге». Публиковать шопс отсюда не потребуется, но группа задаёт стиль текста и фотографий.', 'publishing', 'Открыть автопостинг')}
+                </section>
+                <section class="vkt-panel"><div class="vkt-panel-heading"><div><h2>Фотографии</h2><p>Все подключённые модели изображений. Персонаж и визуал берутся из выбранной группы.</p></div></div>
+                    ${providers.length ? `<div class="vkt-form"><div class="vkt-form-row"><label>Нейросеть для фото<select data-shop-field="imageProvider">${providers.map(item => `<option value="${esc(item.id)}" ${item.id === shopDraft.imageProvider ? 'selected' : ''}>${esc(item.title)}</option>`).join('')}</select></label><label>Формат<select data-shop-field="imageRatio">${Object.entries(ratioLabels).map(([id, label]) => `<option value="${id}" ${id === shopDraft.imageRatio ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label><label>Вариантов<select data-shop-field="imageCount">${variantOptions(Math.max(1, 10 - readyPhotos)).replace(`value="${shopDraft.imageCount}"`, `value="${shopDraft.imageCount}" selected`)}</select></label></div>
+                        <label>Пожелание к кадру<textarea data-shop-field="imagePrompt" rows="3" maxlength="3000" placeholder="Например: товар в руках на обычной кухне, естественный свет, без надписей">${esc(shopDraft.imagePrompt)}</textarea><small class="vkt-help">Если текст готов, сначала нейросеть опишет по нему конкретный кадр. Без текста картинка создаётся по товару и этому пожеланию.</small></label>
+                        <div class="vkt-form-actions">${button(`${icon('fire')} Сгенерировать фото`, 'shop-generate-images', shopBusy || readyPhotos >= 10 ? 'disabled' : '', true)}</div>${quotaNote(ai)}</div>` : `<div class="vkt-info">Генерация изображений не подключена. Можно загрузить свои фотографии ниже.${isAdmin() ? ' Модели подключаются в «Нейросетях» и «Генерации фото».' : ''}</div>`}
+                    <div class="vkt-media-actions"><label class="vkt-button vkt-file"><input type="file" accept="image/*" data-shop-upload multiple hidden>${icon('plus')} Загрузить фото</label>${button(`${icon('layers')} Из медиатеки`, 'shop-media')}</div>
+                    <div id="vkt-shop-progress" class="vkt-help" ${shopBusy ? '' : 'hidden'}></div>
+                </section>
+            </div>
+            <aside class="vkt-panel vkt-shop-ready"><div class="vkt-panel-heading"><div><h2>Подготовленный вариант</h2><p>${group ? `Для группы «${esc(group.name)}»` : 'Группа не выбрана'} · ${readyPhotos} фото</p></div>${badge('Не опубликовано', 'green')}</div>
+                <label>Текст для рекламного сервиса<textarea data-shop-field="text" rows="16" maxlength="16000" placeholder="Здесь появится текст. Его можно править вручную.">${esc(shopDraft.text)}</textarea></label>
+                <div class="vkt-shop-ready-meta"><span>${readyText.length} знаков</span>${button(`${icon('post')} Скопировать текст`, 'shop-copy', readyText ? '' : 'disabled', true)}</div>
+                <h3>Фотографии · ${readyPhotos}/10</h3><div class="vkt-shop-gallery">${shopMediaHtml()}</div>
+                <p class="vkt-help">Черновик сохраняется в этом браузере на 30 дней. Проверьте текст и каждое фото перед передачей в сервис.</p>
+            </aside></div>`;
+    }
+    function addShopMedia(item) {
+        if (!item || item.type !== 'image') { toast('В шопс можно добавить только изображение.', true); return false; }
+        if (shopDraft.media.length >= 10) { toast('В подготовленном варианте не больше 10 фотографий.', true); return false; }
+        if (shopDraft.media.some(media => Number(media.id) === Number(item.id))) return true;
+        shopDraft.media.push(item);
+        scheduleDrafts();
+        return true;
+    }
+    const shopTextModel = () => shopDraft.model || state.settings.ai?.default_model || '';
+    async function shopGenerateText() {
+        if (shopBusy) return;
+        if (!shopGroup()) { toast('Выберите группу, под которую готовим шопс.', true); return; }
+        if (!String(shopDraft.title || '').trim() && !shopDraft.productId) { toast('Выберите товар или впишите его название.', true); return; }
+        shopBusy = true;
+        render();
+        try {
+            const result = await actLong('shop_post', {product_id: Number(shopDraft.productId) || 0, group_id: Number(shopDraft.groupId), model: shopTextModel(), title: shopDraft.title, url: shopDraft.url, facts: shopDraft.facts, hook: shopDraft.hook, format: shopDraft.format, current: shopDraft.text});
+            shopDraft.text = String(result.text || '');
+            await load(false);
+            toast('Текст готов. Проверьте его и при необходимости отредактируйте — в VK он не отправлен.');
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { shopBusy = false; persistDrafts(); render(); }
+    }
+    async function shopImageBrief(report) {
+        const own = [shopDraft.imagePrompt.trim(), shopDraft.title ? `Advertised product: ${shopDraft.title}` : '', shopDraft.url ? `Product page (context only): ${shopDraft.url}` : '', shopDraft.facts.trim() ? `Product facts: ${shopDraft.facts.trim()}` : ''].filter(Boolean).join('\n');
+        const body = shopDraft.text.trim();
+        if (body.length >= 10 && state.settings.ai?.configured) {
+            try {
+                report('Пишем сцену для фотографии по тексту шопса…');
+                const {scene, look} = await act('image_scene', {text: body, own, group_id: Number(shopDraft.groupId), model: shopTextModel(), card: true, visual: true});
+                return {prompt: `${scene}\n\nNo text, captions, letters, prices or logos in the image.`, source: [body, own].filter(Boolean).join('\n'), scene: true, look: look || ''};
+            } catch (error) { report(`Сцену написать не вышло (${error.message}) — рисуем по товару и тексту.`); }
+        }
+        return {prompt: seriesImagePrompt(body, own, !!body), source: [body, own].filter(Boolean).join('\n')};
+    }
+    async function shopGenerateImages() {
+        if (shopBusy || shopDraft.media.length >= 10) return;
+        const provider = (state.settings.images || []).find(item => item.id === shopDraft.imageProvider);
+        if (!provider) { toast('Выберите подключённую модель для фото.', true); return; }
+        if (Number(shopGroup()?.persona_photos) > 0 && !Number(provider.refs) && !confirm(`«${provider.title}» фото персонажа не принимает: в кадре будет незнакомый человек, похожий только по описанию. Рисовать всё равно?`)) return;
+        shopBusy = true;
+        render();
+        const say = text => { const el = $('#vkt-shop-progress'); if (el) { el.hidden = false; el.textContent = text; } };
+        const count = Math.max(1, Math.min(Number(shopDraft.imageCount) || 1, 10 - shopDraft.media.length));
+        try {
+            const brief = await shopImageBrief(say);
+            const result = await drawVariants(count, async () => {
+                const started = await startWhenFree('image_start', {provider: provider.id, prompt: brief.prompt, source: brief.source, scene: !!brief.scene, look_en: brief.look || '', ratio: shopDraft.imageRatio, group_id: Number(shopDraft.groupId), persona: true, visual: true}, say);
+                const media = started.status === 'done' ? started.media : (await fluxAwait(started.id, say, 'image_status')).media;
+                addShopMedia(media);
+                return media;
+            }, say);
+            const failure = result.errors[0];
+            if (failure) toast(result.media.length ? `Добавлено ${result.media.length} фото из ${count}. Ошибка: ${failure.message}` : failure.message, true, failure.fix);
+            else toast(count > 1 ? `Готово: ${count} фотографий добавлены в подготовленный вариант.` : 'Фотография добавлена в подготовленный вариант.');
+            await load(false);
+        } catch (error) { toast(error.message, true, error.fix); }
+        finally { shopBusy = false; persistDrafts(); render(); }
+    }
+    async function shopCopyText() {
+        const text = shopDraft.text.trim();
+        if (!text) return;
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('clipboard');
+            await navigator.clipboard.writeText(text);
+        } catch {
+            const field = document.createElement('textarea');
+            field.value = text;
+            field.style.position = 'fixed';
+            field.style.opacity = '0';
+            document.body.appendChild(field);
+            field.select();
+            const copied = document.execCommand?.('copy');
+            field.remove();
+            if (!copied) { toast('Не удалось скопировать автоматически. Выделите текст и скопируйте его вручную.', true); return; }
+        }
+        toast('Текст скопирован. В VK ничего не отправлено.');
     }
     function sources() {
         return heading('Источники', 'Сообщества, чьи стены плагин обходит ради новых роликов и свежих замеров.', button(`${icon('plus')} Добавить источник`,'add-source','',true) + button('Импорт списка','import-sources') + (state.sources.length?button('Выгрузить','export-sources'):'')) +
@@ -2122,7 +2266,7 @@
         const grid = items.length
             ? `<div class="vkt-media-library">${items.map(item => `<button type="button" class="vkt-media-card" data-command="media-pick" data-id="${Number(item.id)}">${safeUrl(item.thumbnail || '') ? `<img src="${safeUrl(item.thumbnail)}" alt="" loading="lazy">` : `<span class="vkt-media-kind">${icon('play')}</span>`}<span>${esc(item.title || item.name)}<small>${item.type === 'image' ? 'Изображение' : 'Видео'} · ${fileSize(item.size)}</small></span></button>`).join('')}</div>`
             : `<p class="vkt-muted">${search ? 'По этому запросу ничего нет.' : 'В медиатеке пока нет изображений и MP4-видео.'}</p>`;
-        modal(`<h2>Медиатека</h2><p class="vkt-muted">Изображения и MP4-видео сайта. Плагин сам передаст файл в VK — ID вложения искать не нужно.</p><form data-form="media-search" class="vkt-form vkt-form-inline"><label>Поиск<input name="search" value="${esc(search)}" placeholder="Название файла"></label><button class="vkt-button">${icon('search')} Найти</button></form>${grid}`);
+        modal(`<h2>Медиатека</h2><p class="vkt-muted">${mediaTarget === 'shops' ? 'Выберите изображение для подготовленного шопса. В VK оно отсюда не отправится.' : 'Изображения и MP4-видео сайта. Плагин сам передаст файл в VK — ID вложения искать не нужно.'}</p><form data-form="media-search" class="vkt-form vkt-form-inline"><label>Поиск<input name="search" value="${esc(search)}" placeholder="Название файла"></label><button class="vkt-button">${icon('search')} Найти</button></form>${grid}`);
         mediaLibraryItems = items;
     }
     const ratioLabels = {portrait: 'Вертикально 3:4', square: 'Квадрат 1:1', landscape: 'Горизонтально 16:9', story: 'История 9:16'};
@@ -2637,7 +2781,7 @@
         });
         if (adminViews.includes(view) && !isAdmin()) view = 'overview';
         if (view === 'users' && !usersData) { content.innerHTML = heading('Пользователи', 'Загружаем список…') + '<div class="vkt-loading">Загружаем…</div>'; return; }
-        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,models,settings})[view]();
+        content.innerHTML = healthBanner() + ({overview,discover,posts,communities,groups,publishing,series,shops,comments,videos,products,sources,reading,posting,attachments,flux,users,api,collector,logs,models,settings})[view]();
         applyFieldDrafts();
         scheduleDrafts();
     }
@@ -2759,6 +2903,23 @@
         if (command==='publishing-review') { publishingReview(el.dataset.id); return; }
         if (command==='health-toggle') { healthOpen = !healthOpen; render(); return; }
         if (command.startsWith('notify-')) { await notifyCommand(command, el); return; }
+        if (command==='shop-generate-text') { await shopGenerateText(); return; }
+        if (command==='shop-generate-images') { await shopGenerateImages(); return; }
+        if (command==='shop-copy') { await shopCopyText(); return; }
+        if (command==='shop-clear') {
+            if ((shopDraft.text || shopDraft.media.length || shopDraft.facts) && !confirm('Очистить текст, факты и список фото в подготовленном шопсе? Загруженные файлы останутся в медиатеке сайта.')) return;
+            shopDraft = shopEmpty();
+            persistDrafts();
+            render();
+            return;
+        }
+        if (command==='shop-media') { mediaTarget = 'shops'; seriesSlotTarget = null; await mediaLibrary(); return; }
+        if (command==='shop-media-remove') {
+            shopDraft.media = shopDraft.media.filter(item => Number(item.id) !== Number(el.dataset.id));
+            persistDrafts();
+            render();
+            return;
+        }
         if (command==='group-settings' || command==='callback-setup' || command==='callback-forget') {
             el.disabled = true;
             try {
@@ -2859,6 +3020,10 @@
             }
             if (mediaTarget === 'flux') {
                 if (addFluxMedia(item)) dialog.close();
+                return;
+            }
+            if (mediaTarget === 'shops') {
+                if (addShopMedia(item)) { dialog.close(); persistDrafts(); render(); }
                 return;
             }
             if (mediaTarget === 'series-post') {
@@ -3631,6 +3796,18 @@
     root.addEventListener('change',async event=> {
         draftInput(event.target);
         scheduleDrafts();
+        if (event.target.matches('[data-shop-field]')) {
+            const field = event.target, key = field.dataset.shopField;
+            shopDraft[key] = ['groupId', 'productId', 'imageCount'].includes(key) ? Number(field.value) || 0 : field.value;
+            if (key === 'productId') {
+                const product = (state.products || []).find(item => Number(item.id) === shopDraft.productId);
+                shopDraft.title = product?.title || shopDraft.title;
+                shopDraft.url = product?.url || shopDraft.url;
+            }
+            scheduleDrafts();
+            if (field.tagName === 'SELECT') render();
+            return;
+        }
         if (event.target.matches('[data-news]')) {
             const field = event.target;
             groupNewsDraft = {...(groupNewsDraft || {}), [field.dataset.news]: field.type === 'checkbox' ? field.checked : field.value};
@@ -3693,6 +3870,25 @@
                 toast('Фото добавлены. Нажмите «Сохранить персонажа».');
             } catch (error) { toast(error.message, true, error.fix); }
             finally { label?.classList.remove('is-busy'); render(); }
+            return;
+        }
+        if (event.target.matches('[data-shop-upload]')) {
+            const input = event.target;
+            const files = [...(input.files || [])];
+            input.value = '';
+            if (!files.length) return;
+            const label = input.closest('label');
+            label?.classList.add('is-busy');
+            let added = 0;
+            try {
+                for (const file of files) {
+                    if (shopDraft.media.length >= 10) { toast('Добавлены первые 10 фотографий, остальные не загружены.', true); break; }
+                    if (!String(file.type || '').startsWith('image/')) { toast(`«${file.name}» — не изображение, файл пропущен.`, true); continue; }
+                    if (addShopMedia(await upload(file))) added += 1;
+                }
+                if (added) toast(added > 1 ? `Загружено фотографий: ${added}.` : 'Фотография добавлена в подготовленный вариант.');
+            } catch (error) { toast(error.message, true, error.fix); }
+            finally { label?.classList.remove('is-busy'); persistDrafts(); render(); }
             return;
         }
         if (event.target.matches('[data-flux-upload]')) {
@@ -3839,6 +4035,7 @@
         if (event.target.closest?.('[data-form="series-slot"]')) captureSeriesDialog();
         scheduleDrafts();
         if(event.target.id==='vkt-params') apiDraft=event.target.value;
+        if(event.target.matches('[data-shop-field]') && !['groupId', 'productId', 'imageCount'].includes(event.target.dataset.shopField)) shopDraft[event.target.dataset.shopField] = event.target.value;
         // Тема серии и стиль картинок переживают перерисовку раздела.
         if(event.target.matches('[data-series-prompt]')) seriesPrompt=event.target.value;
         // Паспорт переживает перерисовку после обновления охватов и других действий.

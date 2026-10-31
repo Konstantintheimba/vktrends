@@ -11,10 +11,11 @@ const state = {sources: communities, stats: {videos: 0, posts: 0}, settings: {ha
 const data = {posts: [], communities, summary: {recognized_posts: 0}, total: 0, pages: 1};
 const uploaded = {id: 42, type: 'image', name: 'promo.jpg', title: 'promo', size: 204800, url: 'https://example.test/promo.jpg', thumbnail: 'https://example.test/promo-medium.jpg'};
 // Хранилище браузера для черновиков: до запуска в нём лежит сохранённое с прошлого захода.
-const stored = new Map([['vkt-drafts:1', JSON.stringify({v: 1, at: Date.now(), seriesPrompt: 'Тема с прошлого раза', seriesSlots: [{at: '2099-01-05T10:00', message: 'Старый слот', attachments: '', media: []}, 'мусор'], commentsDrafts: [['5_60', 'Набранный ответ']], fields: {publishing: {message: 'Недописанный пост', 'groups=3': true}}, groups: {3: {passport: 'Паспорт в работе', news: null, materialEdit: null, material: null}}})]]);
+const stored = new Map([['vkt-drafts:1', JSON.stringify({v: 1, at: Date.now(), seriesPrompt: 'Тема с прошлого раза', seriesSlots: [{at: '2099-01-05T10:00', message: 'Старый слот', attachments: '', media: []}, 'мусор'], shopDraft: {title: 'Шопс с прошлого раза', text: 'Подготовленный текст', media: Array.from({length: 11}, (_, id) => ({id: id + 1, type: 'image'}))}, commentsDrafts: [['5_60', 'Набранный ответ']], fields: {publishing: {message: 'Недописанный пост', 'groups=3': true}}, groups: {3: {passport: 'Паспорт в работе', news: null, materialEdit: null, material: null}}})]]);
 const localStorage = {getItem: key => stored.has(key) ? stored.get(key) : null, setItem: (key, value) => { stored.set(key, String(value)); }, removeItem: key => { stored.delete(key); }};
 const context = {
     window: {localStorage, vktConfig: {initialView: 'posts', rest: 'https://example.test/wp-json/vk-trends/v1/', account: {id: 1, name: 'Админ', is_admin: true, status: 'active'}}, addEventListener() {}},
+    navigator: {clipboard: {writeText: async text => {context.copied = text;}}},
     document: {getElementById: () => root}, location: {hash: '#posts'}, URL, URLSearchParams, Intl, Date,
     setTimeout: () => 0, clearTimeout() {}, FormData: function (form) { if (form) return Object.entries(form.values); this.append = () => {}; },
     fetch: async (url, options = {}) => {
@@ -35,13 +36,14 @@ const source = fs.readFileSync(require.resolve('../assets/dashboard.js'), 'utf8'
 const tail = source.lastIndexOf('    load().catch(');
 assert(tail > 0);
 vm.runInNewContext(source.slice(0, tail) + `
-    window.testAPI = {models, pickOrder, rewriteButton, rewriteTask, drawRow, seriesImagePrompt, groupPersonaPanel, promptParts, setSeriesGroup(value) {seriesGroup=value;}, setPersonaDraft(value) {groupPersonaDraft=value;}, notifyDialog, bellBadge, postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, sortableChips, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, commentsGenerate, commentsQueue, replyDrafts: () => commentsDrafts, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
+    window.testAPI = {models, pickOrder, rewriteButton, rewriteTask, drawRow, seriesImagePrompt, groupPersonaPanel, promptParts, setSeriesGroup(value) {seriesGroup=value;}, setPersonaDraft(value) {groupPersonaDraft=value;}, notifyDialog, bellBadge, postProduct, postRow, posts, viewData, mediaChip, publishing, settings, reading, posting, attachments, users, flux, overview, initial, seriesPlan, series, seriesCalendar, sortableChips, setSeries(slots) {seriesSlots=slots;}, getSeries() {return seriesSlots;}, setPublishing(value) {publishingData=value;}, getPublishing() {return publishingData;}, shopBox, shops, shopGenerateText, shopGenerateImages, shopCopyText, getShop() {return shopDraft;}, setShop(value) {shopDraft={...shopEmpty(),...value};}, commentsGenerate, commentsQueue, replyDrafts: () => commentsDrafts, drafts: {persist: persistDrafts, restore: restoreDrafts, input: draftInput, apply: applyFieldDrafts, fields: () => fieldDrafts, groupSave: groupDraftsSave, groupLoad: groupDraftsLoad, passport(value) { if (value !== undefined) groupPassportDraft = value; return groupPassportDraft; }, replyDraft: key => commentsDrafts.get(key), prompt: () => seriesPrompt}, groups, setGroups(value) {groupsData=value;}, openGroup(id, detail) {groupOpen=id;groupDetail=detail;}, editMaterial(id, draft) {groupMaterialEdit=id;groupMaterialDraft=draft;}, setNews(draft, check, result) {groupNewsDraft=draft;groupNewsCheck=check;groupNewsResult=result;}, getNews() {return groupNewsResult;}, getSeriesGroup() {return seriesGroup;}, setUsers(value) {usersData=value;}, setAccount(value) {account=value;}, init(s,d) {state=s;postsData=d;}, getSource() {return postsSource;}, getMedia() {return composerMedia;}, comments, setFeed(d, feed) {commentsMode='feed';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsFeed=feed;indexThread();}, setComments(d, p, post, thread) {commentsMode='posts';commentsData=d;commentsGroup=Number(d.groups[0]?.group_id||0);commentsPosts=p;commentsPost=post;commentsThread=thread;indexThread();}, pick(key) {commentsSelected.set(key, commentPayload(key));}, selected() {return commentsSelected;}, healthBanner, toast, fixFor, hasSlot};
 })();`, context);
 const api = context.window.testAPI;
 // Черновики с прошлого захода подняты ещё до загрузки данных.
 const check0 = (ok, message) => assert(ok, message);
 check0(api.drafts.prompt() === 'Тема с прошлого раза' && api.getSeries().length === 1 && api.getSeries()[0].message === 'Старый слот', 'После перезагрузки страницы тема серии и слоты на месте, мусор в сохранённом пропущен');
 check0(api.drafts.replyDraft('5_60') === 'Набранный ответ' && api.drafts.fields().publishing.message === 'Недописанный пост', 'Черновики ответов и поля «Новой записи» подняты из хранилища');
+check0(api.getShop().title === 'Шопс с прошлого раза' && api.getShop().text === 'Подготовленный текст' && api.getShop().media.length === 10, 'Черновик шопса поднят из хранилища, список фото ограничен десятью');
 api.drafts.groupLoad(3);
 check0(api.drafts.passport() === 'Паспорт в работе', 'Несохранённый паспорт ждёт в своей группе');
 api.drafts.groupLoad(4);
@@ -392,6 +394,45 @@ check(html.includes('Второе &lt;script&gt;') && !html.includes('<script>')
     state.products = [{id: 5, title: 'Салфетка <умная>', url: 'https://shop.test/5'}];
     const shopHtml = api.shopBox({message: 'Пост про уборку', shop: {product: '5', hook: 'mistake', facts: 'Цена <390>'}, shopOpen: true}, 'data-index="0"');
     check(shopHtml.includes('Товарный пост · VK Shops') && shopHtml.includes('<option value="5" selected>Салфетка &lt;умная&gt;</option>') && shopHtml.includes('<option value="mistake" selected>ошибка</option>') && shopHtml.includes('<option value="compare" >сравнение</option>') && shopHtml.includes('Цена &lt;390&gt;') && shopHtml.includes('data-command="series-shop" data-index="0"'), 'В окне записи — товарный пост: товар, хук, подача и факты сохраняются и экранируются');
+    // Отдельный шопс: только подготовка для рекламного сервиса, без очереди и публикации VK.
+    state.settings.ai = {configured: true, default_model: 'deepseek-1', models: [{id: 'deepseek-1', title: 'DeepSeek <chat>'}, {id: 'openai-1', title: 'OpenAI'}]};
+    state.settings.images = [{id: 'xai', title: 'xAI', refs: 0}, {id: 'bfl:flux-2-pro', title: 'BFL', refs: 8}, {id: 'wiro:seedream-5-pro', title: 'Wiro', refs: 8}];
+    const shopPreviousPublishing = api.getPublishing();
+    api.setPublishing({groups: [{id: 3, group_id: 987, name: 'Группа <для шопса>', can_post: 0, has_passport: true, persona_photos: 0}], posts: [], status: {}});
+    api.setShop({groupId: 3, productId: 5, facts: 'Цена <390>', hook: 'mistake', format: 'compare', text: 'Черновик'});
+    const singleShop = api.shops();
+    check(singleShop.includes('Генерировать шопс') && singleShop.includes('Группа &lt;для шопса&gt;') && singleShop.includes('Салфетка &lt;умная&gt;') && singleShop.includes('DeepSeek &lt;chat&gt;') && singleShop.includes('OpenAI') && singleShop.includes('wiro:seedream-5-pro'), 'Вкладка шопса: своя группа без права публикации, товар, все текстовые и графические модели, чужие названия экранированы');
+    check(singleShop.includes('Подготовленный вариант') && singleShop.includes('Не опубликовано') && singleShop.includes('shop-copy') && singleShop.includes('data-shop-upload') && !singleShop.includes('publishing_create') && !singleShop.includes('publishing_approve'), 'Есть только подготовка, копирование и загрузка фото — публикации и очереди нет');
+    context.location.hash = '#shops';
+    check(api.initial() === 'shops', 'Новая вкладка открывается по своему адресу');
+    context.location.hash = '#posts';
+    let shopTextRequest = null;
+    context.actionHook = sent => sent.action === 'shop_post' ? (shopTextRequest = sent, {ok: true, json: async () => ({text: 'Готовый шопс\n\nhttps://shop.test/5'})}) : null;
+    await api.shopGenerateText();
+    check(api.getShop().text.startsWith('Готовый шопс') && shopTextRequest.product_id === 5 && shopTextRequest.group_id === 3 && shopTextRequest.model === 'deepseek-1' && shopTextRequest.facts === 'Цена <390>' && shopTextRequest.current === 'Черновик' && shopTextRequest.job, 'Текст шопса уходит долгим запросом с товаром, группой, выбранной моделью, фактами и текущим черновиком');
+    await api.shopCopyText();
+    check(context.copied === api.getShop().text, 'Копируется именно подготовленный текст шопса');
+    const shopCalls = [];
+    context.actionHook = sent => {
+        if (!['image_scene', 'image_start'].includes(sent.action)) return null;
+        shopCalls.push(sent);
+        if (sent.action === 'image_scene') return {ok: true, json: async () => ({scene: 'Advertised product in a kitchen', look: 'Main person'})};
+        const id = 80 + shopCalls.filter(call => call.action === 'image_start').length;
+        return {ok: true, json: async () => ({status: 'done', media: {...uploaded, id}})};
+    };
+    api.setShop({groupId: 3, title: 'Салфетка', facts: 'Цена 390', text: 'Готовый текст', imageProvider: 'bfl:flux-2-pro', imageRatio: 'square', imageCount: 2, imagePrompt: 'Естественный свет'});
+    await api.shopGenerateImages();
+    check(api.getShop().media.length === 2 && shopCalls.filter(call => call.action === 'image_scene').length === 1 && shopCalls.filter(call => call.action === 'image_start').length === 2, 'Для двух фото сцена пишется один раз, рисуются два отдельных варианта и оба попадают в подготовленный шопс: ' + JSON.stringify({media: api.getShop().media, calls: shopCalls}));
+    check(shopCalls.filter(call => call.action === 'image_start').every(call => call.provider === 'bfl:flux-2-pro' && call.group_id === 3 && call.persona === true && call.visual === true && call.ratio === 'square' && call.scene === true), 'Фото рисует модель самой вкладки с персонажем и визуалом выбранной группы, а не настройки серии');
+    check(!shopCalls.some(call => String(call.action).startsWith('publishing_')), 'Генерация шопса не вызывает действия публикации');
+    context.actionHook = null;
+    api.setShop({media: []});
+    await listeners.change({target: {matches: selector => selector === '[data-shop-upload]', files: [{name: 'shop.jpg', type: 'image/jpeg'}], value: '', closest: () => null}});
+    check(api.getShop().media.length === 1 && api.getShop().media[0].id === 42, 'Своя фотография загружается в медиатеку и сразу попадает в подготовленный шопс');
+    api.drafts.persist();
+    check(JSON.parse(stored.get('vkt-drafts:1')).shopDraft.media[0].id === 42, 'Состав подготовленного шопса сохраняется в браузере');
+    api.setShop({});
+    api.setPublishing(shopPreviousPublishing);
     state.products = [];
     // Модели картинок приходят общим списком с сервера.
     state.settings.images = [{id: 'xai', title: 'xAI · grok-imagine-image-2.0'}, {id: 'bfl:flux-2-pro', title: 'BFL · FLUX.2 [pro]'}];
