@@ -523,7 +523,8 @@ final class VKT_AI {
      * Один запрос к модели для текстов. $model — ID из списка или сама
      * запись модели (при проверке перед сохранением). Пустой ID — модель по умолчанию.
      */
-    private static function chat( $input, $timeout = 90, $model = '' ) {
+    private static function chat( $input, $timeout = 90, $model = '', &$debug = null ) {
+        $debug = null;
         if ( ! is_array( $model ) ) {
             $models = self::models();
             $id = is_string( $model ) && isset( $models[ $model ] ) ? $model : self::default_model();
@@ -535,6 +536,7 @@ final class VKT_AI {
         $name = $model['title'];
         $method = 'llm.' . $model['preset'];
         $request = array( 'model' => $model['model'], 'messages' => array( array( 'role' => 'user', 'content' => $input ) ) );
+        $debug = array( 'request' => $request );
         $started = microtime( true );
         $response = self::send( $model['base'] . '/chat/completions', array(
             'timeout' => $timeout,
@@ -546,7 +548,8 @@ final class VKT_AI {
         ) );
         $duration = (int) round( ( microtime( true ) - $started ) * 1000 );
         if ( is_wp_error( $response ) ) {
-            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $name . ' — ' . $response->get_error_message(), 0, 250 ), $duration, array( 'request' => $request, 'response' => $response->get_error_message() ) );
+            $debug['response'] = $response->get_error_message();
+            VKT_Store::log( $method, 'ai', 'error', 0, mb_substr( 'Нет связи: ' . $name . ' — ' . $response->get_error_message(), 0, 250 ), $duration, $debug );
             return self::unreachable( $name, $model['base'], $response );
         }
         $http = (int) wp_remote_retrieve_response_code( $response );
@@ -554,7 +557,8 @@ final class VKT_AI {
         $data = json_decode( $raw, true );
         if ( $http < 200 || $http >= 300 || ! is_array( $data ) ) {
             $reason = self::reason( $data, $raw, $http, $model['key'] );
-            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $name . ': ' . $reason, 0, 250 ), $duration, array( 'request' => $request, 'response' => is_array( $data ) ? $data : $raw ) );
+            $debug['response'] = is_array( $data ) ? $data : $raw;
+            VKT_Store::log( $method, 'ai', 'error', $http, mb_substr( $name . ': ' . $reason, 0, 250 ), $duration, $debug );
             return new WP_Error( 'vkt_ai', $name . ' отклонил запрос (HTTP ' . $http . '): ' . $reason, array(
                 'status' => 422,
                 'retryable' => 429 === $http || $http >= 500,
@@ -562,7 +566,8 @@ final class VKT_AI {
             ) );
         }
         $text = self::choice_text( $data );
-        VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration, array( 'request' => $request, 'response' => array( 'text' => $text, 'usage' => $data['usage'] ?? null, 'finish_reason' => $data['choices'][0]['finish_reason'] ?? null ) ) );
+        $debug['response'] = array( 'text' => $text, 'usage' => $data['usage'] ?? null, 'finish_reason' => $data['choices'][0]['finish_reason'] ?? null );
+        VKT_Store::log( $method, 'ai', 'ok', $http, 'Текст получен: ' . $name, $duration, $debug );
         return '' === $text ? self::error( $name . ' не вернул текст.', 502, true ) : $text;
     }
 
@@ -1125,28 +1130,33 @@ final class VKT_AI {
      * не исказила. Текущий текст записи, если он есть, служит основой.
      */
     public static function generate_shop_post( $brief, $model = '', $context = '' ) {
+        $experience = (string) ( $brief['experience'] ?? '' );
         $input = 'Напиши товарный пост для сообщества VK на русском языке по методике ниже. Верни только готовый текст поста — без пояснений, вариантов, кавычек и Markdown.'
             . "\n\nМетодика:\n" . VKT_Shops::rules()
             . "\n\nТовар: " . $brief['title'] . '.'
             . ( '' !== $brief['url'] ? ' Ссылка на товар добавится в конец поста автоматически — сам ссылку не пиши, но подведи к ней последней строкой.' : ' Ссылки на товар нет — не выдумывай её и не пиши «ссылка ниже».' )
-            . "\n\nЧто известно по факту — утверждать о товаре, опыте и результате можно только это:\n" . ( '' !== $brief['facts'] ? $brief['facts'] : 'Ничего, кроме названия. Пиши описанием ситуации и товара, без личного опыта, оценок, цен и результатов.' )
+            . "\n\nЧто известно о товаре по факту — утверждать о характеристиках, цене и результате можно только это:\n" . ( '' !== $brief['facts'] ? $brief['facts'] : 'Ничего, кроме названия. Не выдумывай характеристики, оценки, цены и результаты.' )
+            . "\n\nЛичный опыт и точка зрения автора — разрешено использовать только этот рассказ; не придумывай дополнительные случаи, результаты и биографию:\n" . ( '' !== $experience ? $experience : 'Не указаны. Не пиши от первого лица и не выдумывай личный опыт.' )
             . "\n\nХук: " . ( '' !== $brief['hook'] ? $brief['hook'] : 'выбери сам подходящий к товару' ) . '. Подача: ' . ( '' !== $brief['format'] ? $brief['format'] : 'выбери сам подходящую' ) . '.';
         if ( '' !== $brief['current'] ) {
             $input .= "\n\nСейчас в этой записи такой текст. Возьми его тему и ситуацию за основу и преврати в товарный пост:\n" . $brief['current'];
         }
-        $result = self::chat( self::with_group( $input, $context ), 120, $model );
+        $result = self::chat( self::with_group( $input, $context ), 120, $model, $debug );
         if ( is_wp_error( $result ) ) {
+            $result->add_data( array_merge( (array) $result->get_error_data(), array( 'debug' => $debug ) ) );
             return $result;
         }
         $text = trim( wp_strip_all_tags( $result ) );
         if ( '' === $text ) {
-            return self::error( 'Модель не вернула текст.', 502, true );
+            $error = self::error( 'Модель не вернула текст.', 502, true );
+            $error->add_data( array_merge( (array) $error->get_error_data(), array( 'debug' => $debug ) ) );
+            return $error;
         }
         if ( '' !== $brief['url'] ) {
             // Модель могла всё же вписать адрес по-своему: оставляем один, настоящий.
             $text = trim( (string) preg_replace( '~\s*https?://\S+~iu', '', $text ) ) . "\n\n" . $brief['url'];
         }
-        return array( 'text' => mb_substr( $text, 0, 16000 ) );
+        return array( 'text' => mb_substr( $text, 0, 16000 ), 'debug' => $debug );
     }
 
     /**

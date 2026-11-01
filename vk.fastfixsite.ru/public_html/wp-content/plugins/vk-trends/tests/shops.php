@@ -9,6 +9,8 @@ define( 'ARRAY_A', 'ARRAY_A' );
 class WP_Error {
     public function __construct( public $code = '', public $message = '', public $data = array() ) {}
     public function get_error_message() { return $this->message; }
+    public function get_error_data() { return $this->data; }
+    public function add_data( $data ) { $this->data = $data; }
 }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function absint( $value ) { return abs( (int) $value ); }
@@ -22,6 +24,7 @@ function wp_remote_retrieve_response_code( $response ) { return 200; }
 function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_remote_post( $url, $args ) {
     $GLOBALS['vkt_model_request'] = json_decode( $args['body'], true );
+    if ( ! empty( $GLOBALS['vkt_model_error'] ) ) { return $GLOBALS['vkt_model_error']; }
     return array( 'body' => json_encode( array( 'choices' => array( array( 'message' => array( 'content' => $GLOBALS['vkt_model_text'] ) ) ) ) ) );
 }
 class VKT_Tokens { public static function unseal( $value ) { return ''; } }
@@ -69,24 +72,30 @@ $assert( str_contains( $rules, 'хук × подача' ) && ! str_contains( $ru
 $assert( 8 === count( VKT_Shops::HOOKS ) && 19 === count( VKT_Shops::FORMATS ), 'Восемь хуков и девятнадцать подач' );
 
 // Задание: товар из списка или вписанный руками.
-$brief = VKT_Shops::brief( array( 'product_id' => 5, 'hook' => 'mistake', 'format' => 'compare', 'facts' => "Цена <500 руб\r\nПроверяли на плите", 'current' => 'Пост про уборку' ) );
-$assert( ! is_wp_error( $brief ) && 'Умная салфетка' === $brief['title'] && 'https://shop.test/p/5' === $brief['url'] && 'ошибка' === $brief['hook'] && 'сравнение' === $brief['format'] && "Цена <500 руб\nПроверяли на плите" === $brief['facts'], 'Товар из списка: название и ссылка из базы, факты дословно' );
+$brief = VKT_Shops::brief( array( 'product_id' => 5, 'hook' => 'mistake', 'format' => 'compare', 'facts' => "Цена <500 руб\r\nПроверяли на плите", 'experience' => "Мария моет плиту каждую неделю\r\nЕй важно не царапать покрытие", 'current' => 'Пост про уборку' ) );
+$assert( ! is_wp_error( $brief ) && 'Умная салфетка' === $brief['title'] && 'https://shop.test/p/5' === $brief['url'] && 'ошибка' === $brief['hook'] && 'сравнение' === $brief['format'] && "Цена <500 руб\nПроверяли на плите" === $brief['facts'] && "Мария моет плиту каждую неделю\nЕй важно не царапать покрытие" === $brief['experience'], 'Товар из списка: название и ссылка из базы, факты и личный опыт дословно' );
 $assert( is_wp_error( VKT_Shops::brief( array( 'product_id' => 6 ) ) ), 'Чужой или несуществующий товар не берётся' );
 $manual = VKT_Shops::brief( array( 'title' => " Щётка \n для окон ", 'url' => '', 'hook' => 'нет такого' ) );
-$assert( 'Щётка для окон' === $manual['title'] && '' === $manual['url'] && '' === $manual['hook'], 'Товар руками: название в одну строку, неизвестный хук — на выбор модели' );
-$assert( is_wp_error( VKT_Shops::brief( array( 'title' => '' ) ) ) && is_wp_error( VKT_Shops::brief( array( 'title' => 'Т', 'url' => 'javascript:1' ) ) ) && is_wp_error( VKT_Shops::brief( array( 'title' => 'Т', 'facts' => str_repeat( 'а', VKT_Shops::FACTS_MAX + 1 ) ) ) ), 'Без названия, с плохой ссылкой или слишком длинными фактами — отказ' );
+$assert( 'Щётка для окон' === $manual['title'] && '' === $manual['url'] && '' === $manual['hook'] && '' === $manual['experience'], 'Товар руками: название в одну строку, неизвестный хук — на выбор модели, опыт по умолчанию пустой' );
+$assert( is_wp_error( VKT_Shops::brief( array( 'title' => '' ) ) ) && is_wp_error( VKT_Shops::brief( array( 'title' => 'Т', 'url' => 'javascript:1' ) ) ) && is_wp_error( VKT_Shops::brief( array( 'title' => 'Т', 'facts' => str_repeat( 'а', VKT_Shops::FACTS_MAX + 1 ) ) ) ) && is_wp_error( VKT_Shops::brief( array( 'title' => 'Т', 'experience' => str_repeat( 'а', VKT_Shops::EXPERIENCE_MAX + 1 ) ) ) ), 'Без названия, с плохой ссылкой или слишком длинными фактами и опытом — отказ' );
 
 // Запрос к модели и сборка текста.
 $GLOBALS['vkt_model_text'] = "Муж опять тёр плиту губкой.\nСсылка: https://wrong.test/x";
 $post = VKT_AI::generate_shop_post( $brief, '', 'Паспорт: на вы' );
 $prompt = $GLOBALS['vkt_model_request']['messages'][0]['content'];
-$assert( str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Умная салфетка' ) && str_contains( $prompt, 'Цена <500 руб' ) && str_contains( $prompt, 'Хук: ошибка. Подача: сравнение.' ) && str_contains( $prompt, 'Пост про уборку' ) && str_contains( $prompt, 'Паспорт: на вы' ), 'В модель уходят методика, товар, факты, хук с подачей, текущий текст и паспорт группы' );
+$assert( str_contains( $prompt, 'хук × подача' ) && str_contains( $prompt, 'Умная салфетка' ) && str_contains( $prompt, 'Цена <500 руб' ) && str_contains( $prompt, 'Мария моет плиту каждую неделю' ) && str_contains( $prompt, 'не придумывай дополнительные случаи' ) && str_contains( $prompt, 'Хук: ошибка. Подача: сравнение.' ) && str_contains( $prompt, 'Пост про уборку' ) && str_contains( $prompt, 'Паспорт: на вы' ), 'В модель уходят методика, товар, факты, разрешённый личный опыт, хук с подачей, текущий текст и паспорт группы' );
 $assert( ! str_contains( $prompt, 'shop.test/p/5' ), 'Ссылку на товар модель не видит' );
 $assert( "Муж опять тёр плиту губкой.\nСсылка:\n\nhttps://shop.test/p/5" === $post['text'], 'Чужой адрес из ответа вырезан, настоящая ссылка приписана в конец' );
+$assert( $GLOBALS['vkt_model_request'] === $post['debug']['request'] && "Муж опять тёр плиту губкой.\nСсылка: https://wrong.test/x" === $post['debug']['response']['text'], 'В дебаге — фактический запрос целиком и сырой ответ модели до обработки ссылки' );
 $GLOBALS['vkt_model_text'] = 'Текст без ссылки';
 $post = VKT_AI::generate_shop_post( $manual );
 $prompt = $GLOBALS['vkt_model_request']['messages'][0]['content'];
-$assert( 'Текст без ссылки' === $post['text'] && str_contains( $prompt, 'Ссылки на товар нет' ) && str_contains( $prompt, 'Ничего, кроме названия' ) && str_contains( $prompt, 'выбери сам' ) && ! str_contains( $prompt, 'Сейчас в этой записи' ), 'Без ссылки, фактов и текста модель предупреждена и ничего не приписывается' );
+$assert( 'Текст без ссылки' === $post['text'] && str_contains( $prompt, 'Ссылки на товар нет' ) && str_contains( $prompt, 'Ничего, кроме названия' ) && str_contains( $prompt, 'Не указаны. Не пиши от первого лица' ) && str_contains( $prompt, 'выбери сам' ) && ! str_contains( $prompt, 'Сейчас в этой записи' ), 'Без ссылки, фактов, опыта и текста модель предупреждена и ничего не приписывается' );
+$GLOBALS['vkt_model_error'] = new WP_Error( 'http_request_failed', 'Нет связи с моделью' );
+$failed = VKT_AI::generate_shop_post( $brief );
+$failed_debug = $failed->get_error_data()['debug'];
+$assert( is_wp_error( $failed ) && str_contains( $failed_debug['request']['messages'][0]['content'], 'Мария моет плиту каждую неделю' ) && 'Нет связи с моделью' === $failed_debug['response'], 'При ошибке модели дебаг сохраняет полный запрос с опытом и причину отказа' );
+unset( $GLOBALS['vkt_model_error'] );
 
 // Модели картинок: один список и один вход для всех поставщиков.
 $assert( array( array( 'id' => 'xai', 'title' => 'xAI · ' . VKT_AI::IMAGE_MODEL, 'refs' => 0 ) ) === VKT_Images::providers(), 'Без ключа BFL в списке только xAI' );
@@ -109,6 +118,14 @@ $prompt = VKT_Flux::$started['prompt'];
 $assert( array( 11, 12, 13, 14, 15 ) === VKT_Flux::$started['images'], 'FLUX.2 pro получает все фото персонажа' );
 $assert( str_starts_with( $prompt, 'Create a completely new photograph, not an edit of the reference images. Reference images: images 1–5 show the main person.' ) && 1 === substr_count( $prompt, 'identity' ) && str_contains( $prompt, 'The main person: женщина 34 лет' ) && str_contains( $prompt, 'Photo style: фото на телефон' ), 'Образцы — одним абзацем первыми, внешность и визуал — до сцены, по-английски' );
 $assert( str_ends_with( $prompt, "Scene:\nМаша выбирает шторы\n\nOnly the people and animals named in the scene — nobody else." ), 'Запрет на посторонних — после сцены, а не перед ней' );
+$product = array( 'title' => 'Набор семян «Салатный»', 'photos' => array( 51, 52, 53, 54 ) );
+$plan = VKT_Images::persona_plan( 'Маша держит набор семян', $persona, 4, '', $product );
+$assert( array( 11, 12, 51, 52 ) === $plan['refs'], 'Четыре места Seedream делятся между персонажем и товаром, а не достаются только персонажу' );
+$assert( str_contains( $plan['prompt'], 'images 1–2 show the main person; images 3–4 show the advertised product — Набор семян «Салатный»' ) && str_contains( $plan['prompt'], 'preserve its shape, colours, packaging and identifying details' ), 'Промпт различает фото персонажа и товара и требует сохранить товар узнаваемым' );
+VKT_Images::start( 'bfl:flux-2-pro', 'Маша держит набор семян', 'story', $persona, '', $product );
+$assert( array( 11, 12, 13, 14, 51, 52, 53, 54 ) === VKT_Flux::$started['images'], 'В восьми образцах FLUX помещаются четыре фото персонажа и четыре фото товара' );
+VKT_Images::start( 'bfl:flux-2-pro', 'Набор семян на столе', 'story', null, '', $product );
+$assert( array( 51, 52, 53, 54 ) === VKT_Flux::$started['images'] && str_contains( VKT_Flux::$started['prompt'], 'images 1–4 show the advertised product' ), 'Без персонажа фото товара тоже уходят референсами' );
 VKT_Images::start( 'bfl:flux-2-pro', 'Маша выбирает шторы', 'story' );
 $assert( array() === VKT_Flux::$started['images'] && 'Маша выбирает шторы' === VKT_Flux::$started['prompt'], 'Без персонажа промпт и образцы не трогаются' );
 $plain = VKT_Images::persona_prompt( 'Сюжет', array( 'look' => 'мужчина с бородой', 'photos' => array(), 'items' => array(), 'visual' => '' ) );

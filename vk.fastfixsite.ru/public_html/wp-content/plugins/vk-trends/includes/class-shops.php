@@ -19,6 +19,7 @@ final class VKT_Shops {
         'guide' => 'инструкция', 'faq' => 'FAQ', 'feedback' => 'отзыв', 'case' => 'кейс',
     );
     const FACTS_MAX = 3000;
+    const EXPERIENCE_MAX = 5000;
 
     private static function error( $message, $status = 400 ) {
         return new WP_Error( 'vkt_shops', $message, array( 'status' => $status ) );
@@ -69,10 +70,15 @@ final class VKT_Shops {
         if ( mb_strlen( $facts ) > self::FACTS_MAX ) {
             return self::error( 'Факты о товаре — не длиннее ' . self::FACTS_MAX . ' символов.' );
         }
+        $experience = VKT_Materials::plain( $data['experience'] ?? '' );
+        if ( mb_strlen( $experience ) > self::EXPERIENCE_MAX ) {
+            return self::error( 'Личный опыт — не длиннее ' . self::EXPERIENCE_MAX . ' символов.' );
+        }
         return array(
             'title' => $title,
             'url' => $url,
             'facts' => $facts,
+            'experience' => $experience,
             'hook' => self::HOOKS[ $data['hook'] ?? '' ] ?? '',
             'format' => self::FORMATS[ $data['format'] ?? '' ] ?? '',
             'current' => mb_substr( VKT_Materials::plain( $data['current'] ?? '' ), 0, 16000 ),

@@ -152,7 +152,7 @@
   - `image_search($query)` — картинки по запросу с Викисклада (API `commons.wikimedia.org`, до 8, не уже 600 px, с автором и лицензией);
   - `compose()` — ответ модели в записи, строку «Источник: …» приписывает плагин.
 
-- **`VKT_Shops`** (`class-shops.php`) — методика VK Shops («Товарный пост»). `brief($data)`, `options()`.
+- **`VKT_Shops`** (`class-shops.php`) — методика VK Shops («Товарный пост»). `brief($data)`, `options()`. В задании отдельно нормализуются факты (`FACTS_MAX`) и разрешённый личный опыт автора (`experience`, `EXPERIENCE_MAX`).
 
 ### Товары и ссылки
 
@@ -274,7 +274,7 @@
 Всё в `assets/dashboard.js`, отдельных модулей нет.
 
 - **Варианты картинок.** `drawVariants(count, one, report)` — до `IMAGE_VARIANTS` (10) задач в два потока; останавливается после исчерпанного лимита или кредитов. Им пользуются окно «Картинка» (`aiDialog('image')`, обработчик формы `ai-image`), отдельный шопс и стенд (`flux`). Варианты стенда связаны полем `batch` в `fluxRuns`.
-- **Отдельный шопс (0.46).** Вид `shops`, состояние `shopDraft` в `localStorage` через общий `persistDrafts()`. `shopGenerateText()` вызывает `shop_post` через `actLong`; `shopGenerateImages()` один раз строит сцену через `image_scene` и использует `image_start`/`image_status` с собственными `shopDraft.imageProvider` и `imageRatio`. Действий `publishing_*` у вкладки нет: результат только копируется и скачивается.
+- **Отдельный шопс (0.46).** Вид `shops`, состояние `shopDraft` в `localStorage` через общий `persistDrafts()`. `shopGenerateText()` вызывает `shop_post` через `actLong`; с 0.46.2 отдельное `shopDraft.experience` уходит в `VKT_Shops::brief`, а `shopDebugHtml()` показывает фактические `debug.request/response` последнего вызова `VKT_AI::chat` — и при успехе, и при ошибке. В браузере дебаг живёт в `shopDebug` и не попадает в `localStorage`; на сервере те же тела остаются в обычном журнале и временном ответе задания. `shopGenerateImages()` один раз строит сцену через `image_scene` и использует `image_start`/`image_status` с собственными `shopDraft.imageProvider` и `imageRatio`. С 0.46.1 `shopDraft.refs` — до 8 фото товара отдельно от готового `media`: `image_start` проверяет владение файлами и передаёт их `VKT_Images::start`, где `persona_plan` резервирует товару до половины образцов модели и обозначает их в промпте. Действий `publishing_*` у вкладки нет: результат только копируется и скачивается.
 - **Собранные новости.** Состояние — `groupNewsResult` (`posts[]`: `text`, `link`, `links`, `photos[]`, `rewritten`; `note`), переживает перезагрузку через `persistDrafts()`. После сбора параллельно идут `newsFindAllPhotos()` и `newsRewriteAll()`; обещание рерайта лежит в `newsWork`, его дожидаются «Разложить все по сетке серии» и «Опубликовать сейчас». `newsPostMedia(post)` скачивает отмеченные фото в медиатеку.
 - **Слот серии из новости** помнит `link` и `rewritten`. `sourceLink(target)` берёт адрес статьи из слота или из строки «Источник: …» текста — так блок «Статья-источник» (`sourceBox`, `seriesSourceAction`) работает и у записей из очереди. `seriesSourceFill()` — «Дополнить из статей» для всех слотов разом.
 - **Окно записи серии** (`seriesSlotDialog`, `seriesPostDialog`): перед любой перерисовкой — `captureSeriesDialog()`, иначе набранное пропадёт; цель правки — `seriesDialogTarget()`, перерисовка — `reopenSeriesDialog()`. Кнопка «Рерайт текста» — `seriesDialogRewrite()` (действие `ai_text` с текущим текстом и жёсткой задачей рерайта).

@@ -642,8 +642,15 @@ final class VKT_Plugin {
                     $look = is_string( $data['look_en'] ?? null ) ? trim( sanitize_textarea_field( $data['look_en'] ) ) : '';
                     if ( '' !== $look && '' !== $persona['look'] ) { $persona['look'] = mb_substr( $look, 0, VKT_Groups::PERSONA_LOOK_MAX ); }
                 }
+                $product_refs = VKT_Media::validate_ids( $data['product_refs'] ?? array() );
+                if ( is_wp_error( $product_refs ) ) { return $product_refs; }
+                $product_refs = array_slice( $product_refs, 0, 8 );
+                foreach ( $product_refs as $attachment_id ) {
+                    if ( 'image' !== VKT_Media::item( $attachment_id )['type'] ) { return self::error( 'Референсом товара может быть только изображение.' ); }
+                }
+                $product = $product_refs ? array( 'title' => mb_substr( sanitize_text_field( (string) ( $data['product_title'] ?? '' ) ), 0, 255 ), 'photos' => $product_refs ) : array();
                 // source — текст записи по-русски: по нему отбираются предметы мира персонажа, промпт уже английский.
-                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona, mb_substr( is_string( $data['source'] ?? null ) ? $data['source'] : '', 0, 4000 ) ) );
+                return self::metered( 'media', static fn() => VKT_Images::start( $data['provider'] ?? '', $data['prompt'] ?? '', $data['ratio'] ?? 'portrait', $persona, mb_substr( is_string( $data['source'] ?? null ) ? $data['source'] : '', 0, 4000 ), $product ) );
             }
             case 'image_status':
                 return VKT_Images::status( $data['id'] ?? '' );

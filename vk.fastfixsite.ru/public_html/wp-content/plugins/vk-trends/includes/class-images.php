@@ -90,8 +90,9 @@ final class VKT_Images {
      * образцом тем, кто их принимает, описание и стиль — в промпт всем.
      * $match — текст записи по-русски: по нему отбираются предметы мира
      * персонажа, ведь сам промпт — уже английская сцена.
+     * $product — название и фото рекламируемого товара для отдельного шопса.
      */
-    public static function start( $id, $prompt, $ratio, $persona = null, $match = '' ) {
+    public static function start( $id, $prompt, $ratio, $persona = null, $match = '', $product = null ) {
         $id = is_string( $id ) ? $id : '';
         if ( ! in_array( $id, array_column( self::providers(), 'id' ), true ) ) {
             return self::error( 'Эта модель для картинок не подключена. Выберите другую из списка.' );
@@ -101,8 +102,10 @@ final class VKT_Images {
         $ratio = is_string( $ratio ) && isset( self::SIZES[ $ratio ] ) ? $ratio : 'portrait';
         $model = '' !== $model ? $model : (string) array_key_first( $provider['models']() );
         $refs = array();
-        if ( $persona ) {
-            $plan = self::persona_plan( is_string( $prompt ) ? trim( $prompt ) : '', $persona, $provider['refs']( $model ), is_string( $match ) ? $match : '' );
+        $product = is_array( $product ) ? $product : array();
+        if ( $persona || ! empty( $product['photos'] ) ) {
+            $persona = is_array( $persona ) ? $persona : array( 'look' => '', 'photos' => array(), 'items' => array(), 'visual' => '', 'rules' => '' );
+            $plan = self::persona_plan( is_string( $prompt ) ? trim( $prompt ) : '', $persona, $provider['refs']( $model ), is_string( $match ) ? $match : '', $product );
             $prompt = $plan['prompt'];
             $refs = $plan['refs'];
         }
@@ -127,27 +130,34 @@ final class VKT_Images {
     /**
      * Что из мира персонажа идёт в кадр и какие фото — образцами. Предмет
      * берётся, если в сюжете есть одно из его слов («кошк, Муся»); без слов —
-     * всегда. Лицо идёт первым, затем по фото на предмет, вторые фото — если
-     * осталось место у модели.
+     * всегда. Для товара резервируется до половины мест у модели: иначе четыре
+     * фото лица заняли бы все образцы Seedream, а товар не попал бы в запрос.
      */
-    public static function persona_plan( $prompt, $persona, $limit, $match = '' ) {
+    public static function persona_plan( $prompt, $persona, $limit, $match = '', $product = array() ) {
         $source = trim( $prompt . "\n" . $match );
         $items = array_values( array_filter( (array) ( $persona['items'] ?? array() ), static fn( $item ) => self::wanted( $item, $source ) ) );
+        $product_photos = array_values( array_filter( array_map( 'absint', (array) ( $product['photos'] ?? array() ) ) ) );
+        $reserve = $product_photos && $limit > 0 ? min( count( $product_photos ), max( 1, intdiv( $limit, 2 ) ) ) : 0;
+        $persona_limit = $limit - $reserve;
         $refs = array();
         $owners = array();
-        foreach ( array_slice( (array) $persona['photos'], 0, $limit ) as $photo ) {
+        foreach ( array_slice( (array) $persona['photos'], 0, $persona_limit ) as $photo ) {
             $refs[] = $photo;
             $owners[] = 'person';
         }
         for ( $round = 0; $round < 2; ++$round ) {
             foreach ( $items as $index => $item ) {
-                if ( count( $refs ) < $limit && isset( $item['photos'][ $round ] ) ) {
+                if ( count( $refs ) < $persona_limit && isset( $item['photos'][ $round ] ) ) {
                     $refs[] = $item['photos'][ $round ];
                     $owners[] = $index;
                 }
             }
         }
-        return array( 'refs' => $refs, 'prompt' => self::persona_prompt( $prompt, $persona, $items, $owners ) );
+        foreach ( array_slice( $product_photos, 0, $limit - count( $refs ) ) as $photo ) {
+            $refs[] = $photo;
+            $owners[] = 'product';
+        }
+        return array( 'refs' => $refs, 'prompt' => self::persona_prompt( $prompt, $persona, $items, $owners, $product ) );
     }
 
     private static function wanted( $item, $prompt ) {
@@ -163,7 +173,7 @@ final class VKT_Images {
     /**
      * Персонаж и его мир — до сцены: модели держат внешность лучше, когда
      * она задана до сюжета. Хвост сцены при нехватке места режется, персонаж
-     * и запреты — нет. $owners — чьё каждое опорное фото: 'person' или номер предмета.
+     * и запреты — нет. $owners — чьё каждое опорное фото: 'person', 'product' или номер предмета.
      * Служебные фразы — по-английски: модели картинок понимают его надёжнее
      * (27.10.2026 Seedream пропустил русскую оговорку «кадр не копируй» и
      * вернул четырём постам одну кухню). Про образцы — один абзац, а не три
@@ -171,7 +181,7 @@ final class VKT_Images {
      * сцену. Запрет на посторонних — после сцены и с оговоркой: стоял до неё —
      * и мужа из пожелания автора модель выбрасывала.
      */
-    public static function persona_prompt( $prompt, $persona, $items = array(), $owners = array() ) {
+    public static function persona_prompt( $prompt, $persona, $items = array(), $owners = array(), $product = array() ) {
         // Номера фото одного владельца: «1–3», «4» или «4, 6».
         $numbers = static function ( $owner ) use ( $owners ) {
             $list = array_map( static fn( $index ) => $index + 1, array_keys( $owners, $owner, true ) );
@@ -180,6 +190,7 @@ final class VKT_Images {
         };
         $head = array();
         $person = $numbers( 'person' );
+        $product_refs = $numbers( 'product' );
         if ( $owners ) {
             $map = '' !== $person ? array( ( str_contains( $person, '–' ) || str_contains( $person, ',' ) ? 'images ' : 'image ' ) . $person . ' show the main person' ) : array();
             foreach ( $items as $index => $item ) {
@@ -187,9 +198,13 @@ final class VKT_Images {
                     $map[] = 'image ' . $numbers( $index ) . ' — ' . $item['title'];
                 }
             }
+            if ( '' !== $product_refs ) {
+                $map[] = ( str_contains( $product_refs, '–' ) || str_contains( $product_refs, ',' ) ? 'images ' : 'image ' ) . $product_refs . ' show the advertised product' . ( '' !== ( $product['title'] ?? '' ) ? ' — ' . $product['title'] : '' );
+            }
             // Первой строкой: одно фото Seedream считал картинкой для правки и возвращал тот же кадр.
             $head[] = 'Create a completely new photograph, not an edit of the reference images. Reference images: ' . implode( '; ', $map ) . '.'
                 . ( '' !== $person ? ' Keep the main person\'s identity — face, facial features, hair colour and length, body type and age.' : '' )
+                . ( '' !== $product_refs ? ' Keep the advertised product recognizable: preserve its shape, colours, packaging and identifying details; do not replace it with a similar item.' : '' )
                 . ' Take nothing else from the references: the place, background, clothing, pose, framing and light come from the scene.';
         }
         if ( '' !== $persona['look'] ) {
