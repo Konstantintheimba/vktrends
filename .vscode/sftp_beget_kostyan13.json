@@ -1,0 +1,12 @@
+{
+    "name": "My FTP Server",
+    "host": "kostyan13.beget.tech", 
+    "protocol": "ftp",
+    "port": 21,
+    "username": "kostyan13_ftp", 
+    "password": "nJOfll%Bjzs0",
+    "remotePath": "/",
+    "uploadOnSave": true,
+    "useTempFile": false,
+    "openSsh": false
+}

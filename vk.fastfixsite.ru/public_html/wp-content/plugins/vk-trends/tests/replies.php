@@ -94,7 +94,8 @@ class VKT_SQLite_WPDB {
         $this->pdo = new PDO( 'sqlite::memory:' );
         $this->pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
         $this->pdo->exec( 'CREATE TABLE wp_vkt_publishing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, name TEXT, screen_name TEXT, photo TEXT, enabled INT, can_post INT, callback_code TEXT DEFAULT \'\', callback_status TEXT DEFAULT \'\', callback_at TEXT)' );
-        $this->pdo->exec( "CREATE TABLE wp_vkt_comment_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, post_id INT, comment_id INT, author_id INT DEFAULT 0, author_name TEXT DEFAULT '', comment_text TEXT, message TEXT, origin TEXT DEFAULT 'manual', status TEXT DEFAULT 'pending', attempts INT DEFAULT 0, available_at TEXT, vk_comment_id INT, guid TEXT, error TEXT DEFAULT '', sent_at TEXT, created_at TEXT, updated_at TEXT)" );
+        $this->pdo->exec( "CREATE TABLE wp_vkt_comment_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT, group_id INT, post_id INT, comment_id INT, author_id INT DEFAULT 0, author_name TEXT DEFAULT '', comment_text TEXT, media TEXT, message TEXT, origin TEXT DEFAULT 'manual', status TEXT DEFAULT 'pending', attempts INT DEFAULT 0, available_at TEXT, vk_comment_id INT, guid TEXT, error TEXT DEFAULT '', sent_at TEXT, created_at TEXT, updated_at TEXT)" );
+        $this->pdo->exec( 'CREATE TABLE wp_vkt_comment_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INT, comment_id INT, media TEXT)' );
     }
     public function prepare( $sql, ...$args ) {
         foreach ( $args as $arg ) {
@@ -168,12 +169,14 @@ $assert( is_wp_error( VKT_Replies::enqueue( array( 'group_id' => 100, 'items' =>
 
 // Интервал: без разброса ответы идут ровно через заданные минуты.
 $before = time();
-$batch = VKT_Replies::enqueue( array( 'group_id' => 100, 'interval' => 3, 'jitter' => false, 'items' => array( $item( 1 ), array_merge( $item( 2 ), array( 'origin' => 'ai' ) ), $item( 3 ) ) ) );
+$batch = VKT_Replies::enqueue( array( 'group_id' => 100, 'interval' => 3, 'jitter' => false, 'items' => array( array_merge( $item( 1 ), array( 'media' => array( array( 'type' => 'sticker', 'url' => 'https://vk.test/snapshot.png', 'title' => 'Стикер <b>' ), array( 'type' => 'photo', 'url' => 'javascript:alert(1)', 'title' => '' ) ) ) ), array_merge( $item( 2 ), array( 'origin' => 'ai' ) ), $item( 3 ) ) ) );
 $assert( ! is_wp_error( $batch ) && 3 === $batch['created'], 'Пачка из трёх ответов встала в очередь' );
 $times = array_map( static fn( $row ) => strtotime( $row['available_at'] . ' UTC' ), $rows( 'group_id=100' ) );
 $assert( $times[0] >= $before && $times[0] <= time(), 'Первый ответ пачки — сразу' );
 $assert( 180 === $times[1] - $times[0] && 180 === $times[2] - $times[1], 'Между ответами в группу ровно интервал' );
 $stored = $rows( 'group_id=100' );
+$snapshot = json_decode( $stored[0]['media'], true );
+$assert( 'https://vk.test/snapshot.png' === $snapshot[0]['url'] && 'Стикер' === $snapshot[0]['title'] && '' === $snapshot[1]['url'], 'Очередь хранит безопасный снимок вложений, не доверяя адресу из запроса' );
 $assert( 'manual' === $stored[0]['origin'] && 'ai' === $stored[1]['origin'], 'Источник текста хранится у каждого ответа' );
 $assert( 32 === strlen( $stored[0]['guid'] ) && $stored[0]['guid'] !== $stored[1]['guid'], 'У каждого ответа свой guid' );
 
@@ -286,10 +289,15 @@ $assert( 5 === $posts['posts'][0]['comments'] && false === $posts['posts'][0]['c
 $cron = new ReflectionMethod( VKT_Replies::class, 'cron' );
 $assert( 0 === $cron->getNumberOfParameters(), 'Вход для cron без параметров' );
 
+$wpdb->insert( 'wp_vkt_comment_inbox', array( 'group_id' => 100, 'comment_id' => 3, 'media' => wp_json_encode( array( array( 'type' => 'sticker', 'url' => 'https://vk.test/queued.png', 'title' => '' ) ) ) ) );
 $state = VKT_Replies::state();
 $senders = array_column( $state['groups'], 'sender', 'group_id' );
 $assert( 2 === count( $senders ) && 'community' === $senders[100] && 'user' === $senders[200], 'Вкладка знает, чем уйдёт ответ в каждую группу' );
 $assert( in_array( $state['queue'][0]['status'], array( 'pending', 'sending' ), true ), 'Ожидающие ответы в начале списка очереди' );
+$queued_media = array_values( array_filter( $state['queue'], static fn( $reply ) => 100 === (int) $reply['group_id'] && 3 === (int) $reply['comment_id'] ) );
+$assert( isset( $queued_media[0] ) && 'https://vk.test/queued.png' === $queued_media[0]['media'][0]['url'], 'Старый ответ в очереди получает картинку стикера из сохранённого комментария' );
+$snapshot_media = array_values( array_filter( $state['queue'], static fn( $reply ) => 100 === (int) $reply['group_id'] && 1 === (int) $reply['comment_id'] ) );
+$assert( isset( $snapshot_media[0] ) && 'https://vk.test/snapshot.png' === $snapshot_media[0]['media'][0]['url'], 'Новый ответ показывает свой снимок вложений без записи в общей ленте' );
 
 VKT_Replies::purge_user( 5 );
 $assert( 0 === count( $rows( 'user_id=5' ) ), 'Удаление кабинета уносит его очередь ответов' );

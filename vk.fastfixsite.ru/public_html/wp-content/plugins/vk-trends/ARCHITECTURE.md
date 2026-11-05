@@ -116,8 +116,9 @@
   - `create($data)`, `create_series()`, `cancel_series()`, `update()`, `get()`, `cancel()`, `approve()`, `retry()`, `run_due($limit,$post_id,$user_id)`, `attempt($delivery)`, `sync_groups()`, `state()`, `upload_targets()`;
   - `use_community_key($group_id,$media)` — решение, каким ключом публиковать (ключ сообщества для своей группы, пользовательский токен грузит файлы).
 
-- **`VKT_Replies`** (`class-replies.php`, ~905 стр.) — ответы на комментарии.
-  - `scan()`, `inbox()`, `posts()`, `thread()`, `enqueue()`, `run_due()`, `attempt()`, `cron()`, `ingest()`, `forget_comment()`.
+- **`VKT_Replies`** (`class-replies.php`, ~935 стр.) — ответы на комментарии.
+  - `scan()`, `inbox()`, `posts()`, `thread()`, `enqueue()`, `run_due()`, `attempt()`, `cron()`, `ingest()`, `forget_comment()`;
+  - `media_of()` разбирает вложения VK; `enqueue()` сохраняет их очищенный снимок в `comment_replies.media`, а `state()` отдаёт его в очередь. Для старых ответов без снимка используется `comment_inbox.media` по группе и комментарию.
 
 ### Группы, генерация, материалы
 

@@ -41,6 +41,7 @@ final class VKT_Replies {
                 author_id bigint NOT NULL DEFAULT 0,
                 author_name varchar(255) NOT NULL DEFAULT '',
                 comment_text text NOT NULL,
+                media text NULL,
                 message text NOT NULL,
                 origin varchar(20) NOT NULL DEFAULT 'manual',
                 status varchar(20) NOT NULL DEFAULT 'pending',
@@ -126,6 +127,26 @@ final class VKT_Replies {
             }
         }
         return $out;
+    }
+
+    /** Снимок остаётся у ответа, даже если исходный комментарий позже исчезнет из ленты. */
+    private static function media_snapshot( $media ) {
+        $out = array();
+        foreach ( array_slice( (array) $media, 0, 4 ) as $item ) {
+            if ( ! is_array( $item ) ) {
+                continue;
+            }
+            $type = sanitize_key( $item['type'] ?? '' );
+            if ( '' === $type ) {
+                continue;
+            }
+            $out[] = array(
+                'type' => $type,
+                'url' => esc_url_raw( (string) ( $item['url'] ?? '' ), array( 'https' ) ),
+                'title' => mb_substr( sanitize_text_field( (string) ( $item['title'] ?? '' ) ), 0, 120 ),
+            );
+        }
+        return $out ? wp_json_encode( $out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) : '';
     }
 
     /**
@@ -370,11 +391,18 @@ final class VKT_Replies {
         }
         unset( $group );
         $queue = (array) $wpdb->get_results( $wpdb->prepare(
-            'SELECT r.id,r.group_id,r.post_id,r.comment_id,r.author_name,r.comment_text,r.message,r.origin,r.status,r.attempts,r.available_at,r.vk_comment_id,r.error,r.sent_at,g.name,g.screen_name
+            'SELECT r.id,r.group_id,r.post_id,r.comment_id,r.author_name,r.comment_text,r.message,r.origin,r.status,r.attempts,r.available_at,r.vk_comment_id,r.error,r.sent_at,g.name,g.screen_name,r.media AS reply_media,i.media AS inbox_media
              FROM ' . VKT_Store::table( 'comment_replies' ) . ' r LEFT JOIN ' . VKT_Store::table( 'publishing_groups' ) . ' g ON g.group_id=r.group_id AND g.user_id=r.user_id
+             LEFT JOIN ' . VKT_Store::table( 'comment_inbox' ) . ' i ON i.group_id=r.group_id AND i.comment_id=r.comment_id
              WHERE r.user_id=%d ORDER BY r.status IN (\'pending\',\'sending\') DESC,CASE WHEN r.status IN (\'pending\',\'sending\') THEN r.available_at END,r.updated_at DESC,r.id DESC LIMIT 150',
             $user_id
         ), ARRAY_A );
+        foreach ( $queue as &$reply ) {
+            $media = (array) json_decode( (string) ( $reply['reply_media'] ?? '' ), true );
+            $reply['media'] = $media ?: (array) json_decode( (string) ( $reply['inbox_media'] ?? '' ), true );
+            unset( $reply['reply_media'], $reply['inbox_media'] );
+        }
+        unset( $reply );
         $last_run = (string) get_option( 'vkt_last_reply_run', '' );
         return array(
             'groups' => $groups,
@@ -650,6 +678,7 @@ final class VKT_Replies {
                 'author_id' => (int) ( $item['author_id'] ?? 0 ),
                 'author_name' => mb_substr( sanitize_text_field( (string) ( $item['author'] ?? '' ) ), 0, 255 ),
                 'comment_text' => mb_substr( sanitize_textarea_field( (string) ( $item['comment_text'] ?? '' ) ), 0, 300 ),
+                'media' => self::media_snapshot( $item['media'] ?? array() ),
                 'message' => $message,
                 'origin' => 'ai' === ( $item['origin'] ?? '' ) ? 'ai' : 'manual',
                 'status' => 'pending',
